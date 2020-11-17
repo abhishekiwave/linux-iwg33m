@@ -1,76 +1,83 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/*
- * (C) Copyright 2002
- * Daniel Engström, Omicron Ceti AB, daniel@omicron.se.
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_X86_I8259_H
+#define _ASM_X86_I8259_H
 
-/* i8259.h i8259 PIC Registers */
+#include <linux/delay.h>
+#include <asm/io.h>
 
-#ifndef _ASMI386_I8259_H_
-#define _ASMI386_I8959_H_
+extern unsigned int cached_irq_mask;
 
-/* PIC I/O mapped registers */
-#define IRR		0x0	/* Interrupt Request Register */
-#define ISR		0x0	/* In-Service Register */
-#define ICW1		0x0	/* Initialization Control Word 1 */
-#define OCW2		0x0	/* Operation Control Word 2 */
-#define OCW3		0x0	/* Operation Control Word 3 */
-#define ICW2		0x1	/* Initialization Control Word 2 */
-#define ICW3		0x1	/* Initialization Control Word 3 */
-#define ICW4		0x1	/* Initialization Control Word 4 */
-#define IMR		0x1	/* Interrupt Mask Register */
+#define __byte(x, y)		(((unsigned char *)&(y))[x])
+#define cached_master_mask	(__byte(0, cached_irq_mask))
+#define cached_slave_mask	(__byte(1, cached_irq_mask))
 
-/* IRR, IMR, ISR and ICW3 bits */
-#define	IR7		0x80	/* IR7 */
-#define	IR6		0x40	/* IR6 */
-#define	IR5		0x20	/* IR5 */
-#define	IR4		0x10	/* IR4 */
-#define	IR3		0x08	/* IR3 */
-#define	IR2		0x04	/* IR2 */
-#define	IR1		0x02	/* IR1 */
-#define	IR0		0x01	/* IR0 */
+/* i8259A PIC registers */
+#define PIC_MASTER_CMD		0x20
+#define PIC_MASTER_IMR		0x21
+#define PIC_MASTER_ISR		PIC_MASTER_CMD
+#define PIC_MASTER_POLL		PIC_MASTER_ISR
+#define PIC_MASTER_OCW3		PIC_MASTER_ISR
+#define PIC_SLAVE_CMD		0xa0
+#define PIC_SLAVE_IMR		0xa1
 
-/* SEOI bits */
-#define	SEOI_IR7	0x07	/* IR7 */
-#define	SEOI_IR6	0x06	/* IR6 */
-#define	SEOI_IR5	0x05	/* IR5 */
-#define	SEOI_IR4	0x04	/* IR4 */
-#define	SEOI_IR3	0x03	/* IR3 */
-#define	SEOI_IR2	0x02	/* IR2 */
-#define	SEOI_IR1	0x01	/* IR1 */
-#define	SEOI_IR0	0x00	/* IR0 */
+/* i8259A PIC related value */
+#define PIC_CASCADE_IR		2
+#define MASTER_ICW4_DEFAULT	0x01
+#define SLAVE_ICW4_DEFAULT	0x01
+#define PIC_ICW4_AEOI		2
 
-/* OCW2 bits */
-#define OCW2_RCLR	0x00	/* Rotate/clear */
-#define OCW2_NEOI	0x20	/* Non specific EOI */
-#define OCW2_NOP	0x40	/* NOP */
-#define OCW2_SEOI	0x60	/* Specific EOI */
-#define OCW2_RSET	0x80	/* Rotate/set */
-#define OCW2_REOI	0xa0	/* Rotate on non specific EOI */
-#define OCW2_PSET	0xc0	/* Priority Set Command */
-#define OCW2_RSEOI	0xe0	/* Rotate on specific EOI */
+extern raw_spinlock_t i8259A_lock;
 
-/* ICW1 bits */
-#define ICW1_SEL	0x10	/* Select ICW1 */
-#define ICW1_LTIM	0x08	/* Level-Triggered Interrupt Mode */
-#define ICW1_ADI	0x04	/* Address Interval */
-#define ICW1_SNGL	0x02	/* Single PIC */
-#define ICW1_EICW4	0x01	/* Expect initilization ICW4 */
+/* the PIC may need a careful delay on some platforms, hence specific calls */
+static inline unsigned char inb_pic(unsigned int port)
+{
+	unsigned char value = inb(port);
 
-/*
- * ICW2 is the starting vector number
- *
- * ICW2 is bit-mask of present slaves for a master device,
- * or the slave ID for a slave device
- */
+	/*
+	 * delay for some accesses to PIC on motherboard or in chipset
+	 * must be at least one microsecond, so be safe here:
+	 */
+	udelay(2);
 
-/* ICW4 bits */
-#define ICW4_AEOI	0x02	/* Automatic EOI Mode */
-#define ICW4_PM		0x01	/* Microprocessor Mode */
+	return value;
+}
 
-#define ELCR1		0x4d0
-#define ELCR2		0x4d1
+static inline void outb_pic(unsigned char value, unsigned int port)
+{
+	outb(value, port);
+	/*
+	 * delay for some accesses to PIC on motherboard or in chipset
+	 * must be at least one microsecond, so be safe here:
+	 */
+	udelay(2);
+}
 
-int i8259_init(void);
+extern struct irq_chip i8259A_chip;
 
-#endif /* _ASMI386_I8959_H_ */
+struct legacy_pic {
+	int nr_legacy_irqs;
+	struct irq_chip *chip;
+	void (*mask)(unsigned int irq);
+	void (*unmask)(unsigned int irq);
+	void (*mask_all)(void);
+	void (*restore_mask)(void);
+	void (*init)(int auto_eoi);
+	int (*probe)(void);
+	int (*irq_pending)(unsigned int irq);
+	void (*make_irq)(unsigned int irq);
+};
+
+extern struct legacy_pic *legacy_pic;
+extern struct legacy_pic null_legacy_pic;
+
+static inline bool has_legacy_pic(void)
+{
+	return legacy_pic != &null_legacy_pic;
+}
+
+static inline int nr_legacy_irqs(void)
+{
+	return legacy_pic->nr_legacy_irqs;
+}
+
+#endif /* _ASM_X86_I8259_H */

@@ -1,0 +1,15 @@
+#
+# Touchscreen driver configuration
+#
+
+config TOUCHSCREEN_HYNITRON_CST
+	bool "Hynitron touchpanel"
+	depends on I2C
+	default n
+	help
+	Say Y here if you have cst1xx or cst3xx touch panel.
+
+	If unsure, say N.
+
+	To compile this dirver as a module, choose M here: the
+	module will be called.

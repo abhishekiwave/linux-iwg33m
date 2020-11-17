@@ -1,17 +1,26 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# Copyright (c) 2017 Rockchip Electronics Co., Ltd
+# Rockchip Clock specific Makefile
 #
 
-obj-y += clk_pll.o
-obj-$(CONFIG_ROCKCHIP_PX30) += clk_px30.o
-obj-$(CONFIG_ROCKCHIP_RK3036) += clk_rk3036.o
-obj-$(CONFIG_ROCKCHIP_RK3128) += clk_rk3128.o
-obj-$(CONFIG_ROCKCHIP_RK3188) += clk_rk3188.o
-obj-$(CONFIG_ROCKCHIP_RK322X) += clk_rk322x.o
-obj-$(CONFIG_ROCKCHIP_RK3288) += clk_rk3288.o
-obj-$(CONFIG_ROCKCHIP_RK3308) += clk_rk3308.o
-obj-$(CONFIG_ROCKCHIP_RK3328) += clk_rk3328.o
-obj-$(CONFIG_ROCKCHIP_RK3368) += clk_rk3368.o
-obj-$(CONFIG_ROCKCHIP_RK3399) += clk_rk3399.o
-obj-$(CONFIG_ROCKCHIP_RV1108) += clk_rv1108.o
+obj-y	+= clk.o
+obj-y	+= clk-pll.o
+obj-y	+= clk-cpu.o
+obj-y	+= clk-half-divider.o
+obj-y	+= clk-inverter.o
+obj-y	+= clk-mmc-phase.o
+obj-y	+= clk-muxgrf.o
+obj-y	+= clk-ddr.o
+obj-$(CONFIG_RESET_CONTROLLER)	+= softrst.o
+
+obj-y	+= clk-px30.o
+obj-y	+= clk-rv1108.o
+obj-y	+= clk-rk3036.o
+obj-y	+= clk-rk3128.o
+obj-y	+= clk-rk3188.o
+obj-y	+= clk-rk3228.o
+obj-y	+= clk-rk3288.o
+obj-y	+= clk-rk3308.o
+obj-y	+= clk-rk3328.o
+obj-y	+= clk-rk3368.o
+obj-y	+= clk-rk3399.o

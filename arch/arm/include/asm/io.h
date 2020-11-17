@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- *  linux/include/asm-arm/io.h
+ *  arch/arm/include/asm/io.h
  *
  *  Copyright (C) 1996-2000 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Modifications:
  *  16-Sep-1996	RMK	Inlined the inx/outx functions & optimised for both
@@ -16,223 +13,245 @@
  *  04-Apr-1999	PJB	Added check_signature.
  *  12-Dec-1999	RMK	More cleanups
  *  18-Jun-2000 RMK	Removed virt_to_* and friends definitions
+ *  05-Oct-2004 BJD     Moved memory string functions to use void __iomem
  */
 #ifndef __ASM_ARM_IO_H
 #define __ASM_ARM_IO_H
 
 #ifdef __KERNEL__
 
+#include <linux/string.h>
 #include <linux/types.h>
-#include <linux/kernel.h>
 #include <asm/byteorder.h>
 #include <asm/memory.h>
-#include <asm/barriers.h>
-#if 0	/* XXX###XXX */
-#include <asm/arch/hardware.h>
-#endif	/* XXX###XXX */
+#include <asm-generic/pci_iomap.h>
 
-static inline void sync(void)
+/*
+ * ISA I/O bus memory addresses are 1:1 with the physical address.
+ */
+#define isa_virt_to_bus virt_to_phys
+#define isa_bus_to_virt phys_to_virt
+
+/*
+ * Atomic MMIO-wide IO modify
+ */
+extern void atomic_io_modify(void __iomem *reg, u32 mask, u32 set);
+extern void atomic_io_modify_relaxed(void __iomem *reg, u32 mask, u32 set);
+
+/*
+ * Generic IO read/write.  These perform native-endian accesses.  Note
+ * that some architectures will want to re-define __raw_{read,write}w.
+ */
+void __raw_writesb(volatile void __iomem *addr, const void *data, int bytelen);
+void __raw_writesw(volatile void __iomem *addr, const void *data, int wordlen);
+void __raw_writesl(volatile void __iomem *addr, const void *data, int longlen);
+
+void __raw_readsb(const volatile void __iomem *addr, void *data, int bytelen);
+void __raw_readsw(const volatile void __iomem *addr, void *data, int wordlen);
+void __raw_readsl(const volatile void __iomem *addr, void *data, int longlen);
+
+#if __LINUX_ARM_ARCH__ < 6
+/*
+ * Half-word accesses are problematic with RiscPC due to limitations of
+ * the bus. Rather than special-case the machine, just let the compiler
+ * generate the access for CPUs prior to ARMv6.
+ */
+#define __raw_readw(a)         (__chk_io_ptr(a), *(volatile unsigned short __force *)(a))
+#define __raw_writew(v,a)      ((void)(__chk_io_ptr(a), *(volatile unsigned short __force *)(a) = (v)))
+#else
+/*
+ * When running under a hypervisor, we want to avoid I/O accesses with
+ * writeback addressing modes as these incur a significant performance
+ * overhead (the address generation must be emulated in software).
+ */
+#define __raw_writew __raw_writew
+static inline void __raw_writew(u16 val, volatile void __iomem *addr)
 {
+	asm volatile("strh %1, %0"
+		     : : "Q" (*(volatile u16 __force *)addr), "r" (val));
+}
+
+#define __raw_readw __raw_readw
+static inline u16 __raw_readw(const volatile void __iomem *addr)
+{
+	u16 val;
+	asm volatile("ldrh %0, %1"
+		     : "=r" (val)
+		     : "Q" (*(volatile u16 __force *)addr));
+	return val;
+}
+#endif
+
+#define __raw_writeb __raw_writeb
+static inline void __raw_writeb(u8 val, volatile void __iomem *addr)
+{
+	asm volatile("strb %1, %0"
+		     : : "Qo" (*(volatile u8 __force *)addr), "r" (val));
+}
+
+#define __raw_writel __raw_writel
+static inline void __raw_writel(u32 val, volatile void __iomem *addr)
+{
+	asm volatile("str %1, %0"
+		     : : "Qo" (*(volatile u32 __force *)addr), "r" (val));
+}
+
+#define __raw_readb __raw_readb
+static inline u8 __raw_readb(const volatile void __iomem *addr)
+{
+	u8 val;
+	asm volatile("ldrb %0, %1"
+		     : "=r" (val)
+		     : "Qo" (*(volatile u8 __force *)addr));
+	return val;
+}
+
+#define __raw_readl __raw_readl
+static inline u32 __raw_readl(const volatile void __iomem *addr)
+{
+	u32 val;
+	asm volatile("ldr %0, %1"
+		     : "=r" (val)
+		     : "Qo" (*(volatile u32 __force *)addr));
+	return val;
 }
 
 /*
- * Generic virtual read/write.  Note that we don't support half-word
- * read/writes.  We define __arch_*[bl] here, and leave __arch_*w
- * to the architecture specific code.
+ * Architecture ioremap implementation.
  */
-#define __arch_getb(a)			(*(volatile unsigned char *)(a))
-#define __arch_getw(a)			(*(volatile unsigned short *)(a))
-#define __arch_getl(a)			(*(volatile unsigned int *)(a))
-#define __arch_getq(a)			(*(volatile unsigned long long *)(a))
-
-#define __arch_putb(v,a)		(*(volatile unsigned char *)(a) = (v))
-#define __arch_putw(v,a)		(*(volatile unsigned short *)(a) = (v))
-#define __arch_putl(v,a)		(*(volatile unsigned int *)(a) = (v))
-#define __arch_putq(v,a)		(*(volatile unsigned long long *)(a) = (v))
-
-static inline void __raw_writesb(unsigned long addr, const void *data,
-				 int bytelen)
-{
-	uint8_t *buf = (uint8_t *)data;
-	while(bytelen--)
-		__arch_putb(*buf++, addr);
-}
-
-static inline void __raw_writesw(unsigned long addr, const void *data,
-				 int wordlen)
-{
-	uint16_t *buf = (uint16_t *)data;
-	while(wordlen--)
-		__arch_putw(*buf++, addr);
-}
-
-static inline void __raw_writesl(unsigned long addr, const void *data,
-				 int longlen)
-{
-	uint32_t *buf = (uint32_t *)data;
-	while(longlen--)
-		__arch_putl(*buf++, addr);
-}
-
-static inline void __raw_readsb(unsigned long addr, void *data, int bytelen)
-{
-	uint8_t *buf = (uint8_t *)data;
-	while(bytelen--)
-		*buf++ = __arch_getb(addr);
-}
-
-static inline void __raw_readsw(unsigned long addr, void *data, int wordlen)
-{
-	uint16_t *buf = (uint16_t *)data;
-	while(wordlen--)
-		*buf++ = __arch_getw(addr);
-}
-
-static inline void __raw_readsl(unsigned long addr, void *data, int longlen)
-{
-	uint32_t *buf = (uint32_t *)data;
-	while(longlen--)
-		*buf++ = __arch_getl(addr);
-}
-
-#define __raw_writeb(v,a)	__arch_putb(v,a)
-#define __raw_writew(v,a)	__arch_putw(v,a)
-#define __raw_writel(v,a)	__arch_putl(v,a)
-#define __raw_writeq(v,a)	__arch_putq(v,a)
-
-#define __raw_readb(a)		__arch_getb(a)
-#define __raw_readw(a)		__arch_getw(a)
-#define __raw_readl(a)		__arch_getl(a)
-#define __raw_readq(a)		__arch_getq(a)
+#define MT_DEVICE		0
+#define MT_DEVICE_NONSHARED	1
+#define MT_DEVICE_CACHED	2
+#define MT_DEVICE_WC		3
+#define MT_MEMORY_RW_NS		4
+/*
+ * types 4 onwards can be found in asm/mach/map.h and are undefined
+ * for ioremap
+ */
 
 /*
- * TODO: The kernel offers some more advanced versions of barriers, it might
- * have some advantages to use them instead of the simple one here.
+ * __arm_ioremap takes CPU physical address.
+ * __arm_ioremap_pfn takes a Page Frame Number and an offset into that page
+ * The _caller variety takes a __builtin_return_address(0) value for
+ * /proc/vmalloc to use - and should only be used in non-inline functions.
  */
-#define mb()		dsb()
-#define __iormb()	dmb()
-#define __iowmb()	dmb()
+extern void __iomem *__arm_ioremap_caller(phys_addr_t, size_t, unsigned int,
+	void *);
+extern void __iomem *__arm_ioremap_pfn(unsigned long, unsigned long, size_t, unsigned int);
+extern void __iomem *__arm_ioremap_exec(phys_addr_t, size_t, bool cached);
+extern void __iounmap(volatile void __iomem *addr);
 
-#define writeb(v,c)	({ u8  __v = v; __iowmb(); __arch_putb(__v,c); __v; })
-#define writew(v,c)	({ u16 __v = v; __iowmb(); __arch_putw(__v,c); __v; })
-#define writel(v,c)	({ u32 __v = v; __iowmb(); __arch_putl(__v,c); __v; })
-#define writeq(v,c)	({ u64 __v = v; __iowmb(); __arch_putq(__v,c); __v; })
-
-#define readb(c)	({ u8  __v = __arch_getb(c); __iormb(); __v; })
-#define readw(c)	({ u16 __v = __arch_getw(c); __iormb(); __v; })
-#define readl(c)	({ u32 __v = __arch_getl(c); __iormb(); __v; })
-#define readq(c)	({ u64 __v = __arch_getq(c); __iormb(); __v; })
+extern void __iomem * (*arch_ioremap_caller)(phys_addr_t, size_t,
+	unsigned int, void *);
+extern void (*arch_iounmap)(volatile void __iomem *);
 
 /*
- * Relaxed I/O memory access primitives. These follow the Device memory
- * ordering rules but do not guarantee any ordering relative to Normal memory
- * accesses.
+ * Bad read/write accesses...
  */
-#define readb_relaxed(c)	({ u8  __r = __raw_readb(c); __r; })
-#define readw_relaxed(c)	({ u16 __r = le16_to_cpu((__force __le16) \
-						__raw_readw(c)); __r; })
-#define readl_relaxed(c)	({ u32 __r = le32_to_cpu((__force __le32) \
-						__raw_readl(c)); __r; })
-#define readq_relaxed(c)	({ u64 __r = le64_to_cpu((__force __le64) \
-						__raw_readq(c)); __r; })
-
-#define writeb_relaxed(v, c)	((void)__raw_writeb((v), (c)))
-#define writew_relaxed(v, c)	((void)__raw_writew((__force u16) \
-						    cpu_to_le16(v), (c)))
-#define writel_relaxed(v, c)	((void)__raw_writel((__force u32) \
-						    cpu_to_le32(v), (c)))
-#define writeq_relaxed(v, c)	((void)__raw_writeq((__force u64) \
-						    cpu_to_le64(v), (c)))
+extern void __readwrite_bug(const char *fn);
 
 /*
- * The compiler seems to be incapable of optimising constants
- * properly.  Spell it out to the compiler in some cases.
- * These are only valid for small values of "off" (< 1<<12)
+ * A typesafe __io() helper
  */
-#define __raw_base_writeb(val,base,off)	__arch_base_putb(val,base,off)
-#define __raw_base_writew(val,base,off)	__arch_base_putw(val,base,off)
-#define __raw_base_writel(val,base,off)	__arch_base_putl(val,base,off)
+static inline void __iomem *__typesafe_io(unsigned long addr)
+{
+	return (void __iomem *)addr;
+}
 
-#define __raw_base_readb(base,off)	__arch_base_getb(base,off)
-#define __raw_base_readw(base,off)	__arch_base_getw(base,off)
-#define __raw_base_readl(base,off)	__arch_base_getl(base,off)
+#define IOMEM(x)	((void __force __iomem *)(x))
+
+/* IO barriers */
+#ifdef CONFIG_ARM_DMA_MEM_BUFFERABLE
+#include <asm/barrier.h>
+#define __iormb()		rmb()
+#define __iowmb()		wmb()
+#else
+#define __iormb()		do { } while (0)
+#define __iowmb()		do { } while (0)
+#endif
+
+/* PCI fixed i/o mapping */
+#define PCI_IO_VIRT_BASE	0xfee00000
+#define PCI_IOBASE		((void __iomem *)PCI_IO_VIRT_BASE)
+
+#if defined(CONFIG_PCI)
+void pci_ioremap_set_mem_type(int mem_type);
+#else
+static inline void pci_ioremap_set_mem_type(int mem_type) {}
+#endif
+
+extern int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr);
 
 /*
- * Clear and set bits in one shot. These macros can be used to clear and
- * set multiple bits in a register using a single call. These macros can
- * also be used to set a multiple-bit bit pattern using a mask, by
- * specifying the mask in the 'clear' parameter and the new bit pattern
- * in the 'set' parameter.
+ * PCI configuration space mapping function.
+ *
+ * The PCI specification does not allow configuration write
+ * transactions to be posted. Add an arch specific
+ * pci_remap_cfgspace() definition that is implemented
+ * through strongly ordered memory mappings.
  */
-
-#define out_arch(type,endian,a,v)	__raw_write##type(cpu_to_##endian(v),a)
-#define in_arch(type,endian,a)		endian##_to_cpu(__raw_read##type(a))
-
-#define out_le64(a,v)	out_arch(q,le64,a,v)
-#define out_le32(a,v)	out_arch(l,le32,a,v)
-#define out_le16(a,v)	out_arch(w,le16,a,v)
-
-#define in_le64(a)	in_arch(q,le64,a)
-#define in_le32(a)	in_arch(l,le32,a)
-#define in_le16(a)	in_arch(w,le16,a)
-
-#define out_be32(a,v)	out_arch(l,be32,a,v)
-#define out_be16(a,v)	out_arch(w,be16,a,v)
-
-#define in_be32(a)	in_arch(l,be32,a)
-#define in_be16(a)	in_arch(w,be16,a)
-
-#define out_32(a,v)	__raw_writel(v,a)
-#define out_16(a,v)	__raw_writew(v,a)
-#define out_8(a,v)	__raw_writeb(v,a)
-
-#define in_32(a)	__raw_readl(a)
-#define in_16(a)	__raw_readw(a)
-#define in_8(a)		__raw_readb(a)
-
-#define clrbits(type, addr, clear) \
-	out_##type((addr), in_##type(addr) & ~(clear))
-
-#define setbits(type, addr, set) \
-	out_##type((addr), in_##type(addr) | (set))
-
-#define clrsetbits(type, addr, clear, set) \
-	out_##type((addr), (in_##type(addr) & ~(clear)) | (set))
-
-#define clrbits_be32(addr, clear) clrbits(be32, addr, clear)
-#define setbits_be32(addr, set) setbits(be32, addr, set)
-#define clrsetbits_be32(addr, clear, set) clrsetbits(be32, addr, clear, set)
-
-#define clrbits_le32(addr, clear) clrbits(le32, addr, clear)
-#define setbits_le32(addr, set) setbits(le32, addr, set)
-#define clrsetbits_le32(addr, clear, set) clrsetbits(le32, addr, clear, set)
-
-#define clrbits_32(addr, clear) clrbits(32, addr, clear)
-#define setbits_32(addr, set) setbits(32, addr, set)
-#define clrsetbits_32(addr, clear, set) clrsetbits(32, addr, clear, set)
-
-#define clrbits_be16(addr, clear) clrbits(be16, addr, clear)
-#define setbits_be16(addr, set) setbits(be16, addr, set)
-#define clrsetbits_be16(addr, clear, set) clrsetbits(be16, addr, clear, set)
-
-#define clrbits_le16(addr, clear) clrbits(le16, addr, clear)
-#define setbits_le16(addr, set) setbits(le16, addr, set)
-#define clrsetbits_le16(addr, clear, set) clrsetbits(le16, addr, clear, set)
-
-#define clrbits_16(addr, clear) clrbits(16, addr, clear)
-#define setbits_16(addr, set) setbits(16, addr, set)
-#define clrsetbits_16(addr, clear, set) clrsetbits(16, addr, clear, set)
-
-#define clrbits_8(addr, clear) clrbits(8, addr, clear)
-#define setbits_8(addr, set) setbits(8, addr, set)
-#define clrsetbits_8(addr, clear, set) clrsetbits(8, addr, clear, set)
-
+#define pci_remap_cfgspace pci_remap_cfgspace
+void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size);
 /*
  * Now, pick up the machine-defined IO definitions
  */
-#if 0	/* XXX###XXX */
-#include <asm/arch/io.h>
-#endif	/* XXX###XXX */
+#ifdef CONFIG_NEED_MACH_IO_H
+#include <mach/io.h>
+#elif defined(CONFIG_PCI)
+#define IO_SPACE_LIMIT	((resource_size_t)0xfffff)
+#define __io(a)		__typesafe_io(PCI_IO_VIRT_BASE + ((a) & IO_SPACE_LIMIT))
+#else
+#define __io(a)		__typesafe_io((a) & IO_SPACE_LIMIT)
+#endif
+
+/*
+ * This is the limit of PC card/PCI/ISA IO space, which is by default
+ * 64K if we have PC card, PCI or ISA support.  Otherwise, default to
+ * zero to prevent ISA/PCI drivers claiming IO space (and potentially
+ * oopsing.)
+ *
+ * Only set this larger if you really need inb() et.al. to operate over
+ * a larger address space.  Note that SOC_COMMON ioremaps each sockets
+ * IO space area, and so inb() et.al. must be defined to operate as per
+ * readb() et.al. on such platforms.
+ */
+#ifndef IO_SPACE_LIMIT
+#if defined(CONFIG_PCMCIA_SOC_COMMON) || defined(CONFIG_PCMCIA_SOC_COMMON_MODULE)
+#define IO_SPACE_LIMIT ((resource_size_t)0xffffffff)
+#elif defined(CONFIG_PCI) || defined(CONFIG_ISA) || defined(CONFIG_PCCARD)
+#define IO_SPACE_LIMIT ((resource_size_t)0xffff)
+#else
+#define IO_SPACE_LIMIT ((resource_size_t)0)
+#endif
+#endif
+
+/* access ports */
+#define setbits32(_addr, _v) iowrite32be(ioread32be(_addr) |  (_v), (_addr))
+#define clrbits32(_addr, _v) iowrite32be(ioread32be(_addr) & ~(_v), (_addr))
+
+#define setbits16(_addr, _v) iowrite16be(ioread16be(_addr) |  (_v), (_addr))
+#define clrbits16(_addr, _v) iowrite16be(ioread16be(_addr) & ~(_v), (_addr))
+
+#define setbits8(_addr, _v) iowrite8(ioread8(_addr) |  (_v), (_addr))
+#define clrbits8(_addr, _v) iowrite8(ioread8(_addr) & ~(_v), (_addr))
+
+/* Clear and set bits in one shot.  These macros can be used to clear and
+ * set multiple bits in a register using a single read-modify-write.  These
+ * macros can also be used to set a multiple-bit bit pattern using a mask,
+ * by specifying the mask in the 'clear' parameter and the new bit pattern
+ * in the 'set' parameter.
+ */
+
+#define clrsetbits_be32(addr, clear, set) \
+	iowrite32be((ioread32be(addr) & ~(clear)) | (set), (addr))
+#define clrsetbits_le32(addr, clear, set) \
+	iowrite32le((ioread32le(addr) & ~(clear)) | (set), (addr))
+#define clrsetbits_be16(addr, clear, set) \
+	iowrite16be((ioread16be(addr) & ~(clear)) | (set), (addr))
+#define clrsetbits_le16(addr, clear, set) \
+	iowrite16le((ioread16le(addr) & ~(clear)) | (set), (addr))
+#define clrsetbits_8(addr, clear, set) \
+	iowrite8((ioread8(addr) & ~(clear)) | (set), (addr))
 
 /*
  *  IO port access primitives
@@ -259,220 +278,224 @@ static inline void __raw_readsl(unsigned long addr, void *data, int longlen)
  * The {in,out}[bwl] macros are for emulating x86-style PCI/ISA IO space.
  */
 #ifdef __io
-#define outb(v,p)			__raw_writeb(v,__io(p))
-#define outw(v,p)			__raw_writew(cpu_to_le16(v),__io(p))
-#define outl(v,p)			__raw_writel(cpu_to_le32(v),__io(p))
+#define outb(v,p)	({ __iowmb(); __raw_writeb(v,__io(p)); })
+#define outw(v,p)	({ __iowmb(); __raw_writew((__force __u16) \
+					cpu_to_le16(v),__io(p)); })
+#define outl(v,p)	({ __iowmb(); __raw_writel((__force __u32) \
+					cpu_to_le32(v),__io(p)); })
 
-#define inb(p)	({ unsigned int __v = __raw_readb(__io(p)); __v; })
-#define inw(p)	({ unsigned int __v = le16_to_cpu(__raw_readw(__io(p))); __v; })
-#define inl(p)	({ unsigned int __v = le32_to_cpu(__raw_readl(__io(p))); __v; })
+#define inb(p)	({ __u8 __v = __raw_readb(__io(p)); __iormb(); __v; })
+#define inw(p)	({ __u16 __v = le16_to_cpu((__force __le16) \
+			__raw_readw(__io(p))); __iormb(); __v; })
+#define inl(p)	({ __u32 __v = le32_to_cpu((__force __le32) \
+			__raw_readl(__io(p))); __iormb(); __v; })
 
-#define outsb(p,d,l)			__raw_writesb(__io(p),d,l)
-#define outsw(p,d,l)			__raw_writesw(__io(p),d,l)
-#define outsl(p,d,l)			__raw_writesl(__io(p),d,l)
+#define outsb(p,d,l)		__raw_writesb(__io(p),d,l)
+#define outsw(p,d,l)		__raw_writesw(__io(p),d,l)
+#define outsl(p,d,l)		__raw_writesl(__io(p),d,l)
 
-#define insb(p,d,l)			__raw_readsb(__io(p),d,l)
-#define insw(p,d,l)			__raw_readsw(__io(p),d,l)
-#define insl(p,d,l)			__raw_readsl(__io(p),d,l)
+#define insb(p,d,l)		__raw_readsb(__io(p),d,l)
+#define insw(p,d,l)		__raw_readsw(__io(p),d,l)
+#define insl(p,d,l)		__raw_readsl(__io(p),d,l)
 #endif
-
-#define outb_p(val,port)		outb((val),(port))
-#define outw_p(val,port)		outw((val),(port))
-#define outl_p(val,port)		outl((val),(port))
-#define inb_p(port)			inb((port))
-#define inw_p(port)			inw((port))
-#define inl_p(port)			inl((port))
-
-#define outsb_p(port,from,len)		outsb(port,from,len)
-#define outsw_p(port,from,len)		outsw(port,from,len)
-#define outsl_p(port,from,len)		outsl(port,from,len)
-#define insb_p(port,to,len)		insb(port,to,len)
-#define insw_p(port,to,len)		insw(port,to,len)
-#define insl_p(port,to,len)		insl(port,to,len)
-
-#define writesl(a, d, s)	__raw_writesl((unsigned long)a, d, s)
-#define readsl(a, d, s)		__raw_readsl((unsigned long)a, d, s)
-#define writesw(a, d, s)	__raw_writesw((unsigned long)a, d, s)
-#define readsw(a, d, s)		__raw_readsw((unsigned long)a, d, s)
-#define writesb(a, d, s)	__raw_writesb((unsigned long)a, d, s)
-#define readsb(a, d, s)		__raw_readsb((unsigned long)a, d, s)
-
-/*
- * DMA-consistent mapping functions.  These allocate/free a region of
- * uncached, unwrite-buffered mapped memory space for use with DMA
- * devices.  This is the "generic" version.  The PCI specific version
- * is in pci.h
- */
-extern void *consistent_alloc(int gfp, size_t size, dma_addr_t *handle);
-extern void consistent_free(void *vaddr, size_t size, dma_addr_t handle);
-extern void consistent_sync(void *vaddr, size_t size, int rw);
 
 /*
  * String version of IO memory access ops:
  */
-extern void _memcpy_fromio(void *, unsigned long, size_t);
-extern void _memcpy_toio(unsigned long, const void *, size_t);
-extern void _memset_io(unsigned long, int, size_t);
-
-extern void __readwrite_bug(const char *fn);
-
-/* Optimized copy functions to read from/write to IO sapce */
-#ifdef CONFIG_ARM64
-/*
- * Copy data from IO memory space to "real" memory space.
- */
-static inline
-void __memcpy_fromio(void *to, const volatile void __iomem *from, size_t count)
-{
-	while (count && !IS_ALIGNED((unsigned long)from, 8)) {
-		*(u8 *)to = __raw_readb(from);
-		from++;
-		to++;
-		count--;
-	}
-
-	while (count >= 8) {
-		*(u64 *)to = __raw_readq(from);
-		from += 8;
-		to += 8;
-		count -= 8;
-	}
-
-	while (count) {
-		*(u8 *)to = __raw_readb(from);
-		from++;
-		to++;
-		count--;
-	}
-}
+extern void _memcpy_fromio(void *, const volatile void __iomem *, size_t);
+extern void _memcpy_toio(volatile void __iomem *, const void *, size_t);
+extern void _memset_io(volatile void __iomem *, int, size_t);
 
 /*
- * Copy data from "real" memory space to IO memory space.
+ *  Memory access primitives
+ *  ------------------------
+ *
+ * These perform PCI memory accesses via an ioremap region.  They don't
+ * take an address as such, but a cookie.
+ *
+ * Again, these are defined to perform little endian accesses.  See the
+ * IO port primitives for more information.
  */
-static inline
-void __memcpy_toio(volatile void __iomem *to, const void *from, size_t count)
+#ifndef readl
+#define readb_relaxed(c) ({ u8  __r = __raw_readb(c); __r; })
+#define readw_relaxed(c) ({ u16 __r = le16_to_cpu((__force __le16) \
+					__raw_readw(c)); __r; })
+#define readl_relaxed(c) ({ u32 __r = le32_to_cpu((__force __le32) \
+					__raw_readl(c)); __r; })
+
+#define writeb_relaxed(v,c)	__raw_writeb(v,c)
+#define writew_relaxed(v,c)	__raw_writew((__force u16) cpu_to_le16(v),c)
+#define writel_relaxed(v,c)	__raw_writel((__force u32) cpu_to_le32(v),c)
+
+#define readb(c)		({ u8  __v = readb_relaxed(c); __iormb(); __v; })
+#define readw(c)		({ u16 __v = readw_relaxed(c); __iormb(); __v; })
+#define readl(c)		({ u32 __v = readl_relaxed(c); __iormb(); __v; })
+
+#define writeb(v,c)		({ __iowmb(); writeb_relaxed(v,c); })
+#define writew(v,c)		({ __iowmb(); writew_relaxed(v,c); })
+#define writel(v,c)		({ __iowmb(); writel_relaxed(v,c); })
+
+#define readsb(p,d,l)		__raw_readsb(p,d,l)
+#define readsw(p,d,l)		__raw_readsw(p,d,l)
+#define readsl(p,d,l)		__raw_readsl(p,d,l)
+
+#define writesb(p,d,l)		__raw_writesb(p,d,l)
+#define writesw(p,d,l)		__raw_writesw(p,d,l)
+#define writesl(p,d,l)		__raw_writesl(p,d,l)
+
+#ifndef __ARMBE__
+static inline void memset_io(volatile void __iomem *dst, unsigned c,
+	size_t count)
 {
-	while (count && !IS_ALIGNED((unsigned long)to, 8)) {
-		__raw_writeb(*(u8 *)from, to);
-		from++;
-		to++;
-		count--;
-	}
-
-	while (count >= 8) {
-		__raw_writeq(*(u64 *)from, to);
-		from += 8;
-		to += 8;
-		count -= 8;
-	}
-
-	while (count) {
-		__raw_writeb(*(u8 *)from, to);
-		from++;
-		to++;
-		count--;
-	}
+	extern void mmioset(void *, unsigned int, size_t);
+	mmioset((void __force *)dst, c, count);
 }
+#define memset_io(dst,c,count) memset_io(dst,c,count)
 
-/*
- * "memset" on IO memory space.
- */
-static inline
-void __memset_io(volatile void __iomem *dst, int c, size_t count)
+static inline void memcpy_fromio(void *to, const volatile void __iomem *from,
+	size_t count)
 {
-	u64 qc = (u8)c;
-
-	qc |= qc << 8;
-	qc |= qc << 16;
-	qc |= qc << 32;
-
-	while (count && !IS_ALIGNED((unsigned long)dst, 8)) {
-		__raw_writeb(c, dst);
-		dst++;
-		count--;
-	}
-
-	while (count >= 8) {
-		__raw_writeq(qc, dst);
-		dst += 8;
-		count -= 8;
-	}
-
-	while (count) {
-		__raw_writeb(c, dst);
-		dst++;
-		count--;
-	}
+	extern void mmiocpy(void *, const void *, size_t);
+	mmiocpy(to, (const void __force *)from, count);
 }
-#endif /* CONFIG_ARM64 */
+#define memcpy_fromio(to,from,count) memcpy_fromio(to,from,count)
 
-#ifdef CONFIG_ARM64
-#define memset_io(a, b, c)		__memset_io((a), (b), (c))
-#define memcpy_fromio(a, b, c)		__memcpy_fromio((a), (b), (c))
-#define memcpy_toio(a, b, c)		__memcpy_toio((a), (b), (c))
+static inline void memcpy_toio(volatile void __iomem *to, const void *from,
+	size_t count)
+{
+	extern void mmiocpy(void *, const void *, size_t);
+	mmiocpy((void __force *)to, from, count);
+}
+#define memcpy_toio(to,from,count) memcpy_toio(to,from,count)
+
 #else
-#define memset_io(a, b, c)		memset((void *)(a), (b), (c))
-#define memcpy_fromio(a, b, c)		memcpy((a), (void *)(b), (c))
-#define memcpy_toio(a, b, c)		memcpy((void *)(a), (b), (c))
+#define memset_io(c,v,l)	_memset_io(c,(v),(l))
+#define memcpy_fromio(a,c,l)	_memcpy_fromio((a),c,(l))
+#define memcpy_toio(c,a,l)	_memcpy_toio(c,(a),(l))
+#endif
+
+#endif	/* readl */
+
+/*
+ * ioremap() and friends.
+ *
+ * ioremap() takes a resource address, and size.  Due to the ARM memory
+ * types, it is important to use the correct ioremap() function as each
+ * mapping has specific properties.
+ *
+ * Function		Memory type	Cacheability	Cache hint
+ * ioremap()		Device		n/a		n/a
+ * ioremap_nocache()	Device		n/a		n/a
+ * ioremap_cache()	Normal		Writeback	Read allocate
+ * ioremap_wc()		Normal		Non-cacheable	n/a
+ * ioremap_wt()		Normal		Non-cacheable	n/a
+ *
+ * All device mappings have the following properties:
+ * - no access speculation
+ * - no repetition (eg, on return from an exception)
+ * - number, order and size of accesses are maintained
+ * - unaligned accesses are "unpredictable"
+ * - writes may be delayed before they hit the endpoint device
+ *
+ * ioremap_nocache() is the same as ioremap() as there are too many device
+ * drivers using this for device registers, and documentation which tells
+ * people to use it for such for this to be any different.  This is not a
+ * safe fallback for memory-like mappings, or memory regions where the
+ * compiler may generate unaligned accesses - eg, via inlining its own
+ * memcpy.
+ *
+ * All normal memory mappings have the following properties:
+ * - reads can be repeated with no side effects
+ * - repeated reads return the last value written
+ * - reads can fetch additional locations without side effects
+ * - writes can be repeated (in certain cases) with no side effects
+ * - writes can be merged before accessing the target
+ * - unaligned accesses can be supported
+ * - ordering is not guaranteed without explicit dependencies or barrier
+ *   instructions
+ * - writes may be delayed before they hit the endpoint memory
+ *
+ * The cache hint is only a performance hint: CPUs may alias these hints.
+ * Eg, a CPU not implementing read allocate but implementing write allocate
+ * will provide a write allocate mapping instead.
+ */
+void __iomem *ioremap(resource_size_t res_cookie, size_t size);
+#define ioremap ioremap
+#define ioremap_nocache ioremap
+
+/*
+ * Do not use ioremap_cache for mapping memory. Use memremap instead.
+ */
+void __iomem *ioremap_cache(resource_size_t res_cookie, size_t size);
+#define ioremap_cache ioremap_cache
+
+/*
+ * Do not use ioremap_cached in new code. Provided for the benefit of
+ * the pxa2xx-flash MTD driver only.
+ */
+void __iomem *ioremap_cached(resource_size_t res_cookie, size_t size);
+
+void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size);
+#define ioremap_wc ioremap_wc
+#define ioremap_wt ioremap_wc
+
+void __iomem *ioremap_cache_ns(resource_size_t res_cookie, size_t size);
+
+void iounmap(volatile void __iomem *iomem_cookie);
+#define iounmap iounmap
+
+void *arch_memremap_wb(phys_addr_t phys_addr, size_t size);
+#define arch_memremap_wb arch_memremap_wb
+
+/*
+ * io{read,write}{16,32}be() macros
+ */
+#define ioread16be(p)		({ __u16 __v = be16_to_cpu((__force __be16)__raw_readw(p)); __iormb(); __v; })
+#define ioread32be(p)		({ __u32 __v = be32_to_cpu((__force __be32)__raw_readl(p)); __iormb(); __v; })
+
+#define iowrite16be(v,p)	({ __iowmb(); __raw_writew((__force __u16)cpu_to_be16(v), p); })
+#define iowrite32be(v,p)	({ __iowmb(); __raw_writel((__force __u32)cpu_to_be32(v), p); })
+
+#ifndef ioport_map
+#define ioport_map ioport_map
+extern void __iomem *ioport_map(unsigned long port, unsigned int nr);
+#endif
+#ifndef ioport_unmap
+#define ioport_unmap ioport_unmap
+extern void ioport_unmap(void __iomem *addr);
+#endif
+
+struct pci_dev;
+
+#define pci_iounmap pci_iounmap
+extern void pci_iounmap(struct pci_dev *dev, void __iomem *addr);
+
+/*
+ * Convert a physical pointer to a virtual kernel pointer for /dev/mem
+ * access
+ */
+#define xlate_dev_mem_ptr(p)	__va(p)
+
+/*
+ * Convert a virtual cached pointer to an uncached pointer
+ */
+#define xlate_dev_kmem_ptr(p)	p
+
+#include <asm-generic/io.h>
+
+#ifdef CONFIG_MMU
+#define ARCH_HAS_VALID_PHYS_ADDR_RANGE
+extern int valid_phys_addr_range(phys_addr_t addr, size_t size);
+extern int valid_mmap_phys_addr_range(unsigned long pfn, size_t size);
+extern int devmem_is_allowed(unsigned long pfn);
 #endif
 
 /*
- * If this architecture has ISA IO, then define the isa_read/isa_write
- * macros.
+ * Register ISA memory and port locations for glibc iopl/inb/outb
+ * emulation.
  */
-#ifdef __mem_isa
+extern void register_isa_ports(unsigned int mmio, unsigned int io,
+			       unsigned int io_shift);
 
-#define isa_readb(addr)			__raw_readb(__mem_isa(addr))
-#define isa_readw(addr)			__raw_readw(__mem_isa(addr))
-#define isa_readl(addr)			__raw_readl(__mem_isa(addr))
-#define isa_writeb(val,addr)		__raw_writeb(val,__mem_isa(addr))
-#define isa_writew(val,addr)		__raw_writew(val,__mem_isa(addr))
-#define isa_writel(val,addr)		__raw_writel(val,__mem_isa(addr))
-#define isa_memset_io(a,b,c)		_memset_io(__mem_isa(a),(b),(c))
-#define isa_memcpy_fromio(a,b,c)	_memcpy_fromio((a),__mem_isa(b),(c))
-#define isa_memcpy_toio(a,b,c)		_memcpy_toio(__mem_isa((a)),(b),(c))
-
-#define isa_eth_io_copy_and_sum(a,b,c,d) \
-				eth_copy_and_sum((a),__mem_isa(b),(c),(d))
-
-static inline int
-isa_check_signature(unsigned long io_addr, const unsigned char *signature,
-		    int length)
-{
-	int retval = 0;
-	do {
-		if (isa_readb(io_addr) != *signature)
-			goto out;
-		io_addr++;
-		signature++;
-		length--;
-	} while (length);
-	retval = 1;
-out:
-	return retval;
-}
-
-#else	/* __mem_isa */
-
-#define isa_readb(addr)			(__readwrite_bug("isa_readb"),0)
-#define isa_readw(addr)			(__readwrite_bug("isa_readw"),0)
-#define isa_readl(addr)			(__readwrite_bug("isa_readl"),0)
-#define isa_writeb(val,addr)		__readwrite_bug("isa_writeb")
-#define isa_writew(val,addr)		__readwrite_bug("isa_writew")
-#define isa_writel(val,addr)		__readwrite_bug("isa_writel")
-#define isa_memset_io(a,b,c)		__readwrite_bug("isa_memset_io")
-#define isa_memcpy_fromio(a,b,c)	__readwrite_bug("isa_memcpy_fromio")
-#define isa_memcpy_toio(a,b,c)		__readwrite_bug("isa_memcpy_toio")
-
-#define isa_eth_io_copy_and_sum(a,b,c,d) \
-				__readwrite_bug("isa_eth_io_copy_and_sum")
-
-#define isa_check_signature(io,sig,len)	(0)
-
-#endif	/* __mem_isa */
 #endif	/* __KERNEL__ */
-
-#include <asm-generic/io.h>
-#include <iotrace.h>
-
 #endif	/* __ASM_ARM_IO_H */

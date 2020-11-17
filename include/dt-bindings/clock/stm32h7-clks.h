@@ -112,8 +112,6 @@
 #define VREF_CK 109
 #define COMP12_CK 110
 #define SYSCFG_CK 111
-/* must be equal to last peripheral clock index */
-#define LAST_PERIF_BANK SYSCFG_CK
 
 /* KERNEL BANK */
 #define KERN_BANK 120

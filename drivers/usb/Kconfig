@@ -1,22 +1,67 @@
-menuconfig USB
+# SPDX-License-Identifier: GPL-2.0
+#
+# USB device configuration
+#
+
+config USB_OHCI_BIG_ENDIAN_DESC
+	bool
+
+config USB_OHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_OHCI_LITTLE_ENDIAN
+	bool
+	default n if STB03xxx || PPC_MPC52xx
+	default y
+
+config USB_EHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_EHCI_BIG_ENDIAN_DESC
+	bool
+
+config USB_UHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_UHCI_BIG_ENDIAN_DESC
+	bool
+
+menuconfig USB_SUPPORT
 	bool "USB support"
+	depends on HAS_IOMEM
+	default y
+	---help---
+	  This option adds core support for Universal Serial Bus (USB).
+	  You will also need drivers from the following menu to make use of it.
+
+if USB_SUPPORT
+
+source "drivers/usb/common/Kconfig"
+
+config USB_ARCH_HAS_HCD
+	def_bool y
+
+config USB
+	tristate "Support for Host-side USB"
+	depends on USB_ARCH_HAS_HCD
+	select GENERIC_ALLOCATOR
+	select USB_COMMON
+	select NLS  # for UTF-8 strings
 	---help---
 	  Universal Serial Bus (USB) is a specification for a serial bus
 	  subsystem which offers higher speeds and more features than the
 	  traditional PC serial port.  The bus supplies power to peripherals
 	  and allows for hot swapping.  Up to 127 USB peripherals can be
 	  connected to a single USB host in a tree structure.
-
+	  
 	  The USB host is the root of the tree, the peripherals are the
 	  leaves and the inner nodes are special USB devices called hubs.
 	  Most PCs now have USB host ports, used to connect peripherals
 	  such as scanners, keyboards, mice, modems, cameras, disks,
 	  flash memory, network links, and printers to the PC.
 
-	  Say Y here if your device has an USB port, either host, peripheral or
-	  dual-role.
-
-	  For an USB host port, you then need to say Y to at least one of the
+	  Say Y here if your computer has a host-side USB port and you want
+	  to use USB devices.  You then need to say Y to at least one of the
 	  Host Controller Driver (HCD) options below.  Choose a USB 1.1
 	  controller, such as "UHCI HCD support" or "OHCI HCD support",
 	  and "EHCI HCD (USB 2.0) support" except for older systems that
@@ -29,105 +74,106 @@ menuconfig USB
 	  After choosing your HCD, then select drivers for the USB peripherals
 	  you'll be using.  You may want to check out the information provided
 	  in <file:Documentation/usb/> and especially the links given in
-	  <file:Documentation/usb/usb-help.txt>.
+	  <file:Documentation/usb/usb-help.rst>.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called usbcore.
+
+config USB_PCI
+	bool "PCI based USB host interface"
+	depends on PCI
+	default y
+	---help---
+	  Many embedded system SOCs (e.g. freescale T2080) have both
+	  PCI and USB modules with the USB module directly controlled by
+	  registers and having no relationship to the PCI module.
+
+	  If you have such a device you may say N here and PCI related code
+	  will not be built in the USB driver.
 
 if USB
 
-config DM_USB
-	bool "Enable driver model for USB"
-	depends on USB && DM
-	help
-	  Enable driver model for USB. The USB interface is then implemented
-	  by the USB uclass. Multiple USB controllers of different types
-	  (XHCI, EHCI) can be attached and used. The 'usb' command works as
-	  normal. OCHI is not supported at present.
+source "drivers/usb/core/Kconfig"
 
-	  Much of the code is shared but with this option enabled the USB
-	  uclass takes care of device enumeration. USB devices can be
-	  declared with the U_BOOT_USB_DEVICE() macro and will be
-	  automatically probed when found on the bus.
-
-config SPL_DM_USB
-	bool "Enable driver model for USB in SPL"
-	depends on SPL_DM && DM_USB
-	default y
-
-config DM_USB_GADGET
-	bool "Enable driver model for USB Gadget"
-	depends on DM_USB
-	help
-	  Enable driver model for USB Gadget (Peripheral
-	  mode)
-
-config SPL_DM_USB_GADGET
-	bool "Enable driver model for USB Gadget in sPL"
-	depends on SPL_DM_USB
-	help
-	  Enable driver model for USB Gadget in SPL
-	  (Peripheral mode)
+source "drivers/usb/mon/Kconfig"
 
 source "drivers/usb/host/Kconfig"
 
-source "drivers/usb/dwc3/Kconfig"
+source "drivers/usb/renesas_usbhs/Kconfig"
+
+source "drivers/usb/class/Kconfig"
+
+source "drivers/usb/storage/Kconfig"
+
+source "drivers/usb/image/Kconfig"
+
+source "drivers/usb/usbip/Kconfig"
+
+endif
 
 source "drivers/usb/cdns3/Kconfig"
 
+source "drivers/usb/mtu3/Kconfig"
+
 source "drivers/usb/musb/Kconfig"
 
-source "drivers/usb/musb-new/Kconfig"
+source "drivers/usb/dwc3/Kconfig"
 
-source "drivers/usb/emul/Kconfig"
+source "drivers/usb/dwc2/Kconfig"
+
+source "drivers/usb/chipidea/Kconfig"
+
+source "drivers/usb/isp1760/Kconfig"
+
+source "drivers/usb/cdns3/Kconfig"
+
+comment "USB port drivers"
+
+if USB
+
+config USB_USS720
+	tristate "USS720 parport driver"
+	depends on PARPORT
+	select PARPORT_NOT_PC
+	---help---
+	  This driver is for USB parallel port adapters that use the Lucent
+	  Technologies USS-720 chip. These cables are plugged into your USB
+	  port and provide USB compatibility to peripherals designed with
+	  parallel port interfaces.
+
+	  The chip has two modes: automatic mode and manual mode. In automatic
+	  mode, it looks to the computer like a standard USB printer. Only
+	  printers may be connected to the USS-720 in this mode. The generic
+	  USB printer driver ("USB Printer support", above) may be used in
+	  that mode, and you can say N here if you want to use the chip only
+	  in this mode.
+
+	  Manual mode is not limited to printers, any parallel port
+	  device should work. This driver utilizes manual mode.
+	  Note however that some operations are three orders of magnitude
+	  slower than on a PCI/ISA Parallel Port, so timing critical
+	  applications might not work.
+
+	  Say Y here if you own an USS-720 USB->Parport cable and intend to
+	  connect anything other than a printer to it.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called uss720.
+
+source "drivers/usb/serial/Kconfig"
+
+source "drivers/usb/misc/Kconfig"
+
+source "drivers/usb/atm/Kconfig"
+
+endif # USB
 
 source "drivers/usb/phy/Kconfig"
 
-source "drivers/usb/ulpi/Kconfig"
-
-comment "USB peripherals"
-
-config USB_STORAGE
-	bool "USB Mass Storage support"
-	depends on !(BLK && !DM_USB)
-	---help---
-	  Say Y here if you want to connect USB mass storage devices to your
-	  board's USB port.
-
-config USB_KEYBOARD
-	bool "USB Keyboard support"
-	select SYS_STDIO_DEREGISTER
-	---help---
-	  Say Y here if you want to use a USB keyboard for U-Boot command line
-	  input.
-
-if USB_KEYBOARD
-
-config USB_KEYBOARD_FN_KEYS
-	bool "USB keyboard function key support"
-	help
-	  Say Y here if you want support for keys F1 - F12, INS, HOME, DELETE,
-	  END, PAGE UP, and PAGE DOWN.
-
-choice
-	prompt "USB keyboard polling"
-	default SYS_USB_EVENT_POLL_VIA_INT_QUEUE if ARCH_SUNXI
-	default SYS_USB_EVENT_POLL
-	---help---
-	  Enable a polling mechanism for USB keyboard.
-
-	config SYS_USB_EVENT_POLL
-		bool "Interrupt polling"
-
-	config SYS_USB_EVENT_POLL_VIA_INT_QUEUE
-		bool "Poll via interrupt queue"
-
-	config SYS_USB_EVENT_POLL_VIA_CONTROL_EP
-		bool "Poll via control EP"
-
-endchoice
-
-endif
-
 source "drivers/usb/gadget/Kconfig"
 
-source "drivers/usb/eth/Kconfig"
+source "drivers/usb/typec/Kconfig"
 
-endif
+source "drivers/usb/roles/Kconfig"
+
+endif # USB_SUPPORT

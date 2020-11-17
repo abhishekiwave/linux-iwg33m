@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * u_os_desc.h
  *
@@ -6,17 +7,14 @@
  * Copyright (c) 2014 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
- * Author: Andrzej Pietrasiewicz <andrzej.p@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Andrzej Pietrasiewicz <andrzejtp2010@gmail.com>
  */
 
 #ifndef __U_OS_DESC_H__
 #define __U_OS_DESC_H__
 
-#include <linux/utf.h>
+#include <asm/unaligned.h>
+#include <linux/nls.h>
 
 #define USB_EXT_PROP_DW_SIZE			0
 #define USB_EXT_PROP_DW_PROPERTY_DATA_TYPE	4
@@ -85,9 +83,8 @@ static inline int usb_ext_prop_put_name(u8 *buf, const char *name, int pnl)
 	int result;
 
 	put_unaligned_le16(pnl, usb_ext_prop_name_len_ptr(buf));
-	memset(usb_ext_prop_name_ptr(buf), 0, 2 * strlen(name));
-	result = utf8_to_utf16le(name, (__le16 *)usb_ext_prop_name_ptr(buf),
-				 strlen(name));
+	result = utf8s_to_utf16s(name, strlen(name), UTF16_LITTLE_ENDIAN,
+		(wchar_t *) usb_ext_prop_name_ptr(buf), pnl - 2);
 	if (result < 0)
 		return result;
 
@@ -96,7 +93,7 @@ static inline int usb_ext_prop_put_name(u8 *buf, const char *name, int pnl)
 	return pnl;
 }
 
-static inline void usb_ext_prop_put_binary(u8 *buf, int pnl, const char *data,
+static inline void usb_ext_prop_put_binary(u8 *buf, int pnl, const u8 *data,
 					   int data_len)
 {
 	put_unaligned_le32(data_len, usb_ext_prop_data_len_ptr(buf, pnl));
@@ -108,9 +105,9 @@ static inline int usb_ext_prop_put_unicode(u8 *buf, int pnl, const char *string,
 {
 	int result;
 	put_unaligned_le32(data_len, usb_ext_prop_data_len_ptr(buf, pnl));
-	memset(usb_ext_prop_data_ptr(buf, pnl), 0, 2 * (data_len >> 1));
-	result = utf8_to_utf16le(string, (__le16 *) usb_ext_prop_data_ptr(buf, pnl),
-				 data_len >> 1);
+	result = utf8s_to_utf16s(string, data_len >> 1, UTF16_LITTLE_ENDIAN,
+			(wchar_t *) usb_ext_prop_data_ptr(buf, pnl),
+			data_len - 2);
 	if (result < 0)
 		return result;
 

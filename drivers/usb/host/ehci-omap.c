@@ -1,275 +1,185 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
- * (C) Copyright 2011 Ilya Yanok, Emcraft Systems
- * (C) Copyright 2004-2008
- * Texas Instruments, <www.ti.com>
+ * ehci-omap.c - driver for USBHOST on OMAP3/4 processors
  *
- * Derived from Beagle Board code by
- *	Sunil Kumar <sunilsaini05@gmail.com>
- *	Shashi Ranjan <shashiranjanmca05@gmail.com>
+ * Bus Glue for the EHCI controllers in OMAP3/4
+ * Tested on several OMAP3 boards, and OMAP4 Pandaboard
  *
+ * Copyright (C) 2007-2013 Texas Instruments, Inc.
+ *	Author: Vikram Pandita <vikram.pandita@ti.com>
+ *	Author: Anand Gadiyar <gadiyar@ti.com>
+ *	Author: Keshava Munegowda <keshava_mgowda@ti.com>
+ *	Author: Roger Quadros <rogerq@ti.com>
+ *
+ * Copyright (C) 2009 Nokia Corporation
+ *	Contact: Felipe Balbi <felipe.balbi@nokia.com>
+ *
+ * Based on "ehci-fsl.c" and "ehci-au1xxx.c" ehci glue layers
  */
 
-#include <common.h>
-#include <usb.h>
-#include <usb/ulpi.h>
-#include <errno.h>
-#include <asm/io.h>
-#include <asm/gpio.h>
-#include <asm/arch/ehci.h>
-#include <asm/ehci-omap.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/io.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/usb/ulpi.h>
+#include <linux/pm_runtime.h>
+#include <linux/gpio.h>
+#include <linux/clk.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
+#include <linux/of.h>
+#include <linux/dma-mapping.h>
 
 #include "ehci.h"
 
-static struct omap_uhh *const uhh = (struct omap_uhh *)OMAP_UHH_BASE;
-static struct omap_usbtll *const usbtll = (struct omap_usbtll *)OMAP_USBTLL_BASE;
-static struct omap_ehci *const ehci = (struct omap_ehci *)OMAP_EHCI_BASE;
+#include <linux/platform_data/usb-omap.h>
 
-static int omap_uhh_reset(void)
+/* EHCI Register Set */
+#define EHCI_INSNREG04					(0xA0)
+#define EHCI_INSNREG04_DISABLE_UNSUSPEND		(1 << 5)
+#define	EHCI_INSNREG05_ULPI				(0xA4)
+#define	EHCI_INSNREG05_ULPI_CONTROL_SHIFT		31
+#define	EHCI_INSNREG05_ULPI_PORTSEL_SHIFT		24
+#define	EHCI_INSNREG05_ULPI_OPSEL_SHIFT			22
+#define	EHCI_INSNREG05_ULPI_REGADD_SHIFT		16
+#define	EHCI_INSNREG05_ULPI_EXTREGADD_SHIFT		8
+#define	EHCI_INSNREG05_ULPI_WRDATA_SHIFT		0
+
+#define DRIVER_DESC "OMAP-EHCI Host Controller driver"
+
+static const char hcd_name[] = "ehci-omap";
+
+/*-------------------------------------------------------------------------*/
+
+struct omap_hcd {
+	struct usb_phy *phy[OMAP3_HS_USB_PORTS]; /* one PHY for each port */
+	int nports;
+};
+
+static inline void ehci_write(void __iomem *base, u32 reg, u32 val)
 {
-	int timeout = 0;
-	u32 rev;
-
-	rev = readl(&uhh->rev);
-
-	/* Soft RESET */
-	writel(OMAP_UHH_SYSCONFIG_SOFTRESET, &uhh->sysc);
-
-	switch (rev) {
-	case OMAP_USBHS_REV1:
-		/* Wait for soft RESET to complete */
-		while (!(readl(&uhh->syss) & 0x1)) {
-			if (timeout > 100) {
-				printf("%s: RESET timeout\n", __func__);
-				return -1;
-			}
-			udelay(10);
-			timeout++;
-		}
-
-		/* Set No-Idle, No-Standby */
-		writel(OMAP_UHH_SYSCONFIG_VAL, &uhh->sysc);
-		break;
-
-	default:	/* Rev. 2 onwards */
-
-		udelay(2); /* Need to wait before accessing SYSCONFIG back */
-
-		/* Wait for soft RESET to complete */
-		while ((readl(&uhh->sysc) & 0x1)) {
-			if (timeout > 100) {
-				printf("%s: RESET timeout\n", __func__);
-				return -1;
-			}
-			udelay(10);
-			timeout++;
-		}
-
-		writel(OMAP_UHH_SYSCONFIG_VAL, &uhh->sysc);
-		break;
-	}
-
-	return 0;
+	__raw_writel(val, base + reg);
 }
 
-static int omap_ehci_tll_reset(void)
+static inline u32 ehci_read(void __iomem *base, u32 reg)
 {
-	unsigned long init = get_timer(0);
-
-	/* perform TLL soft reset, and wait until reset is complete */
-	writel(OMAP_USBTLL_SYSCONFIG_SOFTRESET, &usbtll->sysc);
-
-	/* Wait for TLL reset to complete */
-	while (!(readl(&usbtll->syss) & OMAP_USBTLL_SYSSTATUS_RESETDONE))
-		if (get_timer(init) > CONFIG_SYS_HZ) {
-			debug("OMAP EHCI error: timeout resetting TLL\n");
-			return -EL3RST;
-	}
-
-	return 0;
+	return __raw_readl(base + reg);
 }
 
-static void omap_usbhs_hsic_init(int port)
-{
-	unsigned int reg;
+/* configure so an HC device and id are always provided */
+/* always called with process context; sleeping is OK */
 
-	/* Enable channels now */
-	reg = readl(&usbtll->channel_conf + port);
+static struct hc_driver __read_mostly ehci_omap_hc_driver;
 
-	setbits_le32(&reg, (OMAP_TLL_CHANNEL_CONF_CHANMODE_TRANSPARENT_UTMI
-		| OMAP_TLL_CHANNEL_CONF_ULPINOBITSTUFF
-		| OMAP_TLL_CHANNEL_CONF_DRVVBUS
-		| OMAP_TLL_CHANNEL_CONF_CHRGVBUS
-		| OMAP_TLL_CHANNEL_CONF_CHANEN));
+static const struct ehci_driver_overrides ehci_omap_overrides __initconst = {
+	.extra_priv_size = sizeof(struct omap_hcd),
+};
 
-	writel(reg, &usbtll->channel_conf + port);
-}
-
-#ifdef CONFIG_USB_ULPI
-static void omap_ehci_soft_phy_reset(int port)
-{
-	struct ulpi_viewport ulpi_vp;
-
-	ulpi_vp.viewport_addr = (u32)&ehci->insreg05_utmi_ulpi;
-	ulpi_vp.port_num = port;
-
-	ulpi_reset(&ulpi_vp);
-}
-#else
-static void omap_ehci_soft_phy_reset(int port)
-{
-	return;
-}
-#endif
-
-#if defined(CONFIG_OMAP_EHCI_PHY1_RESET_GPIO) || \
-	defined(CONFIG_OMAP_EHCI_PHY2_RESET_GPIO) || \
-	defined(CONFIG_OMAP_EHCI_PHY3_RESET_GPIO)
-/* controls PHY(s) reset signal(s) */
-static inline void omap_ehci_phy_reset(int on, int delay)
-{
-	/*
-	 * Refer ISSUE1:
-	 * Hold the PHY in RESET for enough time till
-	 * PHY is settled and ready
-	 */
-	if (delay && !on)
-		udelay(delay);
-#ifdef CONFIG_OMAP_EHCI_PHY1_RESET_GPIO
-	gpio_request(CONFIG_OMAP_EHCI_PHY1_RESET_GPIO, "USB PHY1 reset");
-	gpio_direction_output(CONFIG_OMAP_EHCI_PHY1_RESET_GPIO, !on);
-#endif
-#ifdef CONFIG_OMAP_EHCI_PHY2_RESET_GPIO
-	gpio_request(CONFIG_OMAP_EHCI_PHY2_RESET_GPIO, "USB PHY2 reset");
-	gpio_direction_output(CONFIG_OMAP_EHCI_PHY2_RESET_GPIO, !on);
-#endif
-#ifdef CONFIG_OMAP_EHCI_PHY3_RESET_GPIO
-	gpio_request(CONFIG_OMAP_EHCI_PHY3_RESET_GPIO, "USB PHY3 reset");
-	gpio_direction_output(CONFIG_OMAP_EHCI_PHY3_RESET_GPIO, !on);
-#endif
-
-	/* Hold the PHY in RESET for enough time till DIR is high */
-	/* Refer: ISSUE1 */
-	if (delay && on)
-		udelay(delay);
-}
-#else
-#define omap_ehci_phy_reset(on, delay)	do {} while (0)
-#endif
-
-/* Reset is needed otherwise the kernel-driver will throw an error. */
-int omap_ehci_hcd_stop(void)
-{
-	debug("Resetting OMAP EHCI\n");
-	omap_ehci_phy_reset(1, 0);
-
-	if (omap_uhh_reset() < 0)
-		return -1;
-
-	if (omap_ehci_tll_reset() < 0)
-		return -1;
-
-	return 0;
-}
-
-/*
- * Initialize the OMAP EHCI controller and PHY.
- * Based on "drivers/usb/host/ehci-omap.c" from Linux 3.1
- * See there for additional Copyrights.
+/**
+ * ehci_hcd_omap_probe - initialize TI-based HCDs
+ *
+ * Allocates basic resources for this USB host controller, and
+ * then invokes the start() method for the HCD associated with it
+ * through the hotplug entry's driver_data.
  */
-int omap_ehci_hcd_init(int index, struct omap_usbhs_board_data *usbhs_pdata,
-		       struct ehci_hccr **hccr, struct ehci_hcor **hcor)
+static int ehci_hcd_omap_probe(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
+	struct usbhs_omap_platform_data *pdata = dev_get_platdata(dev);
+	struct resource	*res;
+	struct usb_hcd	*hcd;
+	void __iomem *regs;
 	int ret;
-	unsigned int i, reg = 0, rev = 0;
+	int irq;
+	int i;
+	struct omap_hcd	*omap;
 
-	debug("Initializing OMAP EHCI\n");
+	if (usb_disabled())
+		return -ENODEV;
 
-	ret = board_usb_init(index, USB_INIT_HOST);
-	if (ret < 0)
-		return ret;
+	if (!dev->parent) {
+		dev_err(dev, "Missing parent device\n");
+		return -ENODEV;
+	}
 
-	/* Put the PHY in RESET */
-	omap_ehci_phy_reset(1, 10);
+	/* For DT boot, get platform data from parent. i.e. usbhshost */
+	if (dev->of_node) {
+		pdata = dev_get_platdata(dev->parent);
+		dev->platform_data = pdata;
+	}
 
-	ret = omap_uhh_reset();
-	if (ret < 0)
-		return ret;
+	if (!pdata) {
+		dev_err(dev, "Missing platform data\n");
+		return -ENODEV;
+	}
 
-	ret = omap_ehci_tll_reset();
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
+
+	res =  platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	regs = devm_ioremap_resource(dev, res);
+	if (IS_ERR(regs))
+		return PTR_ERR(regs);
+
+	/*
+	 * Right now device-tree probed devices don't get dma_mask set.
+	 * Since shared usb code relies on it, set it here for now.
+	 * Once we have dma capability bindings this can go away.
+	 */
+	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
 
-	writel(OMAP_USBTLL_SYSCONFIG_ENAWAKEUP |
-		OMAP_USBTLL_SYSCONFIG_SIDLEMODE |
-		OMAP_USBTLL_SYSCONFIG_CACTIVITY, &usbtll->sysc);
-
-	/* Put UHH in NoIdle/NoStandby mode */
-	writel(OMAP_UHH_SYSCONFIG_VAL, &uhh->sysc);
-
-	/* setup ULPI bypass and burst configurations */
-	clrsetbits_le32(&reg, OMAP_UHH_HOSTCONFIG_INCRX_ALIGN_EN,
-		(OMAP_UHH_HOSTCONFIG_INCR4_BURST_EN |
-		OMAP_UHH_HOSTCONFIG_INCR8_BURST_EN |
-		OMAP_UHH_HOSTCONFIG_INCR16_BURST_EN));
-
-	rev = readl(&uhh->rev);
-	if (rev == OMAP_USBHS_REV1) {
-		if (is_ehci_phy_mode(usbhs_pdata->port_mode[0]))
-			clrbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P1_BYPASS);
-		else
-			setbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P1_BYPASS);
-
-		if (is_ehci_phy_mode(usbhs_pdata->port_mode[1]))
-			clrbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P2_BYPASS);
-		else
-			setbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P2_BYPASS);
-
-		if (is_ehci_phy_mode(usbhs_pdata->port_mode[2]))
-			clrbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P3_BYPASS);
-		else
-			setbits_le32(&reg, OMAP_UHH_HOSTCONFIG_ULPI_P3_BYPASS);
-	} else if (rev == OMAP_USBHS_REV2) {
-
-		clrsetbits_le32(&reg, (OMAP_P1_MODE_CLEAR | OMAP_P2_MODE_CLEAR),
-					OMAP4_UHH_HOSTCONFIG_APP_START_CLK);
-
-		/* Clear port mode fields for PHY mode */
-
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[0]))
-			setbits_le32(&reg, OMAP_P1_MODE_HSIC);
-
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[1]))
-			setbits_le32(&reg, OMAP_P2_MODE_HSIC);
-
-	} else if (rev == OMAP_USBHS_REV2_1) {
-
-		clrsetbits_le32(&reg,
-				(OMAP_P1_MODE_CLEAR |
-				 OMAP_P2_MODE_CLEAR |
-				 OMAP_P3_MODE_CLEAR),
-				OMAP4_UHH_HOSTCONFIG_APP_START_CLK);
-
-		/* Clear port mode fields for PHY mode */
-
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[0]))
-			setbits_le32(&reg, OMAP_P1_MODE_HSIC);
-
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[1]))
-			setbits_le32(&reg, OMAP_P2_MODE_HSIC);
-
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[2]))
-			setbits_le32(&reg, OMAP_P3_MODE_HSIC);
+	ret = -ENODEV;
+	hcd = usb_create_hcd(&ehci_omap_hc_driver, dev,
+			dev_name(dev));
+	if (!hcd) {
+		dev_err(dev, "Failed to create HCD\n");
+		return -ENOMEM;
 	}
 
-	debug("OMAP UHH_REVISION 0x%x\n", rev);
-	writel(reg, &uhh->hostconfig);
+	hcd->rsrc_start = res->start;
+	hcd->rsrc_len = resource_size(res);
+	hcd->regs = regs;
+	hcd_to_ehci(hcd)->caps = regs;
 
-	for (i = 0; i < OMAP_HS_USB_PORTS; i++)
-		if (is_ehci_hsic_mode(usbhs_pdata->port_mode[i]))
-			omap_usbhs_hsic_init(i);
+	omap = (struct omap_hcd *)hcd_to_ehci(hcd)->priv;
+	omap->nports = pdata->nports;
 
-	omap_ehci_phy_reset(0, 10);
+	platform_set_drvdata(pdev, hcd);
+
+	/* get the PHY devices if needed */
+	for (i = 0 ; i < omap->nports ; i++) {
+		struct usb_phy *phy;
+
+		/* get the PHY device */
+		phy = devm_usb_get_phy_by_phandle(dev, "phys", i);
+		if (IS_ERR(phy)) {
+			ret = PTR_ERR(phy);
+			if (ret == -ENODEV) { /* no PHY */
+				phy = NULL;
+				continue;
+			}
+
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Can't get PHY for port %d: %d\n",
+					i, ret);
+			goto err_phy;
+		}
+
+		omap->phy[i] = phy;
+
+		if (pdata->port_mode[i] == OMAP_EHCI_PORT_MODE_PHY) {
+			usb_phy_init(omap->phy[i]);
+			/* bring PHY out of suspend */
+			usb_phy_set_suspend(omap->phy[i], 0);
+		}
+	}
+
+	pm_runtime_enable(dev);
+	pm_runtime_get_sync(dev);
 
 	/*
 	 * An undocumented "feature" in the OMAP3 EHCI controller,
@@ -280,15 +190,121 @@ int omap_ehci_hcd_init(int index, struct omap_usbhs_board_data *usbhs_pdata,
 	 * to suspend. Writing 1 to this undocumented register bit
 	 * disables this feature and restores normal behavior.
 	 */
-	writel(EHCI_INSNREG04_DISABLE_UNSUSPEND, &ehci->insreg04);
+	ehci_write(regs, EHCI_INSNREG04,
+				EHCI_INSNREG04_DISABLE_UNSUSPEND);
 
-	for (i = 0; i < OMAP_HS_USB_PORTS; i++)
-		if (is_ehci_phy_mode(usbhs_pdata->port_mode[i]))
-			omap_ehci_soft_phy_reset(i);
+	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
+	if (ret) {
+		dev_err(dev, "failed to add hcd with err %d\n", ret);
+		goto err_pm_runtime;
+	}
+	device_wakeup_enable(hcd->self.controller);
 
-	*hccr = (struct ehci_hccr *)(OMAP_EHCI_BASE);
-	*hcor = (struct ehci_hcor *)(OMAP_EHCI_BASE + 0x10);
+	/*
+	 * Bring PHYs out of reset for non PHY modes.
+	 * Even though HSIC mode is a PHY-less mode, the reset
+	 * line exists between the chips and can be modelled
+	 * as a PHY device for reset control.
+	 */
+	for (i = 0; i < omap->nports; i++) {
+		if (!omap->phy[i] ||
+		     pdata->port_mode[i] == OMAP_EHCI_PORT_MODE_PHY)
+			continue;
 
-	debug("OMAP EHCI init done\n");
+		usb_phy_init(omap->phy[i]);
+		/* bring PHY out of suspend */
+		usb_phy_set_suspend(omap->phy[i], 0);
+	}
+
+	return 0;
+
+err_pm_runtime:
+	pm_runtime_put_sync(dev);
+
+err_phy:
+	for (i = 0; i < omap->nports; i++) {
+		if (omap->phy[i])
+			usb_phy_shutdown(omap->phy[i]);
+	}
+
+	usb_put_hcd(hcd);
+
+	return ret;
+}
+
+
+/**
+ * ehci_hcd_omap_remove - shutdown processing for EHCI HCDs
+ * @pdev: USB Host Controller being removed
+ *
+ * Reverses the effect of usb_ehci_hcd_omap_probe(), first invoking
+ * the HCD's stop() method.  It is always called from a thread
+ * context, normally "rmmod", "apmd", or something similar.
+ */
+static int ehci_hcd_omap_remove(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct usb_hcd *hcd = dev_get_drvdata(dev);
+	struct omap_hcd *omap = (struct omap_hcd *)hcd_to_ehci(hcd)->priv;
+	int i;
+
+	usb_remove_hcd(hcd);
+
+	for (i = 0; i < omap->nports; i++) {
+		if (omap->phy[i])
+			usb_phy_shutdown(omap->phy[i]);
+	}
+
+	usb_put_hcd(hcd);
+	pm_runtime_put_sync(dev);
+	pm_runtime_disable(dev);
+
 	return 0;
 }
+
+static const struct of_device_id omap_ehci_dt_ids[] = {
+	{ .compatible = "ti,ehci-omap" },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(of, omap_ehci_dt_ids);
+
+static struct platform_driver ehci_hcd_omap_driver = {
+	.probe			= ehci_hcd_omap_probe,
+	.remove			= ehci_hcd_omap_remove,
+	.shutdown		= usb_hcd_platform_shutdown,
+	/*.suspend		= ehci_hcd_omap_suspend, */
+	/*.resume		= ehci_hcd_omap_resume, */
+	.driver = {
+		.name		= hcd_name,
+		.of_match_table = omap_ehci_dt_ids,
+	}
+};
+
+/*-------------------------------------------------------------------------*/
+
+static int __init ehci_omap_init(void)
+{
+	if (usb_disabled())
+		return -ENODEV;
+
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
+
+	ehci_init_driver(&ehci_omap_hc_driver, &ehci_omap_overrides);
+	return platform_driver_register(&ehci_hcd_omap_driver);
+}
+module_init(ehci_omap_init);
+
+static void __exit ehci_omap_cleanup(void)
+{
+	platform_driver_unregister(&ehci_hcd_omap_driver);
+}
+module_exit(ehci_omap_cleanup);
+
+MODULE_ALIAS("platform:ehci-omap");
+MODULE_AUTHOR("Texas Instruments, Inc.");
+MODULE_AUTHOR("Felipe Balbi <felipe.balbi@nokia.com>");
+MODULE_AUTHOR("Roger Quadros <rogerq@ti.com>");
+
+MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_LICENSE("GPL");

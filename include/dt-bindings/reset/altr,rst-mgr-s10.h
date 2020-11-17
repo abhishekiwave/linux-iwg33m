@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2016-2018 Intel Corporation. All rights reserved
+ * Copyright (C) 2016 Intel Corporation. All rights reserved
  * Copyright (C) 2016 Altera Corporation. All rights reserved
+ *
  * derived from Steffen Trumtrar's "altr,rst-mgr-a10.h"
  */
 

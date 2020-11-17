@@ -1,309 +1,185 @@
-# SPDX-License-Identifier: GPL-2.0+
-#
-# (C) Copyright 2000-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# SPDX-License-Identifier: GPL-2.0
+# Some of the tools (perf) use same make variables
+# as in kernel build.
+export srctree=
+export objtree=
 
-# Enable all the config-independent tools
-ifneq ($(HOST_TOOLS_ALL),)
-CONFIG_KIRKWOOD = y
-CONFIG_LCD_LOGO = y
-CONFIG_CMD_LOADS = y
-CONFIG_CMD_NET = y
-CONFIG_XWAY_SWAP_BYTES = y
-CONFIG_NETCONSOLE = y
-CONFIG_SHA1_CHECK_UB_IMG = y
-CONFIG_ARCH_SUNXI = y
-endif
+include scripts/Makefile.include
 
-subdir-$(HOST_TOOLS_ALL) += gdb
+help:
+	@echo 'Possible targets:'
+	@echo ''
+	@echo '  acpi                   - ACPI tools'
+	@echo '  bpf                    - misc BPF tools'
+	@echo '  cgroup                 - cgroup tools'
+	@echo '  cpupower               - a tool for all things x86 CPU power'
+	@echo '  debugging              - tools for debugging'
+	@echo '  firewire               - the userspace part of nosy, an IEEE-1394 traffic sniffer'
+	@echo '  firmware               - Firmware tools'
+	@echo '  freefall               - laptop accelerometer program for disk protection'
+	@echo '  gpio                   - GPIO tools'
+	@echo '  hv                     - tools used when in Hyper-V clients'
+	@echo '  iio                    - IIO tools'
+	@echo '  intel-speed-select     - Intel Speed Select tool'
+	@echo '  kvm_stat               - top-like utility for displaying kvm statistics'
+	@echo '  leds                   - LEDs  tools'
+	@echo '  liblockdep             - user-space wrapper for kernel locking-validator'
+	@echo '  objtool                - an ELF object analysis tool'
+	@echo '  pci                    - PCI tools'
+	@echo '  perf                   - Linux performance measurement and analysis tool'
+	@echo '  selftests              - various kernel selftests'
+	@echo '  spi                    - spi tools'
+	@echo '  tmon                   - thermal monitoring and tuning tool'
+	@echo '  turbostat              - Intel CPU idle stats and freq reporting tool'
+	@echo '  usb                    - USB testing tools'
+	@echo '  virtio                 - vhost test module'
+	@echo '  vm                     - misc vm tools'
+	@echo '  wmi			- WMI interface examples'
+	@echo '  x86_energy_perf_policy - Intel energy policy tool'
+	@echo ''
+	@echo 'You can do:'
+	@echo ' $$ make -C tools/ <tool>_install'
+	@echo ''
+	@echo '  from the kernel command line to build and install one of'
+	@echo '  the tools above'
+	@echo ''
+	@echo '  $$ make tools/all'
+	@echo ''
+	@echo '  builds all tools.'
+	@echo ''
+	@echo '  $$ make tools/install'
+	@echo ''
+	@echo '  installs all tools.'
+	@echo ''
+	@echo 'Cleaning targets:'
+	@echo ''
+	@echo '  all of the above with the "_clean" string appended cleans'
+	@echo '    the respective build directory.'
+	@echo '  clean: a summary clean target to clean _all_ folders'
 
-# Merge all the different vars for envcrc into one
-ENVCRC-$(CONFIG_ENV_IS_EMBEDDED) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_EEPROM) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_FLASH) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_ONENAND) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_NAND) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_NVRAM) = y
-ENVCRC-$(CONFIG_ENV_IS_IN_SPI_FLASH) = y
-CONFIG_BUILD_ENVCRC ?= $(ENVCRC-y)
+acpi: FORCE
+	$(call descend,power/$@)
 
-hostprogs-$(CONFIG_SPL_GENERATE_ATMEL_PMECC_HEADER) += atmel_pmecc_params
+cpupower: FORCE
+	$(call descend,power/$@)
 
-hostprogs-$(CONFIG_LCD_LOGO) += bmp_logo
-hostprogs-$(CONFIG_VIDEO_LOGO) += bmp_logo
-HOSTCFLAGS_bmp_logo.o := -pedantic
+cgroup firewire hv guest spi usb virtio vm bpf iio gpio objtool leds wmi pci firmware debugging: FORCE
+	$(call descend,$@)
 
-hostprogs-$(CONFIG_BUILD_ENVCRC) += envcrc
-envcrc-objs := envcrc.o lib/crc32.o env/embedded.o lib/sha1.o
+liblockdep: FORCE
+	$(call descend,lib/lockdep)
 
-hostprogs-$(CONFIG_CMD_NET) += gen_eth_addr
-HOSTCFLAGS_gen_eth_addr.o := -pedantic
+libapi: FORCE
+	$(call descend,lib/api)
 
-hostprogs-$(CONFIG_CMD_NET) += gen_ethaddr_crc
-gen_ethaddr_crc-objs := gen_ethaddr_crc.o lib/crc8.o
-HOSTCFLAGS_gen_ethaddr_crc.o := -pedantic
+# The perf build does not follow the descend function setup,
+# invoking it via it's own make rule.
+PERF_O   = $(if $(O),$(O)/tools/perf,)
 
-hostprogs-$(CONFIG_CMD_LOADS) += img2srec
-HOSTCFLAGS_img2srec.o := -pedantic
+perf: FORCE
+	$(Q)mkdir -p $(PERF_O) .
+	$(Q)$(MAKE) --no-print-directory -C perf O=$(PERF_O) subdir=
 
-hostprogs-$(CONFIG_XWAY_SWAP_BYTES) += xway-swap-bytes
-HOSTCFLAGS_xway-swap-bytes.o := -pedantic
+selftests: FORCE
+	$(call descend,testing/$@)
 
-hostprogs-y += mkenvimage
-mkenvimage-objs := mkenvimage.o os_support.o lib/crc32.o
+turbostat x86_energy_perf_policy intel-speed-select: FORCE
+	$(call descend,power/x86/$@)
 
-hostprogs-y += dumpimage mkimage
-hostprogs-$(CONFIG_FIT_SIGNATURE) += fit_info fit_check_sign
+tmon: FORCE
+	$(call descend,thermal/$@)
 
-hostprogs-$(CONFIG_CMD_BOOTEFI_SELFTEST) += file2include
+freefall: FORCE
+	$(call descend,laptop/$@)
 
-FIT_OBJS-$(CONFIG_FIT) := fit_common.o fit_image.o image-host.o common/image-fit.o
-FIT_SIG_OBJS-$(CONFIG_FIT_SIGNATURE) := common/image-sig.o
-FIT_CIPHER_OBJS-$(CONFIG_FIT_CIPHER) := common/image-cipher.o
+kvm_stat: FORCE
+	$(call descend,kvm/$@)
 
-# The following files are synced with upstream DTC.
-# Use synced versions from scripts/dtc/libfdt/.
-LIBFDT_SRCS_SYNCED := fdt.c fdt_wip.c fdt_sw.c fdt_rw.c \
-		fdt_strerror.c fdt_empty_tree.c fdt_addresses.c fdt_overlay.c
-# The following files are locally modified for U-Boot (unfotunately).
-# Use U-Boot own versions from lib/libfdt/.
-LIBFDT_SRCS_UNSYNCED := fdt_ro.c fdt_region.c
+all: acpi cgroup cpupower gpio hv firewire liblockdep \
+		perf selftests spi turbostat usb \
+		virtio vm bpf x86_energy_perf_policy \
+		tmon freefall iio objtool kvm_stat wmi \
+		pci debugging
 
-LIBFDT_OBJS := $(addprefix libfdt/, $(patsubst %.c, %.o, $(LIBFDT_SRCS_SYNCED))) \
-	       $(addprefix lib/libfdt/, $(patsubst %.c, %.o, $(LIBFDT_SRCS_UNSYNCED)))
+acpi_install:
+	$(call descend,power/$(@:_install=),install)
 
-RSA_OBJS-$(CONFIG_FIT_SIGNATURE) := $(addprefix lib/rsa/, \
-					rsa-sign.o rsa-verify.o rsa-checksum.o \
-					rsa-mod-exp.o)
+cpupower_install:
+	$(call descend,power/$(@:_install=),install)
 
-AES_OBJS-$(CONFIG_FIT_CIPHER) := $(addprefix lib/aes/, \
-					aes-encrypt.o aes-decrypt.o)
+cgroup_install firewire_install gpio_install hv_install iio_install perf_install spi_install usb_install virtio_install vm_install bpf_install objtool_install wmi_install pci_install debugging_install:
+	$(call descend,$(@:_install=),install)
 
-ROCKCHIP_OBS = lib/rc4.o rkcommon.o rkimage.o rksd.o rkspi.o
+liblockdep_install:
+	$(call descend,lib/lockdep,install)
 
-# common objs for dumpimage and mkimage
-dumpimage-mkimage-objs := aisimage.o \
-			atmelimage.o \
-			$(FIT_OBJS-y) \
-			$(FIT_SIG_OBJS-y) \
-			$(FIT_CIPHER_OBJS-y) \
-			common/bootm.o \
-			lib/crc32.o \
-			default_image.o \
-			lib/fdtdec_common.o \
-			lib/fdtdec.o \
-			common/image.o \
-			imagetool.o \
-			imximage.o \
-			imx8image.o \
-			imx8mimage.o \
-			kwbimage.o \
-			lib/md5.o \
-			lpc32xximage.o \
-			mxsimage.o \
-			omapimage.o \
-			os_support.o \
-			pblimage.o \
-			pbl_crc32.o \
-			vybridimage.o \
-			stm32image.o \
-			$(ROCKCHIP_OBS) \
-			socfpgaimage.o \
-			lib/crc16.o \
-			lib/sha1.o \
-			lib/sha256.o \
-			common/hash.o \
-			ublimage.o \
-			zynqimage.o \
-			zynqmpimage.o \
-			zynqmpbif.o \
-			$(LIBFDT_OBJS) \
-			gpimage.o \
-			gpimage-common.o \
-			mtk_image.o \
-			$(RSA_OBJS-y) \
-			$(AES_OBJS-y)
+selftests_install:
+	$(call descend,testing/$(@:_install=),install)
 
-dumpimage-objs := $(dumpimage-mkimage-objs) dumpimage.o
-mkimage-objs   := $(dumpimage-mkimage-objs) mkimage.o
-fit_info-objs   := $(dumpimage-mkimage-objs) fit_info.o
-fit_check_sign-objs   := $(dumpimage-mkimage-objs) fit_check_sign.o
-file2include-objs := file2include.o
+turbostat_install x86_energy_perf_policy_install intel-speed-select_install:
+	$(call descend,power/x86/$(@:_install=),install)
 
-ifneq ($(CONFIG_MX23)$(CONFIG_MX28)$(CONFIG_FIT_SIGNATURE),)
-# Add CONFIG_MXS into host CFLAGS, so we can check whether or not register
-# the mxsimage support within tools/mxsimage.c .
-HOSTCFLAGS_mxsimage.o += -DCONFIG_MXS
-endif
+tmon_install:
+	$(call descend,thermal/$(@:_install=),install)
 
-ifdef CONFIG_FIT_SIGNATURE
-# This affects include/image.h, but including the board config file
-# is tricky, so manually define this options here.
-HOST_EXTRACFLAGS	+= -DCONFIG_FIT_SIGNATURE
-HOST_EXTRACFLAGS	+= -DCONFIG_FIT_SIGNATURE_MAX_SIZE=$(CONFIG_FIT_SIGNATURE_MAX_SIZE)
-endif
+freefall_install:
+	$(call descend,laptop/$(@:_install=),install)
 
-ifdef CONFIG_FIT_CIPHER
-# This affects include/image.h, but including the board config file
-# is tricky, so manually define this options here.
-HOST_EXTRACFLAGS	+= -DCONFIG_FIT_CIPHER
-endif
+kvm_stat_install:
+	$(call descend,kvm/$(@:_install=),install)
 
-ifdef CONFIG_SYS_U_BOOT_OFFS
-HOSTCFLAGS_kwbimage.o += -DCONFIG_SYS_U_BOOT_OFFS=$(CONFIG_SYS_U_BOOT_OFFS)
-endif
+install: acpi_install cgroup_install cpupower_install gpio_install \
+		hv_install firewire_install iio_install liblockdep_install \
+		perf_install selftests_install turbostat_install usb_install \
+		virtio_install vm_install bpf_install x86_energy_perf_policy_install \
+		tmon_install freefall_install objtool_install kvm_stat_install \
+		wmi_install pci_install debugging_install intel-speed-select_install
 
-ifneq ($(CONFIG_ARMADA_38X)$(CONFIG_ARMADA_39X),)
-HOSTCFLAGS_kwbimage.o += -DCONFIG_KWB_SECURE
-endif
+acpi_clean:
+	$(call descend,power/acpi,clean)
 
-# MXSImage needs LibSSL
-ifneq ($(CONFIG_MX23)$(CONFIG_MX28)$(CONFIG_ARMADA_38X)$(CONFIG_ARMADA_39X)$(CONFIG_FIT_SIGNATURE),)
-HOSTCFLAGS_kwbimage.o += \
-	$(shell pkg-config --cflags libssl libcrypto 2> /dev/null || echo "")
-HOSTLOADLIBES_mkimage += \
-	$(shell pkg-config --libs libssl libcrypto 2> /dev/null || echo "-lssl -lcrypto")
+cpupower_clean:
+	$(call descend,power/cpupower,clean)
 
-# OS X deprecate openssl in favour of CommonCrypto, supress deprecation
-# warnings on those systems
-ifeq ($(HOSTOS),darwin)
-HOSTCFLAGS_mxsimage.o += -Wno-deprecated-declarations
-HOSTCFLAGS_image-sig.o += -Wno-deprecated-declarations
-HOSTCFLAGS_rsa-sign.o += -Wno-deprecated-declarations
-endif
-endif
+cgroup_clean hv_clean firewire_clean spi_clean usb_clean virtio_clean vm_clean wmi_clean bpf_clean iio_clean gpio_clean objtool_clean leds_clean pci_clean firmware_clean debugging_clean:
+	$(call descend,$(@:_clean=),clean)
 
-HOSTCFLAGS_fit_image.o += -DMKIMAGE_DTC=\"$(CONFIG_MKIMAGE_DTC_PATH)\"
+liblockdep_clean:
+	$(call descend,lib/lockdep,clean)
 
-HOSTLOADLIBES_dumpimage := $(HOSTLOADLIBES_mkimage)
-HOSTLOADLIBES_fit_info := $(HOSTLOADLIBES_mkimage)
-HOSTLOADLIBES_fit_check_sign := $(HOSTLOADLIBES_mkimage)
+libapi_clean:
+	$(call descend,lib/api,clean)
 
-hostprogs-$(CONFIG_EXYNOS5250) += mkexynosspl
-hostprogs-$(CONFIG_EXYNOS5420) += mkexynosspl
-HOSTCFLAGS_mkexynosspl.o := -pedantic
+libbpf_clean:
+	$(call descend,lib/bpf,clean)
 
-ifdtool-objs := $(LIBFDT_OBJS) ifdtool.o
-hostprogs-$(CONFIG_X86) += ifdtool
+libsubcmd_clean:
+	$(call descend,lib/subcmd,clean)
 
-ifwitool-objs := ifwitool.o
-hostprogs-$(CONFIG_X86)$(CONFIG_SANDBOX) += ifwitool
+perf_clean:
+	$(Q)mkdir -p $(PERF_O) .
+	$(Q)$(MAKE) --no-print-directory -C perf O=$(PERF_O) subdir= clean
 
-hostprogs-$(CONFIG_MX23) += mxsboot
-hostprogs-$(CONFIG_MX28) += mxsboot
-HOSTCFLAGS_mxsboot.o := -pedantic
+selftests_clean:
+	$(call descend,testing/$(@:_clean=),clean)
 
-hostprogs-$(CONFIG_ARCH_SUNXI) += mksunxiboot
-hostprogs-$(CONFIG_ARCH_SUNXI) += sunxi-spl-image-builder
-sunxi-spl-image-builder-objs := sunxi-spl-image-builder.o lib/bch.o
+turbostat_clean x86_energy_perf_policy_clean intel-speed-select_clean:
+	$(call descend,power/x86/$(@:_clean=),clean)
 
-hostprogs-$(CONFIG_NETCONSOLE) += ncb
-hostprogs-$(CONFIG_SHA1_CHECK_UB_IMG) += ubsha1
+tmon_clean:
+	$(call descend,thermal/tmon,clean)
 
-ubsha1-objs := os_support.o ubsha1.o lib/sha1.o
+freefall_clean:
+	$(call descend,laptop/freefall,clean)
 
-HOSTCFLAGS_ubsha1.o := -pedantic
+build_clean:
+	$(call descend,build,clean)
 
-hostprogs-$(CONFIG_KIRKWOOD) += kwboot
-hostprogs-$(CONFIG_ARCH_MVEBU) += kwboot
-hostprogs-y += proftool
-hostprogs-$(CONFIG_STATIC_RELA) += relocate-rela
-hostprogs-$(CONFIG_RISCV) += prelink-riscv
+clean: acpi_clean cgroup_clean cpupower_clean hv_clean firewire_clean \
+		perf_clean selftests_clean turbostat_clean spi_clean usb_clean virtio_clean \
+		vm_clean bpf_clean iio_clean x86_energy_perf_policy_clean tmon_clean \
+		freefall_clean build_clean libbpf_clean libsubcmd_clean liblockdep_clean \
+		gpio_clean objtool_clean leds_clean wmi_clean pci_clean firmware_clean debugging_clean \
+		intel-speed-select_clean
 
-hostprogs-y += fdtgrep
-fdtgrep-objs += $(LIBFDT_OBJS) fdtgrep.o
-
-ifneq ($(TOOLS_ONLY),y)
-hostprogs-y += spl_size_limit
-endif
-
-hostprogs-$(CONFIG_MIPS) += mips-relocs
-
-hostprogs-$(CONFIG_ASN1_COMPILER)	+= asn1_compiler
-HOSTCFLAGS_asn1_compiler.o = -idirafter $(srctree)/include
-
-# We build some files with extra pedantic flags to try to minimize things
-# that won't build on some weird host compiler -- though there are lots of
-# exceptions for files that aren't complaint.
-HOSTCFLAGS_crc32.o := -pedantic
-HOSTCFLAGS_crc8.o := -pedantic
-HOSTCFLAGS_md5.o := -pedantic
-HOSTCFLAGS_sha1.o := -pedantic
-HOSTCFLAGS_sha256.o := -pedantic
-
-quiet_cmd_wrap = WRAP    $@
-cmd_wrap = echo "\#include <../$(patsubst $(obj)/%,%,$@)>" >$@
-
-$(obj)/lib/%.c $(obj)/common/%.c $(obj)/env/%.c:
-	$(call cmd,wrap)
-
-clean-dirs := lib common
-
-always := $(hostprogs-y)
-
-# Generated LCD/video logo
-LOGO_H = $(objtree)/include/bmp_logo.h
-LOGO_DATA_H = $(objtree)/include/bmp_logo_data.h
-LOGO-$(CONFIG_LCD_LOGO) += $(LOGO_H)
-LOGO-$(CONFIG_LCD_LOGO) += $(LOGO_DATA_H)
-LOGO-$(CONFIG_VIDEO_LOGO) += $(LOGO_H)
-LOGO-$(CONFIG_VIDEO_LOGO) += $(LOGO_DATA_H)
-
-# Generic logo
-ifeq ($(LOGO_BMP),)
-LOGO_BMP= $(srctree)/$(src)/logos/denx.bmp
-
-# Use board logo and fallback to vendor
-ifneq ($(wildcard $(srctree)/$(src)/logos/$(BOARD).bmp),)
-LOGO_BMP= $(srctree)/$(src)/logos/$(BOARD).bmp
-else
-ifneq ($(wildcard $(srctree)/$(src)/logos/$(VENDOR).bmp),)
-LOGO_BMP= $(srctree)/$(src)/logos/$(VENDOR).bmp
-endif
-endif
-
-endif # !LOGO_BMP
-
-#
-# Use native tools and options
-# Define __KERNEL_STRICT_NAMES to prevent typedef overlaps
-# Define _GNU_SOURCE to obtain the getline prototype from stdio.h
-#
-HOST_EXTRACFLAGS += -include $(srctree)/include/compiler.h \
-		$(patsubst -I%,-idirafter%, $(filter -I%, $(UBOOTINCLUDE))) \
-		-I$(srctree)/scripts/dtc/libfdt \
-		-I$(srctree)/tools \
-		-DUSE_HOSTCC \
-		-D__KERNEL_STRICT_NAMES \
-		-D_GNU_SOURCE \
-		-std=gnu99
-
-__build:	$(LOGO-y)
-
-$(LOGO_H):	$(obj)/bmp_logo $(LOGO_BMP)
-	$(obj)/bmp_logo --gen-info $(LOGO_BMP) > $@
-
-ifeq ($(CONFIG_DM_VIDEO),y)
-$(LOGO_DATA_H):	$(obj)/bmp_logo $(LOGO_BMP)
-	$(obj)/bmp_logo --gen-bmp $(LOGO_BMP) > $@
-else
-$(LOGO_DATA_H):	$(obj)/bmp_logo $(LOGO_BMP)
-	$(obj)/bmp_logo --gen-data $(LOGO_BMP) > $@
-#endif
-endif
-
-# Let clean descend into subdirs
-subdir- += env
-
-ifneq ($(CROSS_BUILD_TOOLS),)
-override HOSTCC = $(CC)
-override HOSTCFLAGS = $(CFLAGS)
-
-quiet_cmd_crosstools_strip = STRIP   $^
-      cmd_crosstools_strip = $(STRIP) $^; touch $@
-$(obj)/.strip: $(call objectify,$(filter $(always),$(hostprogs-y)))
-	$(call cmd,crosstools_strip)
-
-always += .strip
-endif
-clean-files += .strip
+.PHONY: FORCE

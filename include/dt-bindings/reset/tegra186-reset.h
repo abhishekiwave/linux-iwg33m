@@ -1,10 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2015, NVIDIA CORPORATION.
+ * Copyright (c) 2015, NVIDIA CORPORATION.  All rights reserved.
  */
 
 #ifndef _ABI_MACH_T186_RESET_T186_H_
 #define _ABI_MACH_T186_RESET_T186_H_
+
 
 #define TEGRA186_RESET_ACTMON			0
 #define TEGRA186_RESET_AFI			1

@@ -1,110 +1,96 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Teranetics PHY drivers
+ * Driver for Teranetics PHY
  *
- * Copyright 2010-2011 Freescale Semiconductor, Inc.
- * author Andy Fleming
+ * Author: Shaohui Xie <Shaohui.Xie@freescale.com>
+ *
+ * Copyright 2015 Freescale Semiconductor, Inc.
  */
-#include <common.h>
-#include <phy.h>
 
-#ifndef CONFIG_PHYLIB_10G
-#error The Teranetics PHY needs 10G support
-#endif
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/mii.h>
+#include <linux/ethtool.h>
+#include <linux/mdio.h>
+#include <linux/phy.h>
 
-int tn2020_config(struct phy_device *phydev)
+MODULE_DESCRIPTION("Teranetics PHY driver");
+MODULE_AUTHOR("Shaohui Xie <Shaohui.Xie@freescale.com>");
+MODULE_LICENSE("GPL v2");
+
+#define PHY_ID_TN2020	0x00a19410
+#define MDIO_PHYXS_LNSTAT_SYNC0	0x0001
+#define MDIO_PHYXS_LNSTAT_SYNC1	0x0002
+#define MDIO_PHYXS_LNSTAT_SYNC2	0x0004
+#define MDIO_PHYXS_LNSTAT_SYNC3	0x0008
+#define MDIO_PHYXS_LNSTAT_ALIGN 0x1000
+
+#define MDIO_PHYXS_LANE_READY	(MDIO_PHYXS_LNSTAT_SYNC0 | \
+				MDIO_PHYXS_LNSTAT_SYNC1 | \
+				MDIO_PHYXS_LNSTAT_SYNC2 | \
+				MDIO_PHYXS_LNSTAT_SYNC3 | \
+				MDIO_PHYXS_LNSTAT_ALIGN)
+
+static int teranetics_aneg_done(struct phy_device *phydev)
 {
-	if (phydev->port == PORT_FIBRE) {
-		unsigned short restart_an = (MDIO_AN_CTRL1_RESTART |
-						MDIO_AN_CTRL1_ENABLE |
-						MDIO_AN_CTRL1_XNP);
-		u8 phy_hwversion;
+	/* auto negotiation state can only be checked when using copper
+	 * port, if using fiber port, just lie it's done.
+	 */
+	if (!phy_read_mmd(phydev, MDIO_MMD_VEND1, 93))
+		return genphy_c45_aneg_done(phydev);
 
-		/*
-		 * bit 15:12 of register 30.32 indicates PHY hardware
-		 * version. It can be used to distinguish TN80xx from
-		 * TN2020. TN2020 needs write 0x2 to 30.93, but TN80xx
-		 * needs 0x1.
-		 */
-		phy_hwversion = (phy_read(phydev, 30, 32) >> 12) & 0xf;
-		if (phy_hwversion <= 3) {
-			phy_write(phydev, 30, 93, 2);
-			phy_write(phydev, MDIO_MMD_AN, MDIO_CTRL1, restart_an);
-		} else {
-			phy_write(phydev, 30, 93, 1);
-		}
-	}
-
-	return 0;
+	return 1;
 }
 
-int tn2020_startup(struct phy_device *phydev)
+static int teranetics_read_status(struct phy_device *phydev)
 {
-	unsigned int timeout = 5 * 1000; /* 5 second timeout */
+	int reg;
 
-#define MDIO_PHYXS_LANE_READY (MDIO_PHYXS_LNSTAT_SYNC0 | \
-			       MDIO_PHYXS_LNSTAT_SYNC1 | \
-			       MDIO_PHYXS_LNSTAT_SYNC2 | \
-			       MDIO_PHYXS_LNSTAT_SYNC3 | \
-			       MDIO_PHYXS_LNSTAT_ALIGN)
-
-	/*
-	 * Wait for the XAUI-SERDES lanes to align first.  Under normal
-	 * circumstances, this can take up to three seconds.
-	 */
-	while (--timeout) {
-		int reg = phy_read(phydev, MDIO_MMD_PHYXS, MDIO_PHYXS_LNSTAT);
-		if (reg < 0) {
-			printf("TN2020: Error reading from PHY at "
-			       "address %u\n", phydev->addr);
-			break;
-		}
-		if ((reg & MDIO_PHYXS_LANE_READY) == MDIO_PHYXS_LANE_READY)
-			break;
-		udelay(1000);
-	}
-	if (!timeout) {
-		/*
-		 * A timeout is bad, but it may not be fatal, so don't
-		 * return an error.  Display a warning instead.
-		 */
-		printf("TN2020: Timeout waiting for PHY at address %u to "
-		       "align.\n", phydev->addr);
-	}
-
-	if (phydev->port != PORT_FIBRE)
-		return gen10g_startup(phydev);
-
-	/*
-	 * The TN2020 only pretends to support fiber.
-	 * It works, but it doesn't look like it works,
-	 * so the link status reports no link.
-	 */
 	phydev->link = 1;
 
-	/* For now just lie and say it's 10G all the time */
 	phydev->speed = SPEED_10000;
 	phydev->duplex = DUPLEX_FULL;
 
+	if (!phy_read_mmd(phydev, MDIO_MMD_VEND1, 93)) {
+		reg = phy_read_mmd(phydev, MDIO_MMD_PHYXS, MDIO_PHYXS_LNSTAT);
+		if (reg < 0 ||
+		    !((reg & MDIO_PHYXS_LANE_READY) == MDIO_PHYXS_LANE_READY)) {
+			phydev->link = 0;
+			return 0;
+		}
+
+		reg = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_STAT1);
+		if (reg < 0 || !(reg & MDIO_STAT1_LSTATUS))
+			phydev->link = 0;
+	}
+
 	return 0;
 }
 
-struct phy_driver tn2020_driver = {
-	.name = "Teranetics TN2020",
-	.uid = PHY_UID_TN2020,
-	.mask = 0xfffffff0,
-	.features = PHY_10G_FEATURES,
-	.mmds = (MDIO_DEVS_PMAPMD | MDIO_DEVS_PCS |
-			MDIO_DEVS_PHYXS | MDIO_DEVS_AN |
-			MDIO_DEVS_VEND1 | MDIO_DEVS_VEND2),
-	.config = &tn2020_config,
-	.startup = &tn2020_startup,
-	.shutdown = &gen10g_shutdown,
+static int teranetics_match_phy_device(struct phy_device *phydev)
+{
+	return phydev->c45_ids.device_ids[3] == PHY_ID_TN2020;
+}
+
+static struct phy_driver teranetics_driver[] = {
+{
+	.phy_id		= PHY_ID_TN2020,
+	.phy_id_mask	= 0xffffffff,
+	.name		= "Teranetics TN2020",
+	.features       = PHY_10GBIT_FEATURES,
+	.soft_reset	= genphy_no_soft_reset,
+	.aneg_done	= teranetics_aneg_done,
+	.config_aneg    = gen10g_config_aneg,
+	.read_status	= teranetics_read_status,
+	.match_phy_device = teranetics_match_phy_device,
+},
 };
 
-int phy_teranetics_init(void)
-{
-	phy_register(&tn2020_driver);
+module_phy_driver(teranetics_driver);
 
-	return 0;
-}
+static struct mdio_device_id __maybe_unused teranetics_tbl[] = {
+	{ PHY_ID_TN2020, 0xffffffff },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(mdio, teranetics_tbl);

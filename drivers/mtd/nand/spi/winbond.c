@@ -7,11 +7,8 @@
  *	Boris Brezillon <boris.brezillon@bootlin.com>
  */
 
-#ifndef __UBOOT__
-#include <malloc.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#endif
 #include <linux/mtd/spinand.h>
 
 #define SPINAND_MFR_WINBOND		0xEF
@@ -60,7 +57,7 @@ static int w25m02gv_ooblayout_free(struct mtd_info *mtd, int section,
 
 static const struct mtd_ooblayout_ops w25m02gv_ooblayout = {
 	.ecc = w25m02gv_ooblayout_ecc,
-	.rfree = w25m02gv_ooblayout_free,
+	.free = w25m02gv_ooblayout_free,
 };
 
 static int w25m02gv_select_target(struct spinand_device *spinand,
@@ -74,12 +71,12 @@ static int w25m02gv_select_target(struct spinand_device *spinand,
 							1));
 
 	*spinand->scratchbuf = target;
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static const struct spinand_info winbond_spinand_table[] = {
 	SPINAND_INFO("W25M02GV", 0xAB,
-		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 2),
+		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 2),
 		     NAND_ECCREQ(1, 512),
 		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
 					      &write_cache_variants,
@@ -88,7 +85,7 @@ static const struct spinand_info winbond_spinand_table[] = {
 		     SPINAND_ECCINFO(&w25m02gv_ooblayout, NULL),
 		     SPINAND_SELECT_TARGET(w25m02gv_select_target)),
 	SPINAND_INFO("W25N01GV", 0xAA,
-		     NAND_MEMORG(1, 2048, 64, 64, 1024, 1, 1, 1),
+		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
 		     NAND_ECCREQ(1, 512),
 		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
 					      &write_cache_variants,

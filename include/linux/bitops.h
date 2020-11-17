@@ -1,175 +1,200 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_BITOPS_H
 #define _LINUX_BITOPS_H
-
 #include <asm/types.h>
-#include <asm-generic/bitsperlong.h>
-#include <linux/compiler.h>
-#include <linux/kernel.h>
+#include <linux/bits.h>
 
-#ifdef	__KERNEL__
-#define BIT(nr)			(1UL << (nr))
-#define BIT_ULL(nr)		(1ULL << (nr))
-#define BIT_MASK(nr)		(1UL << ((nr) % BITS_PER_LONG))
-#define BIT_WORD(nr)		((nr) / BITS_PER_LONG)
-#define BIT_ULL_MASK(nr)	(1ULL << ((nr) % BITS_PER_LONG_LONG))
-#define BIT_ULL_WORD(nr)	((nr) / BITS_PER_LONG_LONG)
-#define BITS_PER_BYTE		8
-#define BITS_TO_LONGS(nr)	DIV_ROUND_UP(nr, BITS_PER_BYTE * sizeof(long))
-#endif
-
-/*
- * Create a contiguous bitmask starting at bit position @l and ending at
- * position @h. For example
- * GENMASK_ULL(39, 21) gives us the 64bit vector 0x000000ffffe00000.
- */
-#ifdef CONFIG_SANDBOX
-#define GENMASK(h, l) \
-	(((~0UL) << (l)) & (~0UL >> (CONFIG_SANDBOX_BITS_PER_LONG - 1 - (h))))
+/* Set bits in the first 'n' bytes when loaded from memory */
+#ifdef __LITTLE_ENDIAN
+#  define aligned_byte_mask(n) ((1UL << 8*(n))-1)
 #else
-#define GENMASK(h, l) \
-	(((~0UL) << (l)) & (~0UL >> (BITS_PER_LONG - 1 - (h))))
+#  define aligned_byte_mask(n) (~0xffUL << (BITS_PER_LONG - 8 - 8*(n)))
 #endif
 
-#define GENMASK_ULL(h, l) \
-	(((~0ULL) << (l)) & (~0ULL >> (BITS_PER_LONG_LONG - 1 - (h))))
+#define BITS_PER_TYPE(type) (sizeof(type) * BITS_PER_BYTE)
+#define BITS_TO_LONGS(nr)	DIV_ROUND_UP(nr, BITS_PER_TYPE(long))
+
+extern unsigned int __sw_hweight8(unsigned int w);
+extern unsigned int __sw_hweight16(unsigned int w);
+extern unsigned int __sw_hweight32(unsigned int w);
+extern unsigned long __sw_hweight64(__u64 w);
 
 /*
- * ffs: find first bit set. This is defined the same way as
- * the libc and compiler builtin ffs routines, therefore
- * differs in spirit from the above ffz (man ffs).
+ * Include this here because some architectures need generic_ffs/fls in
+ * scope
  */
+#include <asm/bitops.h>
 
-static inline int generic_ffs(int x)
+#define for_each_set_bit(bit, addr, size) \
+	for ((bit) = find_first_bit((addr), (size));		\
+	     (bit) < (size);					\
+	     (bit) = find_next_bit((addr), (size), (bit) + 1))
+
+/* same as for_each_set_bit() but use bit as value to start with */
+#define for_each_set_bit_from(bit, addr, size) \
+	for ((bit) = find_next_bit((addr), (size), (bit));	\
+	     (bit) < (size);					\
+	     (bit) = find_next_bit((addr), (size), (bit) + 1))
+
+#define for_each_clear_bit(bit, addr, size) \
+	for ((bit) = find_first_zero_bit((addr), (size));	\
+	     (bit) < (size);					\
+	     (bit) = find_next_zero_bit((addr), (size), (bit) + 1))
+
+/* same as for_each_clear_bit() but use bit as value to start with */
+#define for_each_clear_bit_from(bit, addr, size) \
+	for ((bit) = find_next_zero_bit((addr), (size), (bit));	\
+	     (bit) < (size);					\
+	     (bit) = find_next_zero_bit((addr), (size), (bit) + 1))
+
+static inline int get_bitmask_order(unsigned int count)
 {
-	int r = 1;
+	int order;
 
-	if (!x)
-		return 0;
-	if (!(x & 0xffff)) {
-		x >>= 16;
-		r += 16;
-	}
-	if (!(x & 0xff)) {
-		x >>= 8;
-		r += 8;
-	}
-	if (!(x & 0xf)) {
-		x >>= 4;
-		r += 4;
-	}
-	if (!(x & 3)) {
-		x >>= 2;
-		r += 2;
-	}
-	if (!(x & 1)) {
-		x >>= 1;
-		r += 1;
-	}
-	return r;
+	order = fls(count);
+	return order;	/* We could be slightly more clever with -1 here... */
+}
+
+static __always_inline unsigned long hweight_long(unsigned long w)
+{
+	return sizeof(w) == 4 ? hweight32(w) : hweight64(w);
 }
 
 /**
- * fls - find last (most-significant) bit set
- * @x: the word to search
+ * rol64 - rotate a 64-bit value left
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u64 rol64(__u64 word, unsigned int shift)
+{
+	return (word << (shift & 63)) | (word >> ((-shift) & 63));
+}
+
+/**
+ * ror64 - rotate a 64-bit value right
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u64 ror64(__u64 word, unsigned int shift)
+{
+	return (word >> (shift & 63)) | (word << ((-shift) & 63));
+}
+
+/**
+ * rol32 - rotate a 32-bit value left
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u32 rol32(__u32 word, unsigned int shift)
+{
+	return (word << (shift & 31)) | (word >> ((-shift) & 31));
+}
+
+/**
+ * ror32 - rotate a 32-bit value right
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u32 ror32(__u32 word, unsigned int shift)
+{
+	return (word >> (shift & 31)) | (word << ((-shift) & 31));
+}
+
+/**
+ * rol16 - rotate a 16-bit value left
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u16 rol16(__u16 word, unsigned int shift)
+{
+	return (word << (shift & 15)) | (word >> ((-shift) & 15));
+}
+
+/**
+ * ror16 - rotate a 16-bit value right
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u16 ror16(__u16 word, unsigned int shift)
+{
+	return (word >> (shift & 15)) | (word << ((-shift) & 15));
+}
+
+/**
+ * rol8 - rotate an 8-bit value left
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u8 rol8(__u8 word, unsigned int shift)
+{
+	return (word << (shift & 7)) | (word >> ((-shift) & 7));
+}
+
+/**
+ * ror8 - rotate an 8-bit value right
+ * @word: value to rotate
+ * @shift: bits to roll
+ */
+static inline __u8 ror8(__u8 word, unsigned int shift)
+{
+	return (word >> (shift & 7)) | (word << ((-shift) & 7));
+}
+
+/**
+ * sign_extend32 - sign extend a 32-bit value using specified bit as sign-bit
+ * @value: value to sign extend
+ * @index: 0 based bit index (0<=index<32) to sign bit
  *
- * This is defined the same way as ffs.
- * Note fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
+ * This is safe to use for 16- and 8-bit types as well.
  */
-static inline int generic_fls(int x)
+static inline __s32 sign_extend32(__u32 value, int index)
 {
-	int r = 32;
-
-	if (!x)
-		return 0;
-	if (!(x & 0xffff0000u)) {
-		x <<= 16;
-		r -= 16;
-	}
-	if (!(x & 0xff000000u)) {
-		x <<= 8;
-		r -= 8;
-	}
-	if (!(x & 0xf0000000u)) {
-		x <<= 4;
-		r -= 4;
-	}
-	if (!(x & 0xc0000000u)) {
-		x <<= 2;
-		r -= 2;
-	}
-	if (!(x & 0x80000000u)) {
-		x <<= 1;
-		r -= 1;
-	}
-	return r;
+	__u8 shift = 31 - index;
+	return (__s32)(value << shift) >> shift;
 }
 
-
-/*
- * hweightN: returns the hamming weight (i.e. the number
- * of bits set) of a N-bit word
+/**
+ * sign_extend64 - sign extend a 64-bit value using specified bit as sign-bit
+ * @value: value to sign extend
+ * @index: 0 based bit index (0<=index<64) to sign bit
  */
-
-static inline unsigned int generic_hweight32(unsigned int w)
+static inline __s64 sign_extend64(__u64 value, int index)
 {
-	unsigned int res = (w & 0x55555555) + ((w >> 1) & 0x55555555);
-	res = (res & 0x33333333) + ((res >> 2) & 0x33333333);
-	res = (res & 0x0F0F0F0F) + ((res >> 4) & 0x0F0F0F0F);
-	res = (res & 0x00FF00FF) + ((res >> 8) & 0x00FF00FF);
-	return (res & 0x0000FFFF) + ((res >> 16) & 0x0000FFFF);
+	__u8 shift = 63 - index;
+	return (__s64)(value << shift) >> shift;
 }
-
-static inline unsigned int generic_hweight16(unsigned int w)
-{
-	unsigned int res = (w & 0x5555) + ((w >> 1) & 0x5555);
-	res = (res & 0x3333) + ((res >> 2) & 0x3333);
-	res = (res & 0x0F0F) + ((res >> 4) & 0x0F0F);
-	return (res & 0x00FF) + ((res >> 8) & 0x00FF);
-}
-
-static inline unsigned int generic_hweight8(unsigned int w)
-{
-	unsigned int res = (w & 0x55) + ((w >> 1) & 0x55);
-	res = (res & 0x33) + ((res >> 2) & 0x33);
-	return (res & 0x0F) + ((res >> 4) & 0x0F);
-}
-
-static inline unsigned long generic_hweight64(__u64 w)
-{
-	return generic_hweight32((unsigned int)(w >> 32)) +
-	       generic_hweight32((unsigned int)w);
-}
-
-static inline unsigned long hweight_long(unsigned long w)
-{
-	return sizeof(w) == 4 ? generic_hweight32(w) : generic_hweight64(w);
-}
-
-#include <asm/bitops.h>
-
-/* linux/include/asm-generic/bitops/non-atomic.h */
-
-#ifndef PLATFORM__SET_BIT
-# define __set_bit generic_set_bit
-#endif
-
-#ifndef PLATFORM__CLEAR_BIT
-# define __clear_bit generic_clear_bit
-#endif
-
-#ifndef PLATFORM_FFS
-# define ffs generic_ffs
-#endif
-
-#ifndef PLATFORM_FLS
-# define fls generic_fls
-#endif
 
 static inline unsigned fls_long(unsigned long l)
 {
 	if (sizeof(l) == 4)
 		return fls(l);
 	return fls64(l);
+}
+
+static inline int get_count_order(unsigned int count)
+{
+	int order;
+
+	order = fls(count) - 1;
+	if (count & (count - 1))
+		order++;
+	return order;
+}
+
+/**
+ * get_count_order_long - get order after rounding @l up to power of 2
+ * @l: parameter
+ *
+ * it is same as get_count_order() but with long type parameter
+ */
+static inline int get_count_order_long(unsigned long l)
+{
+	if (l == 0UL)
+		return -1;
+	else if (l & (l - 1UL))
+		return (int)fls_long(l);
+	else
+		return (int)fls_long(l) - 1;
 }
 
 /**
@@ -192,28 +217,73 @@ static inline unsigned long __ffs64(u64 word)
 }
 
 /**
- * __set_bit - Set a bit in memory
+ * assign_bit - Assign value to a bit in memory
  * @nr: the bit to set
  * @addr: the address to start counting from
- *
- * Unlike set_bit(), this function is non-atomic and may be reordered.
- * If it's called on the same region of memory simultaneously, the effect
- * may be that only one operation succeeds.
+ * @value: the value to assign
  */
-static inline void generic_set_bit(int nr, volatile unsigned long *addr)
+static __always_inline void assign_bit(long nr, volatile unsigned long *addr,
+				       bool value)
 {
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
-
-	*p  |= mask;
+	if (value)
+		set_bit(nr, addr);
+	else
+		clear_bit(nr, addr);
 }
 
-static inline void generic_clear_bit(int nr, volatile unsigned long *addr)
+static __always_inline void __assign_bit(long nr, volatile unsigned long *addr,
+					 bool value)
 {
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
-
-	*p &= ~mask;
+	if (value)
+		__set_bit(nr, addr);
+	else
+		__clear_bit(nr, addr);
 }
 
+#ifdef __KERNEL__
+
+#ifndef set_mask_bits
+#define set_mask_bits(ptr, mask, bits)	\
+({								\
+	const typeof(*(ptr)) mask__ = (mask), bits__ = (bits);	\
+	typeof(*(ptr)) old__, new__;				\
+								\
+	do {							\
+		old__ = READ_ONCE(*(ptr));			\
+		new__ = (old__ & ~mask__) | bits__;		\
+	} while (cmpxchg(ptr, old__, new__) != old__);		\
+								\
+	old__;							\
+})
+#endif
+
+#ifndef bit_clear_unless
+#define bit_clear_unless(ptr, clear, test)	\
+({								\
+	const typeof(*(ptr)) clear__ = (clear), test__ = (test);\
+	typeof(*(ptr)) old__, new__;				\
+								\
+	do {							\
+		old__ = READ_ONCE(*(ptr));			\
+		new__ = old__ & ~clear__;			\
+	} while (!(old__ & test__) &&				\
+		 cmpxchg(ptr, old__, new__) != old__);		\
+								\
+	!(old__ & test__);					\
+})
+#endif
+
+#ifndef find_last_bit
+/**
+ * find_last_bit - find the last set bit in a memory region
+ * @addr: The address to start the search at
+ * @size: The number of bits to search
+ *
+ * Returns the bit number of the last set bit, or size.
+ */
+extern unsigned long find_last_bit(const unsigned long *addr,
+				   unsigned long size);
+#endif
+
+#endif /* __KERNEL__ */
 #endif

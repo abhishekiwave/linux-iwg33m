@@ -1,17 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2014 Free Electrons
  *
  *  Author: Boris BREZILLON <boris.brezillon@free-electrons.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
-#include <common.h>
-#include <linux/err.h>
 #include <linux/kernel.h>
-#include <linux/mtd/rawnand.h>
+#include <linux/err.h>
+#include <linux/export.h>
+
+#include "internals.h"
+
+#define ONFI_DYN_TIMING_MAX U16_MAX
 
 static const struct nand_data_interface onfi_sdr_timings[] = {
 	/* Mode 0 */
@@ -269,30 +268,17 @@ static const struct nand_data_interface onfi_sdr_timings[] = {
 };
 
 /**
- * onfi_async_timing_mode_to_sdr_timings - [NAND Interface] Retrieve NAND
- * timings according to the given ONFI timing mode
- * @mode: ONFI timing mode
- */
-const struct nand_sdr_timings *onfi_async_timing_mode_to_sdr_timings(int mode)
-{
-	if (mode < 0 || mode >= ARRAY_SIZE(onfi_sdr_timings))
-		return ERR_PTR(-EINVAL);
-
-	return &onfi_sdr_timings[mode].timings.sdr;
-}
-EXPORT_SYMBOL(onfi_async_timing_mode_to_sdr_timings);
-
-/**
- * onfi_init_data_interface - [NAND Interface] Initialize a data interface from
+ * onfi_fill_data_interface - [NAND Interface] Initialize a data interface from
  * given ONFI mode
- * @iface: The data interface to be initialized
  * @mode: The ONFI timing mode
  */
-int onfi_init_data_interface(struct nand_chip *chip,
-			     struct nand_data_interface *iface,
+int onfi_fill_data_interface(struct nand_chip *chip,
 			     enum nand_data_interface_type type,
 			     int timing_mode)
 {
+	struct nand_data_interface *iface = &chip->data_interface;
+	struct onfi_params *onfi = chip->parameters.onfi;
+
 	if (type != NAND_SDR_IFACE)
 		return -EINVAL;
 
@@ -303,33 +289,36 @@ int onfi_init_data_interface(struct nand_chip *chip,
 
 	/*
 	 * Initialize timings that cannot be deduced from timing mode:
-	 * tR, tPROG, tCCS, ...
+	 * tPROG, tBERS, tR and tCCS.
 	 * These information are part of the ONFI parameter page.
 	 */
-	if (chip->onfi_version) {
-		struct nand_onfi_params *params = &chip->onfi_params;
+	if (onfi) {
 		struct nand_sdr_timings *timings = &iface->timings.sdr;
 
 		/* microseconds -> picoseconds */
-		timings->tPROG_max = 1000000ULL * le16_to_cpu(params->t_prog);
-		timings->tBERS_max = 1000000ULL * le16_to_cpu(params->t_bers);
-		timings->tR_max = 1000000ULL * le16_to_cpu(params->t_r);
+		timings->tPROG_max = 1000000ULL * onfi->tPROG;
+		timings->tBERS_max = 1000000ULL * onfi->tBERS;
+		timings->tR_max = 1000000ULL * onfi->tR;
 
 		/* nanoseconds -> picoseconds */
-		timings->tCCS_min = 1000UL * le16_to_cpu(params->t_ccs);
+		timings->tCCS_min = 1000UL * onfi->tCCS;
+	} else {
+		struct nand_sdr_timings *timings = &iface->timings.sdr;
+		/*
+		 * For non-ONFI chips we use the highest possible value for
+		 * tPROG and tBERS. tR and tCCS will take the default values
+		 * precised in the ONFI specification for timing mode 0,
+		 * respectively 200us and 500ns.
+		 */
+
+		/* microseconds -> picoseconds */
+		timings->tPROG_max = 1000000ULL * ONFI_DYN_TIMING_MAX;
+		timings->tBERS_max = 1000000ULL * ONFI_DYN_TIMING_MAX;
+		timings->tR_max = 1000000ULL * 200000000ULL;
+
+		/* nanoseconds -> picoseconds */
+		timings->tCCS_min = 1000UL * 500000;
 	}
 
 	return 0;
 }
-EXPORT_SYMBOL(onfi_init_data_interface);
-
-/**
- * nand_get_default_data_interface - [NAND Interface] Retrieve NAND
- * data interface for mode 0. This is used as default timing after
- * reset.
- */
-const struct nand_data_interface *nand_get_default_data_interface(void)
-{
-	return &onfi_sdr_timings[0];
-}
-EXPORT_SYMBOL(nand_get_default_data_interface);

@@ -1,11 +1,12 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * U-Boot - linkage.h
- *
- * Copyright (c) 2005-2007 Analog Devices Inc.
+ * Copyright (C) 2015 Regents of the University of California
  */
 
-#ifndef __ASM_LINKAGE_H
-#define __ASM_LINKAGE_H
+#ifndef _ASM_RISCV_LINKAGE_H
+#define _ASM_RISCV_LINKAGE_H
 
-#endif
+#define __ALIGN		.balign 4
+#define __ALIGN_STR	".balign 4"
+
+#endif /* _ASM_RISCV_LINKAGE_H */

@@ -1,177 +1,312 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2016 Atmel Corporation
- *               Wenyou.Yang <wenyou.yang@atmel.com>
+ *  Copyright (C) 2015 Atmel Corporation,
+ *                     Nicolas Ferre <nicolas.ferre@atmel.com>
+ *
+ * Based on clk-programmable & clk-peripheral drivers by Boris BREZILLON.
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
-#include <malloc.h>
-#include <linux/err.h>
-#include <linux/io.h>
-#include <mach/at91_pmc.h>
+#include <linux/bitfield.h>
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
+#include <linux/clk/at91_pmc.h>
+#include <linux/of.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
+
 #include "pmc.h"
 
-DECLARE_GLOBAL_DATA_PTR;
-
-#define GENERATED_SOURCE_MAX	6
 #define GENERATED_MAX_DIV	255
 
-/**
- * generated_clk_bind() - for the generated clock driver
- * Recursively bind its children as clk devices.
- *
- * @return: 0 on success, or negative error code on failure
- */
-static int generated_clk_bind(struct udevice *dev)
+#define GCK_INDEX_DT_AUDIO_PLL	5
+
+struct clk_generated {
+	struct clk_hw hw;
+	struct regmap *regmap;
+	struct clk_range range;
+	spinlock_t *lock;
+	u32 id;
+	u32 gckdiv;
+	const struct clk_pcr_layout *layout;
+	u8 parent_id;
+	bool audio_pll_allowed;
+};
+
+#define to_clk_generated(hw) \
+	container_of(hw, struct clk_generated, hw)
+
+static int clk_generated_enable(struct clk_hw *hw)
 {
-	return at91_clk_sub_device_bind(dev, "generic-clk");
+	struct clk_generated *gck = to_clk_generated(hw);
+	unsigned long flags;
+
+	pr_debug("GCLK: %s, gckdiv = %d, parent id = %d\n",
+		 __func__, gck->gckdiv, gck->parent_id);
+
+	spin_lock_irqsave(gck->lock, flags);
+	regmap_write(gck->regmap, gck->layout->offset,
+		     (gck->id & gck->layout->pid_mask));
+	regmap_update_bits(gck->regmap, gck->layout->offset,
+			   AT91_PMC_PCR_GCKDIV_MASK | gck->layout->gckcss_mask |
+			   gck->layout->cmd | AT91_PMC_PCR_GCKEN,
+			   field_prep(gck->layout->gckcss_mask, gck->parent_id) |
+			   gck->layout->cmd |
+			   FIELD_PREP(AT91_PMC_PCR_GCKDIV_MASK, gck->gckdiv) |
+			   AT91_PMC_PCR_GCKEN);
+	spin_unlock_irqrestore(gck->lock, flags);
+	return 0;
 }
 
-static const struct udevice_id generated_clk_match[] = {
-	{ .compatible = "atmel,sama5d2-clk-generated" },
-	{}
-};
-
-U_BOOT_DRIVER(generated_clk) = {
-	.name = "generated-clk",
-	.id = UCLASS_MISC,
-	.of_match = generated_clk_match,
-	.bind = generated_clk_bind,
-};
-
-/*-------------------------------------------------------------*/
-
-struct generic_clk_priv {
-	u32 num_parents;
-};
-
-static ulong generic_clk_get_rate(struct clk *clk)
+static void clk_generated_disable(struct clk_hw *hw)
 {
-	struct pmc_platdata *plat = dev_get_platdata(clk->dev);
-	struct at91_pmc *pmc = plat->reg_base;
-	struct clk parent;
-	ulong clk_rate;
-	u32 tmp, gckdiv;
-	u8 clock_source, parent_index;
-	int ret;
+	struct clk_generated *gck = to_clk_generated(hw);
+	unsigned long flags;
 
-	writel(clk->id & AT91_PMC_PCR_PID_MASK, &pmc->pcr);
-	tmp = readl(&pmc->pcr);
-	clock_source = (tmp >> AT91_PMC_PCR_GCKCSS_OFFSET) &
-		    AT91_PMC_PCR_GCKCSS_MASK;
-	gckdiv = (tmp >> AT91_PMC_PCR_GCKDIV_OFFSET) & AT91_PMC_PCR_GCKDIV_MASK;
-
-	parent_index = clock_source - 1;
-	ret = clk_get_by_index(dev_get_parent(clk->dev), parent_index, &parent);
-	if (ret)
-		return 0;
-
-	clk_rate = clk_get_rate(&parent) / (gckdiv + 1);
-
-	clk_free(&parent);
-
-	return clk_rate;
+	spin_lock_irqsave(gck->lock, flags);
+	regmap_write(gck->regmap, gck->layout->offset,
+		     (gck->id & gck->layout->pid_mask));
+	regmap_update_bits(gck->regmap, gck->layout->offset,
+			   gck->layout->cmd | AT91_PMC_PCR_GCKEN,
+			   gck->layout->cmd);
+	spin_unlock_irqrestore(gck->lock, flags);
 }
 
-static ulong generic_clk_set_rate(struct clk *clk, ulong rate)
+static int clk_generated_is_enabled(struct clk_hw *hw)
 {
-	struct pmc_platdata *plat = dev_get_platdata(clk->dev);
-	struct at91_pmc *pmc = plat->reg_base;
-	struct generic_clk_priv *priv = dev_get_priv(clk->dev);
-	struct clk parent, best_parent;
-	ulong tmp_rate, best_rate = rate, parent_rate;
-	int tmp_diff, best_diff = -1;
-	u32 div, best_div = 0;
-	u8 best_parent_index, best_clock_source = 0;
-	u8 i;
-	u32 tmp;
-	int ret;
+	struct clk_generated *gck = to_clk_generated(hw);
+	unsigned long flags;
+	unsigned int status;
 
-	for (i = 0; i < priv->num_parents; i++) {
-		ret = clk_get_by_index(dev_get_parent(clk->dev), i, &parent);
-		if (ret)
-			return ret;
+	spin_lock_irqsave(gck->lock, flags);
+	regmap_write(gck->regmap, gck->layout->offset,
+		     (gck->id & gck->layout->pid_mask));
+	regmap_read(gck->regmap, gck->layout->offset, &status);
+	spin_unlock_irqrestore(gck->lock, flags);
 
-		parent_rate = clk_get_rate(&parent);
-		if (IS_ERR_VALUE(parent_rate))
-			return parent_rate;
+	return status & AT91_PMC_PCR_GCKEN ? 1 : 0;
+}
 
-		for (div = 1; div < GENERATED_MAX_DIV + 2; div++) {
-			tmp_rate = DIV_ROUND_CLOSEST(parent_rate, div);
-			tmp_diff = abs(rate - tmp_rate);
+static unsigned long
+clk_generated_recalc_rate(struct clk_hw *hw,
+			  unsigned long parent_rate)
+{
+	struct clk_generated *gck = to_clk_generated(hw);
 
-			if (best_diff < 0 || best_diff > tmp_diff) {
-				best_rate = tmp_rate;
-				best_diff = tmp_diff;
+	return DIV_ROUND_CLOSEST(parent_rate, gck->gckdiv + 1);
+}
 
-				best_div = div - 1;
-				best_parent = parent;
-				best_parent_index = i;
-				best_clock_source = best_parent_index + 1;
-			}
+static void clk_generated_best_diff(struct clk_rate_request *req,
+				    struct clk_hw *parent,
+				    unsigned long parent_rate, u32 div,
+				    int *best_diff, long *best_rate)
+{
+	unsigned long tmp_rate;
+	int tmp_diff;
 
-			if (!best_diff || tmp_rate < rate)
-				break;
-		}
+	if (!div)
+		tmp_rate = parent_rate;
+	else
+		tmp_rate = parent_rate / div;
+	tmp_diff = abs(req->rate - tmp_rate);
+
+	if (*best_diff < 0 || *best_diff > tmp_diff) {
+		*best_rate = tmp_rate;
+		*best_diff = tmp_diff;
+		req->best_parent_rate = parent_rate;
+		req->best_parent_hw = parent;
+	}
+}
+
+static int clk_generated_determine_rate(struct clk_hw *hw,
+					struct clk_rate_request *req)
+{
+	struct clk_generated *gck = to_clk_generated(hw);
+	struct clk_hw *parent = NULL;
+	struct clk_rate_request req_parent = *req;
+	long best_rate = -EINVAL;
+	unsigned long min_rate, parent_rate;
+	int best_diff = -1;
+	int i;
+	u32 div;
+
+	for (i = 0; i < clk_hw_get_num_parents(hw) - 1; i++) {
+		parent = clk_hw_get_parent_by_index(hw, i);
+		if (!parent)
+			continue;
+
+		parent_rate = clk_hw_get_rate(parent);
+		min_rate = DIV_ROUND_CLOSEST(parent_rate, GENERATED_MAX_DIV + 1);
+		if (!parent_rate ||
+		    (gck->range.max && min_rate > gck->range.max))
+			continue;
+
+		div = DIV_ROUND_CLOSEST(parent_rate, req->rate);
+		if (div > GENERATED_MAX_DIV + 1)
+			div = GENERATED_MAX_DIV + 1;
+
+		clk_generated_best_diff(req, parent, parent_rate, div,
+					&best_diff, &best_rate);
 
 		if (!best_diff)
 			break;
 	}
 
-	debug("GCK: best parent: %s, best_rate = %ld, best_div = %d\n",
-	      best_parent.dev->name, best_rate, best_div);
+	/*
+	 * The audio_pll rate can be modified, unlike the five others clocks
+	 * that should never be altered.
+	 * The audio_pll can technically be used by multiple consumers. However,
+	 * with the rate locking, the first consumer to enable to clock will be
+	 * the one definitely setting the rate of the clock.
+	 * Since audio IPs are most likely to request the same rate, we enforce
+	 * that the only clks able to modify gck rate are those of audio IPs.
+	 */
 
-	ret = clk_enable(&best_parent);
-	if (ret)
-		return ret;
+	if (!gck->audio_pll_allowed)
+		goto end;
 
-	writel(clk->id & AT91_PMC_PCR_PID_MASK, &pmc->pcr);
-	tmp = readl(&pmc->pcr);
-	tmp &= ~(AT91_PMC_PCR_GCKDIV | AT91_PMC_PCR_GCKCSS);
-	tmp |= AT91_PMC_PCR_GCKCSS_(best_clock_source) |
-	       AT91_PMC_PCR_CMD_WRITE |
-	       AT91_PMC_PCR_GCKDIV_(best_div) |
-	       AT91_PMC_PCR_GCKEN;
-	writel(tmp, &pmc->pcr);
+	parent = clk_hw_get_parent_by_index(hw, GCK_INDEX_DT_AUDIO_PLL);
+	if (!parent)
+		goto end;
 
-	while (!(readl(&pmc->sr) & AT91_PMC_GCKRDY))
-		;
+	for (div = 1; div < GENERATED_MAX_DIV + 2; div++) {
+		req_parent.rate = req->rate * div;
+		__clk_determine_rate(parent, &req_parent);
+		clk_generated_best_diff(req, parent, req_parent.rate, div,
+					&best_diff, &best_rate);
 
+		if (!best_diff)
+			break;
+	}
+
+end:
+	pr_debug("GCLK: %s, best_rate = %ld, parent clk: %s @ %ld\n",
+		 __func__, best_rate,
+		 __clk_get_name((req->best_parent_hw)->clk),
+		 req->best_parent_rate);
+
+	if (best_rate < 0)
+		return best_rate;
+
+	req->rate = best_rate;
 	return 0;
 }
 
-static struct clk_ops generic_clk_ops = {
-	.of_xlate = at91_clk_of_xlate,
-	.get_rate = generic_clk_get_rate,
-	.set_rate = generic_clk_set_rate,
-};
-
-static int generic_clk_ofdata_to_platdata(struct udevice *dev)
+/* No modification of hardware as we have the flag CLK_SET_PARENT_GATE set */
+static int clk_generated_set_parent(struct clk_hw *hw, u8 index)
 {
-	struct generic_clk_priv *priv = dev_get_priv(dev);
-	u32 cells[GENERATED_SOURCE_MAX];
-	u32 num_parents;
+	struct clk_generated *gck = to_clk_generated(hw);
 
-	num_parents = fdtdec_get_int_array_count(gd->fdt_blob,
-			dev_of_offset(dev_get_parent(dev)), "clocks", cells,
-			GENERATED_SOURCE_MAX);
+	if (index >= clk_hw_get_num_parents(hw))
+		return -EINVAL;
 
-	if (!num_parents)
-		return -1;
-
-	priv->num_parents = num_parents;
-
+	gck->parent_id = index;
 	return 0;
 }
 
-U_BOOT_DRIVER(generic_clk) = {
-	.name = "generic-clk",
-	.id = UCLASS_CLK,
-	.probe = at91_clk_probe,
-	.ofdata_to_platdata = generic_clk_ofdata_to_platdata,
-	.priv_auto_alloc_size = sizeof(struct generic_clk_priv),
-	.platdata_auto_alloc_size = sizeof(struct pmc_platdata),
-	.ops = &generic_clk_ops,
+static u8 clk_generated_get_parent(struct clk_hw *hw)
+{
+	struct clk_generated *gck = to_clk_generated(hw);
+
+	return gck->parent_id;
+}
+
+/* No modification of hardware as we have the flag CLK_SET_RATE_GATE set */
+static int clk_generated_set_rate(struct clk_hw *hw,
+				  unsigned long rate,
+				  unsigned long parent_rate)
+{
+	struct clk_generated *gck = to_clk_generated(hw);
+	u32 div;
+
+	if (!rate)
+		return -EINVAL;
+
+	if (gck->range.max && rate > gck->range.max)
+		return -EINVAL;
+
+	div = DIV_ROUND_CLOSEST(parent_rate, rate);
+	if (div > GENERATED_MAX_DIV + 1 || !div)
+		return -EINVAL;
+
+	gck->gckdiv = div - 1;
+	return 0;
+}
+
+static const struct clk_ops generated_ops = {
+	.enable = clk_generated_enable,
+	.disable = clk_generated_disable,
+	.is_enabled = clk_generated_is_enabled,
+	.recalc_rate = clk_generated_recalc_rate,
+	.determine_rate = clk_generated_determine_rate,
+	.get_parent = clk_generated_get_parent,
+	.set_parent = clk_generated_set_parent,
+	.set_rate = clk_generated_set_rate,
 };
+
+/**
+ * clk_generated_startup - Initialize a given clock to its default parent and
+ * divisor parameter.
+ *
+ * @gck:	Generated clock to set the startup parameters for.
+ *
+ * Take parameters from the hardware and update local clock configuration
+ * accordingly.
+ */
+static void clk_generated_startup(struct clk_generated *gck)
+{
+	u32 tmp;
+	unsigned long flags;
+
+	spin_lock_irqsave(gck->lock, flags);
+	regmap_write(gck->regmap, gck->layout->offset,
+		     (gck->id & gck->layout->pid_mask));
+	regmap_read(gck->regmap, gck->layout->offset, &tmp);
+	spin_unlock_irqrestore(gck->lock, flags);
+
+	gck->parent_id = field_get(gck->layout->gckcss_mask, tmp);
+	gck->gckdiv = FIELD_GET(AT91_PMC_PCR_GCKDIV_MASK, tmp);
+}
+
+struct clk_hw * __init
+at91_clk_register_generated(struct regmap *regmap, spinlock_t *lock,
+			    const struct clk_pcr_layout *layout,
+			    const char *name, const char **parent_names,
+			    u8 num_parents, u8 id, bool pll_audio,
+			    const struct clk_range *range)
+{
+	struct clk_generated *gck;
+	struct clk_init_data init;
+	struct clk_hw *hw;
+	int ret;
+
+	gck = kzalloc(sizeof(*gck), GFP_KERNEL);
+	if (!gck)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = name;
+	init.ops = &generated_ops;
+	init.parent_names = parent_names;
+	init.num_parents = num_parents;
+	init.flags = CLK_SET_RATE_GATE | CLK_SET_PARENT_GATE |
+		CLK_SET_RATE_PARENT;
+
+	gck->id = id;
+	gck->hw.init = &init;
+	gck->regmap = regmap;
+	gck->lock = lock;
+	gck->range = *range;
+	gck->audio_pll_allowed = pll_audio;
+	gck->layout = layout;
+
+	clk_generated_startup(gck);
+	hw = &gck->hw;
+	ret = clk_hw_register(NULL, &gck->hw);
+	if (ret) {
+		kfree(gck);
+		hw = ERR_PTR(ret);
+	} else {
+		pmc_register_id(id);
+	}
+
+	return hw;
+}

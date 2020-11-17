@@ -1,35 +1,38 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2016 Socionext Inc.
  *   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
  */
 
+#include <linux/stddef.h>
+
 #include "clk-uniphier.h"
 
 #define UNIPHIER_MIO_CLK_SD_FIXED					\
-	UNIPHIER_CLK_RATE(128, 44444444),				\
-	UNIPHIER_CLK_RATE(129, 33333333),				\
-	UNIPHIER_CLK_RATE(130, 50000000),				\
-	UNIPHIER_CLK_RATE(131, 66666667),				\
-	UNIPHIER_CLK_RATE(132, 100000000),				\
-	UNIPHIER_CLK_RATE(133, 40000000),				\
-	UNIPHIER_CLK_RATE(134, 25000000),				\
-	UNIPHIER_CLK_RATE(135, 22222222)
+	UNIPHIER_CLK_FACTOR("sd-44m", -1, "sd-133m", 1, 3),		\
+	UNIPHIER_CLK_FACTOR("sd-33m", -1, "sd-200m", 1, 6),		\
+	UNIPHIER_CLK_FACTOR("sd-50m", -1, "sd-200m", 1, 4),		\
+	UNIPHIER_CLK_FACTOR("sd-67m", -1, "sd-200m", 1, 3),		\
+	UNIPHIER_CLK_FACTOR("sd-100m", -1, "sd-200m", 1, 2),		\
+	UNIPHIER_CLK_FACTOR("sd-40m", -1, "sd-200m", 1, 5),		\
+	UNIPHIER_CLK_FACTOR("sd-25m", -1, "sd-200m", 1, 8),		\
+	UNIPHIER_CLK_FACTOR("sd-22m", -1, "sd-133m", 1, 6)
 
-#define UNIPHIER_MIO_CLK_SD(_id, ch)					\
+#define UNIPHIER_MIO_CLK_SD(_idx, ch)					\
 	{								\
+		.name = "sd" #ch "-sel",				\
 		.type = UNIPHIER_CLK_TYPE_MUX,				\
-		.id = (_id) + 32,					\
+		.idx = -1,						\
 		.data.mux = {						\
-			.parent_ids = {					\
-				128,					\
-				129,					\
-				130,					\
-				131,					\
-				132,					\
-				133,					\
-				134,					\
-				135,					\
+			.parent_names = {				\
+				"sd-44m",				\
+				"sd-33m",				\
+				"sd-50m",				\
+				"sd-67m",				\
+				"sd-100m",				\
+				"sd-40m",				\
+				"sd-25m",				\
+				"sd-22m",				\
 			},						\
 			.num_parents = 8,				\
 			.reg = 0x30 + 0x200 * (ch),			\
@@ -55,28 +58,32 @@
 			},						\
 		},							\
 	},								\
-	UNIPHIER_CLK_GATE((_id), (_id) + 32, 0x20 + 0x200 * (ch), 8)
+	UNIPHIER_CLK_GATE("sd" #ch, (_idx), "sd" #ch "-sel", 0x20 + 0x200 * (ch), 8)
 
-#define UNIPHIER_MIO_CLK_USB2(id, ch)					\
-	UNIPHIER_CLK_GATE_SIMPLE((id), 0x20 + 0x200 * (ch), 28)
+#define UNIPHIER_MIO_CLK_USB2(idx, ch)					\
+	UNIPHIER_CLK_GATE("usb2" #ch, (idx), "usb2", 0x20 + 0x200 * (ch), 28)
 
-#define UNIPHIER_MIO_CLK_USB2_PHY(id, ch)				\
-	UNIPHIER_CLK_GATE_SIMPLE((id), 0x20 + 0x200 * (ch), 29)
+#define UNIPHIER_MIO_CLK_USB2_PHY(idx, ch)				\
+	UNIPHIER_CLK_GATE("usb2" #ch "-phy", (idx), "usb2", 0x20 + 0x200 * (ch), 29)
 
-#define UNIPHIER_MIO_CLK_DMAC(id)					\
-	UNIPHIER_CLK_GATE_SIMPLE((id), 0x20, 25)
-
-const struct uniphier_clk_data uniphier_mio_clk_data[] = {
+const struct uniphier_clk_data uniphier_ld4_mio_clk_data[] = {
 	UNIPHIER_MIO_CLK_SD_FIXED,
 	UNIPHIER_MIO_CLK_SD(0, 0),
 	UNIPHIER_MIO_CLK_SD(1, 1),
 	UNIPHIER_MIO_CLK_SD(2, 2),
-	UNIPHIER_MIO_CLK_DMAC(7),
+	UNIPHIER_CLK_GATE("miodmac", 7, NULL, 0x20, 25),
 	UNIPHIER_MIO_CLK_USB2(8, 0),
 	UNIPHIER_MIO_CLK_USB2(9, 1),
 	UNIPHIER_MIO_CLK_USB2(10, 2),
 	UNIPHIER_MIO_CLK_USB2_PHY(12, 0),
 	UNIPHIER_MIO_CLK_USB2_PHY(13, 1),
 	UNIPHIER_MIO_CLK_USB2_PHY(14, 2),
+	{ /* sentinel */ }
+};
+
+const struct uniphier_clk_data uniphier_pro5_sd_clk_data[] = {
+	UNIPHIER_MIO_CLK_SD_FIXED,
+	UNIPHIER_MIO_CLK_SD(0, 0),
+	UNIPHIER_MIO_CLK_SD(1, 1),
 	{ /* sentinel */ }
 };

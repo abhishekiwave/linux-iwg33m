@@ -1,17 +1,26 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * (C) Copyright 2004, Psyent Corporation <www.psyent.com>
- * Scott McNutt <smcnutt@psyent.com>
+ * Copyright (C) 2004 Microtronix Datacom Ltd.
+ *
+ * All rights reserved.
  */
 
-#ifndef __ASM_NIOS2_CACHE_H_
-#define __ASM_NIOS2_CACHE_H_
+#ifndef _ASM_NIOS2_CACHE_H
+#define _ASM_NIOS2_CACHE_H
 
-/*
- * Valid L1 data cache line sizes for the NIOS2 architecture are 4,
- * 16, and 32 bytes. We default to the largest of these values for
- * alignment of DMA buffers.
- */
-#define ARCH_DMA_MINALIGN	32
+#define NIOS2_DCACHE_SIZE	CONFIG_NIOS2_DCACHE_SIZE
+#define NIOS2_ICACHE_SIZE	CONFIG_NIOS2_ICACHE_SIZE
+#define NIOS2_DCACHE_LINE_SIZE	CONFIG_NIOS2_DCACHE_LINE_SIZE
+#define NIOS2_ICACHE_LINE_SHIFT	5
+#define NIOS2_ICACHE_LINE_SIZE	(1 << NIOS2_ICACHE_LINE_SHIFT)
 
-#endif /* __ASM_NIOS2_CACHE_H_ */
+/* bytes per L1 cache line */
+#define L1_CACHE_SHIFT		NIOS2_ICACHE_LINE_SHIFT
+#define L1_CACHE_BYTES		NIOS2_ICACHE_LINE_SIZE
+
+#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
+
+#define __cacheline_aligned
+#define ____cacheline_aligned
+
+#endif

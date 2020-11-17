@@ -1,8 +1,8 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# (C) Copyright 2007 - 2013 Tensilica Inc.
-# (C) Copyright 2014 - 2016 Cadence Design Systems Inc.
+# Makefile for Xtensa-specific library files.
+#
 
-obj-$(CONFIG_CMD_BOOTM) += bootm.o
-
-obj-y 	+= cache.o misc.o relocate.o time.o
+lib-y	+= memcopy.o memset.o checksum.o \
+	   usercopy.o strncpy_user.o strnlen_user.o
+lib-$(CONFIG_PCI) += pci-auto.o

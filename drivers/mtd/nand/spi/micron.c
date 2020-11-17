@@ -6,11 +6,8 @@
  *	Peter Pan <peterpandong@micron.com>
  */
 
-#ifndef __UBOOT__
-#include <malloc.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#endif
 #include <linux/mtd/spinand.h>
 
 #define SPINAND_MFR_MICRON		0x2c
@@ -64,7 +61,7 @@ static int mt29f2g01abagd_ooblayout_free(struct mtd_info *mtd, int section,
 
 static const struct mtd_ooblayout_ops mt29f2g01abagd_ooblayout = {
 	.ecc = mt29f2g01abagd_ooblayout_ecc,
-	.rfree = mt29f2g01abagd_ooblayout_free,
+	.free = mt29f2g01abagd_ooblayout_free,
 };
 
 static int mt29f2g01abagd_ecc_get_status(struct spinand_device *spinand,
@@ -95,7 +92,7 @@ static int mt29f2g01abagd_ecc_get_status(struct spinand_device *spinand,
 
 static const struct spinand_info micron_spinand_table[] = {
 	SPINAND_INFO("MT29F2G01ABAGD", 0x24,
-		     NAND_MEMORG(1, 2048, 128, 64, 2048, 2, 1, 1),
+		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 2, 1, 1),
 		     NAND_ECCREQ(8, 512),
 		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
 					      &write_cache_variants,

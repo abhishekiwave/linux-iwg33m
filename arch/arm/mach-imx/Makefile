@@ -1,287 +1,132 @@
-# SPDX-License-Identifier: GPL-2.0+
-#
-# (C) Copyright 2000-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
-#
-# (C) Copyright 2011 Freescale Semiconductor, Inc.
+# SPDX-License-Identifier: GPL-2.0
+obj-y := cpu.o system.o irq-common.o common.o
 
-ifeq ($(SOC),$(filter $(SOC),mx25 mx35 mx5 mx6 mx7 imx8m vf610))
-obj-y	= iomux-v3.o
+obj-$(CONFIG_SOC_IMX21) += mm-imx21.o
+
+obj-$(CONFIG_SOC_IMX25) += cpu-imx25.o mach-imx25.o pm-imx25.o
+
+obj-$(CONFIG_SOC_IMX27) += cpu-imx27.o pm-imx27.o
+obj-$(CONFIG_SOC_IMX27) += mm-imx27.o ehci-imx27.o
+
+obj-$(CONFIG_SOC_IMX31) += mm-imx3.o cpu-imx31.o iomux-imx31.o ehci-imx31.o
+obj-$(CONFIG_SOC_IMX35) += mm-imx3.o cpu-imx35.o ehci-imx35.o
+
+imx5-pm-$(CONFIG_PM) += pm-imx5.o
+obj-$(CONFIG_SOC_IMX5) += cpu-imx5.o $(imx5-pm-y)
+
+obj-$(CONFIG_IMX_HAVE_IOMUX_V1) += iomux-v1.o
+obj-$(CONFIG_ARCH_MXC_IOMUX_V3) += iomux-v3.o
+
+obj-$(CONFIG_MXC_TZIC) += tzic.o
+obj-$(CONFIG_MXC_AVIC) += avic.o
+
+obj-$(CONFIG_MXC_DEBUG_BOARD) += 3ds_debugboard.o
+
+ifeq ($(CONFIG_CPU_IDLE),y)
+obj-$(CONFIG_SOC_IMX5) += cpuidle-imx5.o
+obj-$(CONFIG_SOC_IMX6Q) += cpuidle-imx6q.o
+AFLAGS_imx6sl_low_power_idle.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SOC_IMX6SL) += cpuidle-imx6sl.o imx6sl_low_power_idle.o
+AFLAGS_imx6sll_low_power_idle.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SOC_IMX6SLL) += cpuidle-imx6sll.o imx6sll_low_power_idle.o
+obj-$(CONFIG_SOC_IMX6SX) += cpuidle-imx6sx.o imx6sx_low_power_idle.o
+AFLAGS_imx6sx_low_power_idle.o :=-Wa,-march=armv7-a
+AFLAGS_imx6ul_low_power_idle.o :=-Wa,-march=armv7-a
+AFLAGS_imx6ull_low_power_idle.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SOC_IMX6UL) += cpuidle-imx6ul.o imx6ul_low_power_idle.o imx6ull_low_power_idle.o
+obj-$(CONFIG_SOC_IMX7ULP) += cpuidle-imx7ulp.o pm-rpmsg.o
+AFLAGS_imx7d_low_power_idle.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SOC_IMX7D_CA7) += cpuidle-imx7d.o imx7d_low_power_idle.o
 endif
 
-ifeq ($(SOC),$(filter $(SOC),imx8m))
-ifneq ($(CONFIG_SPL_BUILD),y)
-obj-$(CONFIG_IMX_BOOTAUX) += imx_bootaux.o
-endif
-obj-y += mmc_env.o
-obj-$(CONFIG_FEC_MXC) += mac.o
-obj-$(CONFIG_SYS_I2C_MXC) += i2c-mxv7.o
-obj-$(CONFIG_IMX_HAB) += hab.o
-obj-y += cpu.o
+ifdef CONFIG_SND_SOC_IMX_PCM_FIQ
+obj-y += ssi-fiq.o
+obj-y += ssi-fiq-ksym.o
 endif
 
-ifeq ($(SOC),$(filter $(SOC),mx5 mx6))
-obj-y	+= cpu.o speed.o
-ifneq ($(CONFIG_MX51),y)
-obj-y	+= mmdc_size.o
+# i.MX21 based machines
+obj-$(CONFIG_MACH_MX21ADS) += mach-mx21ads.o
+
+# i.MX27 based machines
+obj-$(CONFIG_MACH_MX27ADS) += mach-mx27ads.o
+obj-$(CONFIG_MACH_MX27_3DS) += mach-mx27_3ds.o
+obj-$(CONFIG_MACH_IMX27_VISSTRIM_M10) += mach-imx27_visstrim_m10.o
+obj-$(CONFIG_MACH_PCA100) += mach-pca100.o
+obj-$(CONFIG_MACH_IMX27_DT) += imx27-dt.o
+
+# i.MX31 based machines
+obj-$(CONFIG_MACH_MX31ADS) += mach-mx31ads.o
+obj-$(CONFIG_MACH_MX31LILLY) += mach-mx31lilly.o mx31lilly-db.o
+obj-$(CONFIG_MACH_MX31LITE) += mach-mx31lite.o mx31lite-db.o
+obj-$(CONFIG_MACH_PCM037) += mach-pcm037.o
+obj-$(CONFIG_MACH_PCM037_EET) += mach-pcm037_eet.o
+obj-$(CONFIG_MACH_MX31_3DS) += mach-mx31_3ds.o
+obj-$(CONFIG_MACH_MX31MOBOARD) += mach-mx31moboard.o mx31moboard-devboard.o \
+		mx31moboard-marxbot.o mx31moboard-smartbot.o
+obj-$(CONFIG_MACH_QONG) += mach-qong.o
+obj-$(CONFIG_MACH_ARMADILLO5X0) += mach-armadillo5x0.o
+obj-$(CONFIG_MACH_KZM_ARM11_01) += mach-kzm_arm11_01.o
+obj-$(CONFIG_MACH_BUG) += mach-bug.o
+obj-$(CONFIG_MACH_IMX31_DT) += imx31-dt.o
+
+# i.MX35 based machines
+obj-$(CONFIG_MACH_PCM043) += mach-pcm043.o
+obj-$(CONFIG_MACH_MX35_3DS) += mach-mx35_3ds.o
+obj-$(CONFIG_MACH_VPR200) += mach-vpr200.o
+obj-$(CONFIG_MACH_IMX35_DT) += imx35-dt.o
+
+obj-$(CONFIG_HAVE_IMX_ANATOP) += anatop.o
+obj-$(CONFIG_HAVE_IMX_GPC) += gpc.o
+obj-$(CONFIG_HAVE_IMX_GPCV2) += gpcv2.o
+obj-$(CONFIG_HAVE_IMX_MMDC) += mmdc.o
+obj-$(CONFIG_HAVE_IMX_SRC) += src.o
+obj-$(CONFIG_HAVE_IMX_DDRC) += ddrc.o
+obj-$(CONFIG_HAVE_IMX_MU) += mu.o
+ifneq ($(CONFIG_SOC_IMX6)$(CONFIG_SOC_LS1021A),)
+AFLAGS_headsmp.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SMP) += headsmp.o platsmp.o
+obj-$(CONFIG_HOTPLUG_CPU) += hotplug.o
 endif
-obj-$(CONFIG_GPT_TIMER) += timer.o
-obj-$(CONFIG_SYS_I2C_MXC) += i2c-mxv7.o
+obj-$(CONFIG_SOC_IMX6Q) += mach-imx6q.o ddr3_freq_imx6.o smp_wfe_imx6.o \
+				lpddr2_freq_imx6q.o
+obj-$(CONFIG_SOC_IMX6SL) += mach-imx6sl.o lpddr2_freq_imx6.o
+obj-$(CONFIG_SOC_IMX6SLL) += mach-imx6sl.o lpddr2_freq_imx6sll.o
+obj-$(CONFIG_SOC_IMX6SX) += mach-imx6sx.o ddr3_freq_imx6sx.o smp_wfe_imx6.o lpddr2_freq_imx6sx.o
+obj-$(CONFIG_SOC_IMX6UL) += mach-imx6ul.o
+obj-$(CONFIG_SOC_IMX7D_CA7) += mach-imx7d.o pm-imx7.o ddr3_freq_imx7d.o smp_wfe.o \
+			   lpddr3_freq_imx.o suspend-imx7.o
+obj-$(CONFIG_SOC_IMX7D_CM4) += mach-imx7d-cm4.o
+obj-$(CONFIG_SOC_IMX7ULP) += mach-imx7ulp.o pm-imx7ulp.o
+
+obj-y += busfreq-imx.o busfreq_ddr3.o busfreq_lpddr2.o
+AFLAGS_smp_wfe.o :=-Wa,-march=armv7-a
+AFLAGS_smp_wfe_imx6.o :=-Wa,-march=armv7-a
+AFLAGS_ddr3_freq_imx7d.o :=-Wa,-march=armv7-a
+AFLAGS_lpddr3_freq_imx.o :=-Wa,-march=armv7-a
+AFLAGS_ddr3_freq_imx6.o :=-Wa,-march=armv7-a
+AFLAGS_lpddr2_freq_imx6.o :=-Wa,-march=armv7-a
+AFLAGS_lpddr2_freq_imx6q.o :=-Wa,-march=armv7-a
+AFLAGS_lpddr2_freq_imx6sx.o :=-Wa,-march=armv7-a
+AFLAGS_lpddr2_freq_imx6sll.o :=-Wa,-march=armv7-a
+AFLAGS_ddr3_freq_imx6sx.o :=-Wa,-march=armv7-a
+
+ifeq ($(CONFIG_SUSPEND),y)
+AFLAGS_suspend-imx6.o :=-Wa,-march=armv7-a
+AFLAGS_suspend-imx7.o :=-Wa,-march=armv7-a
+AFLAGS_suspend-imx7ulp.o :=-Wa,-march=armv7-a
+obj-$(CONFIG_SOC_IMX6) += suspend-imx6.o
+obj-$(CONFIG_SOC_IMX53) += suspend-imx53.o
+obj-$(CONFIG_SOC_IMX7ULP) += suspend-imx7ulp.o
 endif
-ifeq ($(SOC),$(filter $(SOC),mx7 mx6 mxs mx7ulp imx8m imx8 imxrt))
-obj-y	+= misc.o
-obj-$(CONFIG_CMD_PRIBLOB) += priblob.o
-obj-$(CONFIG_SPL_BUILD)	+= spl.o
-endif
-ifeq ($(SOC),$(filter $(SOC),imx8m imx8))
-obj-y	+= dt_optee.o
-endif
-ifeq ($(SOC),$(filter $(SOC),mx7))
-obj-y 	+= cpu.o
-obj-$(CONFIG_SYS_I2C_MXC) += i2c-mxv7.o
-obj-y += mmc_env.o
-endif
-ifeq ($(SOC),$(filter $(SOC),mx7 imx8))
-obj-$(CONFIG_FSL_MFGPROT) += cmd_mfgprot.o
-endif
-ifeq ($(SOC),$(filter $(SOC),mx5 mx6 mx7))
-obj-$(CONFIG_IMX_VIDEO_SKIP) += video.o
-endif
-ifeq ($(SOC),$(filter $(SOC),mx6 mx7))
-obj-y 	+= cache.o init.o
-obj-$(CONFIG_FEC_MXC) += mac.o
-obj-$(CONFIG_IMX_RDC) += rdc-sema.o
-ifneq ($(CONFIG_SPL_BUILD),y)
-obj-$(CONFIG_IMX_BOOTAUX) += imx_bootaux.o
-endif
-obj-$(CONFIG_SATA) += sata.o
-obj-$(CONFIG_IMX_HAB)    += hab.o
-obj-$(CONFIG_SYSCOUNTER_TIMER) += syscounter.o
-obj-$(CONFIG_IMX_TRUSTY_OS) += trusty.o
-endif
-ifeq ($(SOC),$(filter $(SOC),mx7ulp))
-obj-y  += cache.o mmdc_size.o
-obj-$(CONFIG_IMX_HAB) += hab.o
-endif
-ifeq ($(SOC),$(filter $(SOC),vf610))
-obj-y += ddrmc-vf610.o
-obj-$(CONFIG_DDRMC_VF610_CALIBRATION) += ddrmc-vf610-calibration.o
-endif
-ifeq ($(SOC),$(filter $(SOC),imx8))
-ifneq ($(CONFIG_SPL_BUILD),y)
-obj-$(CONFIG_IMX_BOOTAUX) += imx_bootaux.o
-obj-y  += misc.o
-endif
-endif
-ifneq ($(CONFIG_SPL_BUILD),y)
-obj-$(CONFIG_CMD_BMODE) += cmd_bmode.o
-obj-$(CONFIG_CMD_HDMIDETECT) += cmd_hdmidet.o
-obj-$(CONFIG_CMD_DEKBLOB) += cmd_dek.o
-obj-$(CONFIG_CMD_NANDBCB) += cmd_nandbcb.o
-obj-$(CONFIG_IMX_VSERVICE) += imx_vservice.o
-endif
+obj-$(CONFIG_SOC_IMX6) += pm-imx6.o
 
-PLUGIN = board/$(BOARDDIR)/plugin
+obj-$(CONFIG_SOC_IMX1) += mach-imx1.o
+obj-$(CONFIG_SOC_IMX50) += mach-imx50.o
+obj-$(CONFIG_SOC_IMX51) += mach-imx51.o
+obj-$(CONFIG_SOC_IMX53) += mach-imx53.o
 
-ifeq ($(CONFIG_USE_IMXIMG_PLUGIN),y)
+obj-$(CONFIG_SOC_VF610) += mach-vf610.o
 
-$(PLUGIN).o: $(PLUGIN).S FORCE
-	$(Q)mkdir -p $(dir $@)
-	$(call if_changed_dep,as_o_S)
+obj-$(CONFIG_SOC_LS1021A) += mach-ls1021a.o
 
-$(PLUGIN).bin: $(PLUGIN).o FORCE
-	$(Q)mkdir -p $(dir $@)
-	$(OBJCOPY) -O binary --gap-fill 0xff $< $@
-else
-
-$(PLUGIN).bin:
-
-endif
-
-quiet_cmd_cpp_cfg = CFGS    $@
-      cmd_cpp_cfg = $(CPP) $(cpp_flags) -x c -o $@ $<
-
-# mkimage source config file
-IMX_CONFIG = $(CONFIG_IMX_CONFIG:"%"=%)
-
-# How to create a cpp processed config file, they all use the same source
-%.cfgout: $(IMX_CONFIG) FORCE
-	$(Q)mkdir -p $(dir $@)
-	$(call if_changed_dep,cpp_cfg)
-
-IMX_CONTAINER_CFG = $(CONFIG_IMX_CONTAINER_CFG:"%"=%)
-container.cfg: $(IMX_CONTAINER_CFG) FORCE
-	$(Q)mkdir -p $(dir $@)
-	$(call if_changed_dep,cpp_cfg)
-
-ifeq ($(CONFIG_ARCH_IMX8), y)
-CNTR_DEPFILES := $(srctree)/tools/imx_cntr_image.sh
-IMAGE_TYPE := imx8image
-ifeq ($(CONFIG_SPL_BUILD),y)
-SPL_DEPFILE_EXISTS := $(shell $(CPP) $(cpp_flags) -x c -o spl/u-boot-spl.cfgout $(srctree)/$(IMX_CONFIG); if [ -f spl/u-boot-spl.cfgout ]; then $(CNTR_DEPFILES) spl/u-boot-spl.cfgout; echo $$?; fi)
-endif
-DEPFILE_EXISTS := $(shell $(CPP) $(cpp_flags) -x c -o u-boot-dtb.cfgout $(srctree)/$(IMX_CONFIG); if [ -f u-boot-dtb.cfgout ]; then $(CNTR_DEPFILES) u-boot-dtb.cfgout; echo $$?; fi)
-else ifeq ($(CONFIG_ARCH_IMX8M), y)
-IMAGE_TYPE := imx8mimage
-IMX8M_DEPFILES := $(srctree)/tools/imx8m_image.sh
-DEPFILE_EXISTS := $(shell $(CPP) $(cpp_flags) -x c -o spl/u-boot-spl.cfgout $(srctree)/$(IMX_CONFIG);if [ -f spl/u-boot-spl.cfgout ]; then $(IMX8M_DEPFILES) spl/u-boot-spl.cfgout 0; echo $$?; fi)
-else
-IMAGE_TYPE := imximage
-DEPFILE_EXISTS := 0
-endif
-
-MKIMAGEFLAGS_u-boot.imx = -n $(filter-out $(PLUGIN).bin $(QSPI_HEADER) $< $(PHONY),$^) \
-	-T $(IMAGE_TYPE) -e $(CONFIG_SYS_TEXT_BASE)
-u-boot.imx: MKIMAGEOUTPUT = u-boot.imx.log
-
-QSPI_HEADER_SOURCE = board/freescale/common/qspi_header
-QSPI_HEADER = qspi_header
-QSPI_HEADER_OFF = 1
-QSPI_UBOOT_OFF = 4
-ifeq ($(SOC),$(filter $(SOC),mx7))
-QSPI_HEADER_OFF = 0
-QSPI_UBOOT_OFF = 1
-endif
-
-ifeq ($(CONFIG_QSPI_BOOT),y)
-$(QSPI_HEADER): $(QSPI_HEADER_SOURCE) FORCE
-	@cp $< $@
-
-else
-$(QSPI_HEADER):
-
-endif
-
-u-boot.imx: u-boot.bin u-boot.cfgout $(PLUGIN).bin $(QSPI_HEADER) FORCE
-	$(call if_changed,mkimage)
-ifeq ($(CONFIG_QSPI_BOOT),y)
-	@awk '{s="0000000"$$1;l=length(s);if(!((NR-1)%4))printf "%08x ",(NR-1)*4; \
-		for(i=1;i<8;i+=2)printf " %s",substr(s,l-i,2);if(!(NR%4))printf "\n";}' \
-		$(QSPI_HEADER) > qspi.tmp
-	@xxd -r qspi.tmp qspi.bin
-	@dd if=$@ of=u-boot.tmp bs=1k seek=$(QSPI_UBOOT_OFF)
-	@dd if=qspi.bin of=u-boot.tmp bs=1k seek=$(QSPI_HEADER_OFF) conv=notrunc
-	@mv u-boot.tmp $@
-	@rm qspi.tmp qspi.bin
-	@echo "Packed QSPI header with $@"
-endif
-
-ifeq ($(CONFIG_MULTI_DTB_FIT),y)
-MKIMAGEFLAGS_u-boot-dtb.imx = -n $(filter-out $(PLUGIN).bin $< $(PHONY),$^) \
-	-T $(IMAGE_TYPE) -e $(CONFIG_SYS_TEXT_BASE)
-u-boot-dtb.imx: MKIMAGEOUTPUT = u-boot-dtb.imx.log
-
-u-boot-dtb.imx: u-boot-fit-dtb.bin u-boot-dtb.cfgout $(PLUGIN).bin FORCE
-ifeq ($(DEPFILE_EXISTS),0)
-	$(call if_changed,mkimage)
-endif
-else ifeq ($(CONFIG_OF_SEPARATE),y)
-MKIMAGEFLAGS_u-boot-dtb.imx = -n $(filter-out $(PLUGIN).bin $(QSPI_HEADER) $< $(PHONY),$^) \
-	-T $(IMAGE_TYPE) -e $(CONFIG_SYS_TEXT_BASE)
-u-boot-dtb.imx: MKIMAGEOUTPUT = u-boot-dtb.imx.log
-
-u-boot-dtb.imx: u-boot-dtb.bin u-boot-dtb.cfgout $(PLUGIN).bin $(QSPI_HEADER) FORCE
-ifeq ($(DEPFILE_EXISTS),0)
-	$(call if_changed,mkimage)
-ifeq ($(CONFIG_QSPI_BOOT),y)
-	@awk '{s="0000000"$$1;l=length(s);if(!((NR-1)%4))printf "%08x ",(NR-1)*4; \
-		for(i=1;i<8;i+=2)printf " %s",substr(s,l-i,2);if(!(NR%4))printf "\n";}' \
-		$(QSPI_HEADER) > qspi.tmp
-	@xxd -r qspi.tmp qspi.bin
-	@dd if=$@ of=u-boot.tmp bs=1k seek=$(QSPI_UBOOT_OFF)
-	@dd if=qspi.bin of=u-boot.tmp bs=1k seek=$(QSPI_HEADER_OFF) conv=notrunc
-	@mv u-boot.tmp $@
-	@rm qspi.tmp qspi.bin
-	@echo "Packed QSPI header with $@"
-endif
-endif
-endif
-
-ifdef CONFIG_ARM64
-ifeq ($(CONFIG_ARCH_IMX8M), y)
-SPL:
-
-MKIMAGEFLAGS_flash.bin = -n spl/u-boot-spl.cfgout \
-		   -T $(IMAGE_TYPE) -e $(CONFIG_SPL_TEXT_BASE)
-flash.bin: MKIMAGEOUTPUT = flash.log
-
-spl/u-boot-spl-ddr.bin: spl/u-boot-spl.bin spl/u-boot-spl.cfgout FORCE
-ifeq ($(DEPFILE_EXISTS),0)
-	$(IMX8M_DEPFILES) spl/u-boot-spl.cfgout 1
-endif
-
-flash.bin: spl/u-boot-spl-ddr.bin u-boot.itb FORCE
-	$(call if_changed,mkimage)
-endif
-
-ifeq ($(CONFIG_ARCH_IMX8), y)
-SPL:
-
-MKIMAGEFLAGS_flash.bin = -n spl/u-boot-spl.cfgout -T $(IMAGE_TYPE) -e 0x100000
-flash.bin: MKIMAGEOUTPUT = flash.log
-
-MKIMAGEFLAGS_u-boot.cnt = -n container.cfg -T $(IMAGE_TYPE) -e 0x100000
-u-boot.cnt: MKIMAGEOUTPUT = u-boot.cnt.log
-
-ifeq ($(CONFIG_SPL_LOAD_IMX_CONTAINER), y)
-u-boot.cnt: u-boot.bin container.cfg FORCE
-	$(call if_changed,mkimage)
-flash.bin: spl/u-boot-spl.bin FORCE
-	$(call if_changed,mkimage)
-	@flashbin_size=`wc -c flash.bin | awk '{print $$1}'`; \
-                   pad_cnt=$$(((flashbin_size + 0x400 - 1) / 0x400)); \
-                   echo "append u-boot.cnt at $$pad_cnt KB"; \
-                   dd if=u-boot.cnt of=flash.bin bs=1K seek=$$pad_cnt;
-else
-flash.bin: spl/u-boot-spl.bin FORCE
-	$(call if_changed,mkimage)
-endif
-endif
-
-else
-MKIMAGEFLAGS_SPL = -n $(filter-out $(PLUGIN).bin $< $(PHONY),$^) \
-		   -T $(IMAGE_TYPE) -e $(CONFIG_SPL_TEXT_BASE)
-SPL: MKIMAGEOUTPUT = SPL.log
-
-SPL: spl/u-boot-spl.bin spl/u-boot-spl.cfgout $(PLUGIN).bin FORCE
-	$(call if_changed,mkimage)
-
-MKIMAGEFLAGS_u-boot.uim = -A arm -O U-Boot -a $(CONFIG_SYS_TEXT_BASE) \
-		-e $(CONFIG_SYS_TEXT_BASE) -C none -T firmware
-
-u-boot.uim: u-boot.bin FORCE
-	$(call if_changed,mkimage)
-
-OBJCOPYFLAGS += -I binary -O binary --pad-to=$(CONFIG_SPL_PAD_TO)
-append = cat $(filter-out $< $(PHONY), $^) >> $@
-
-quiet_cmd_pad_cat = CAT     $@
-cmd_pad_cat = $(cmd_objcopy) && $(append) || rm -f $@
-
-u-boot-with-spl.imx: SPL u-boot.uim FORCE
-	$(call if_changed,pad_cat)
-
-u-boot-with-nand-spl.imx: spl/u-boot-nand-spl.imx u-boot.uim FORCE
-	$(call if_changed,pad_cat)
-
-quiet_cmd_u-boot-nand-spl_imx = GEN     $@
-cmd_u-boot-nand-spl_imx = (printf '\000\000\000\000\106\103\102\040\001' && \
-	dd bs=1015 count=1 if=/dev/zero 2>/dev/null) | cat - $< > $@
-
-spl/u-boot-nand-spl.imx: SPL FORCE
-	$(call if_changed,u-boot-nand-spl_imx)
-endif
-
-targets += $(addprefix ../../../,SPL spl/u-boot-spl.cfgout u-boot-dtb.cfgout u-boot.cfgout u-boot.uim spl/u-boot-nand-spl.imx)
-
-obj-$(CONFIG_ARM64) += lowlevel.o sip.o
-
-obj-$(CONFIG_MX5) += mx5/
-obj-$(CONFIG_MX6) += mx6/
-obj-$(CONFIG_MX7) += mx7/
-obj-$(CONFIG_ARCH_MX7ULP) += mx7ulp/
-obj-$(CONFIG_IMX8M) += imx8m/
-obj-$(CONFIG_ARCH_IMX8) += imx8/
-obj-$(CONFIG_ARCH_IMXRT) += imxrt/
-
-obj-$(CONFIG_SPL_BOOTROM_SUPPORT) += spl_imx_romapi.o
+obj-y += devices/

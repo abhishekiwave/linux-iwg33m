@@ -1,12 +1,17 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * Copyright (C) 2001 - 2007 Tensilica Inc.
+ * include/asm-xtensa/ptrace.h
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
+ * Copyright (C) 2001 - 2005 Tensilica Inc.
  */
-
 #ifndef _XTENSA_PTRACE_H
 #define _XTENSA_PTRACE_H
 
-#include <compiler.h>
+#include <asm/kmem_layout.h>
+#include <uapi/asm/ptrace.h>
 
 /*
  * Kernel stack
@@ -17,7 +22,7 @@
  *		|    struct pt_regs     |  |
  *		+-----------------------+  | ------ PT_REGS_OFFSET
  * double	:  16 bytes spill area  :  |  ^
- * exception	:- - - - - - - - - - - -:  |  |
+ * excetion	:- - - - - - - - - - - -:  |  |
  * frame	:    struct pt_regs     :  |  |
  *		:- - - - - - - - - - - -:  |  |
  *		|                       |  |  |
@@ -34,48 +39,11 @@
  *		+-----------------------+ --------
  */
 
-#define KERNEL_STACK_SIZE (2 * PAGE_SIZE)
-
-/*  Offsets for exception_handlers[] (3 x 64-entries x 4-byte tables) */
-
-#define EXC_TABLE_KSTK		0x004	/* Kernel Stack */
-#define EXC_TABLE_DOUBLE_SAVE	0x008	/* Double exception save area for a0 */
-#define EXC_TABLE_FIXUP		0x00c	/* Fixup handler */
-#define EXC_TABLE_PARAM		0x010	/* For passing a parameter to fixup */
-#define EXC_TABLE_SYSCALL_SAVE	0x014	/* For fast syscall handler */
-#define EXC_TABLE_FAST_USER	0x100	/* Fast user exception handler */
-#define EXC_TABLE_FAST_KERNEL	0x200	/* Fast kernel exception handler */
-#define EXC_TABLE_DEFAULT	0x300	/* Default C-Handler */
-#define EXC_TABLE_SIZE		0x400
-
-/* Registers used by strace */
-
-#define REG_A_BASE	0xfc000000
-#define REG_AR_BASE	0x04000000
-#define REG_PC		0x14000000
-#define REG_PS		0x080000e6
-#define REG_WB		0x08000048
-#define REG_WS		0x08000049
-#define REG_LBEG	0x08000000
-#define REG_LEND	0x08000001
-#define REG_LCOUNT	0x08000002
-#define REG_SAR		0x08000003
-#define REG_DEPC	0x080000c0
-#define REG_EXCCAUSE	0x080000e8
-#define REG_EXCVADDR	0x080000ee
-#define SYSCALL_NR	0x1
-
-#define AR_REGNO_TO_A_REGNO(ar, wb) (ar - wb*4) & ~(XCHAL_NUM_AREGS - 1)
-
-/* Other PTRACE_ values defined in <linux/ptrace.h> using values 0-9,16,17,24 */
-
-#define PTRACE_GETREGS            12
-#define PTRACE_SETREGS            13
-#define PTRACE_GETFPREGS          14
-#define PTRACE_SETFPREGS          15
-#define PTRACE_GETFPREGSIZE       18
+#define NO_SYSCALL (-1)
 
 #ifndef __ASSEMBLY__
+
+#include <asm/coprocessor.h>
 
 /*
  * This struct defines the way the registers are stored on the
@@ -97,36 +65,53 @@ struct pt_regs {
 	unsigned long windowstart;	/*  52 */
 	unsigned long syscall;		/*  56 */
 	unsigned long icountlevel;	/*  60 */
-	int reserved[1];		/*  64 */
+	unsigned long scompare1;	/*  64 */
+	unsigned long threadptr;	/*  68 */
 
-	/* Make sure the areg field is 16 bytes aligned */
-	int align[0] __aligned(16);
+	/* Additional configurable registers that are used by the compiler. */
+	xtregs_opt_t xtregs_opt;
+
+	/* Make sure the areg field is 16 bytes aligned. */
+	int align[0] __attribute__ ((aligned(16)));
 
 	/* current register frame.
 	 * Note: The ESF for kernel exceptions ends after 16 registers!
 	 */
-	unsigned long areg[16];		/* 128 (64) */
+	unsigned long areg[16];
 };
 
-#ifdef __KERNEL__
+#include <asm/core.h>
 
-# define task_pt_regs(tsk) ((struct pt_regs *) \
+# define arch_has_single_step()	(1)
+# define task_pt_regs(tsk) ((struct pt_regs*) \
 	(task_stack_page(tsk) + KERNEL_STACK_SIZE - (XCHAL_NUM_AREGS-16)*4) - 1)
-# define user_mode(regs) (((regs)->ps & 0x00000020) != 0)
+# define user_mode(regs) (((regs)->ps & 0x00000020)!=0)
 # define instruction_pointer(regs) ((regs)->pc)
-void show_regs(struct pt_regs *);
+# define return_pointer(regs) (MAKE_PC_FROM_RA((regs)->areg[0], \
+					       (regs)->areg[1]))
 
 # ifndef CONFIG_SMP
 #  define profile_pc(regs) instruction_pointer(regs)
+# else
+#  define profile_pc(regs)						\
+	({								\
+		in_lock_functions(instruction_pointer(regs)) ?		\
+		return_pointer(regs) : instruction_pointer(regs);	\
+	})
 # endif
-#endif /* __KERNEL__ */
+
+#define user_stack_pointer(regs) ((regs)->areg[1])
+
+static inline unsigned long regs_return_value(struct pt_regs *regs)
+{
+	return regs->areg[2];
+}
 
 #else	/* __ASSEMBLY__ */
 
-#ifdef __KERNEL__
 # include <asm/asm-offsets.h>
 #define PT_REGS_OFFSET	  (KERNEL_STACK_SIZE - PT_USER_SIZE)
-#endif
 
 #endif	/* !__ASSEMBLY__ */
+
 #endif	/* _XTENSA_PTRACE_H */

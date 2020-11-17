@@ -2,26 +2,19 @@
 /*
  * Copyright (C) 2010-2011 Canonical Ltd <jeremy.kerr@canonical.com>
  * Copyright (C) 2011-2012 Mike Turquette, Linaro Ltd <mturquette@linaro.org>
- * Copyright 2019 NXP
  *
  * Gated clock implementation
  */
 
-#include <common.h>
-#include <asm/io.h>
-#include <malloc.h>
-#include <clk-uclass.h>
-#include <dm/device.h>
-#include <dm/devres.h>
 #include <linux/clk-provider.h>
-#include <clk.h>
-#include "clk.h"
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 #include <linux/err.h>
-
-#define UBOOT_DM_CLK_GATE "clk_gate"
+#include <linux/string.h>
 
 /**
- * DOC: basic gatable clock which can gate and ungate it's output
+ * DOC: basic gatable clock which can gate and ungate it's ouput
  *
  * Traits of this clock:
  * prepare - clk_(un)prepare only ensures parent is (un)prepared
@@ -29,6 +22,22 @@
  * rate - inherits rate from parent.  No clk_set_rate support
  * parent - fixed parent.  No clk_set_parent support
  */
+
+static inline u32 clk_gate_readl(struct clk_gate *gate)
+{
+	if (gate->flags & CLK_GATE_BIG_ENDIAN)
+		return ioread32be(gate->reg);
+
+	return readl(gate->reg);
+}
+
+static inline void clk_gate_writel(struct clk_gate *gate, u32 val)
+{
+	if (gate->flags & CLK_GATE_BIG_ENDIAN)
+		iowrite32be(val, gate->reg);
+	else
+		writel(val, gate->reg);
+}
 
 /*
  * It works on following logic:
@@ -43,25 +52,26 @@
  *
  * So, result is always: enable xor set2dis.
  */
-static void clk_gate_endisable(struct clk *clk, int enable)
+static void clk_gate_endisable(struct clk_hw *hw, int enable)
 {
-	struct clk_gate *gate = to_clk_gate(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
+	struct clk_gate *gate = to_clk_gate(hw);
 	int set = gate->flags & CLK_GATE_SET_TO_DISABLE ? 1 : 0;
+	unsigned long uninitialized_var(flags);
 	u32 reg;
 
 	set ^= enable;
+
+	if (gate->lock)
+		spin_lock_irqsave(gate->lock, flags);
+	else
+		__acquire(gate->lock);
 
 	if (gate->flags & CLK_GATE_HIWORD_MASK) {
 		reg = BIT(gate->bit_idx + 16);
 		if (set)
 			reg |= BIT(gate->bit_idx);
 	} else {
-#if CONFIG_IS_ENABLED(SANDBOX_CLK_CCF)
-		reg = gate->io_gate_val;
-#else
-		reg = readl(gate->reg);
-#endif
+		reg = clk_gate_readl(gate);
 
 		if (set)
 			reg |= BIT(gate->bit_idx);
@@ -69,34 +79,32 @@ static void clk_gate_endisable(struct clk *clk, int enable)
 			reg &= ~BIT(gate->bit_idx);
 	}
 
-	writel(reg, gate->reg);
+	clk_gate_writel(gate, reg);
+
+	if (gate->lock)
+		spin_unlock_irqrestore(gate->lock, flags);
+	else
+		__release(gate->lock);
 }
 
-static int clk_gate_enable(struct clk *clk)
+static int clk_gate_enable(struct clk_hw *hw)
 {
-	clk_gate_endisable(clk, 1);
+	clk_gate_endisable(hw, 1);
 
 	return 0;
 }
 
-static int clk_gate_disable(struct clk *clk)
+static void clk_gate_disable(struct clk_hw *hw)
 {
-	clk_gate_endisable(clk, 0);
-
-	return 0;
+	clk_gate_endisable(hw, 0);
 }
 
-int clk_gate_is_enabled(struct clk *clk)
+int clk_gate_is_enabled(struct clk_hw *hw)
 {
-	struct clk_gate *gate = to_clk_gate(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
 	u32 reg;
+	struct clk_gate *gate = to_clk_gate(hw);
 
-#if CONFIG_IS_ENABLED(SANDBOX_CLK_CCF)
-	reg = gate->io_gate_val;
-#else
-	reg = readl(gate->reg);
-#endif
+	reg = clk_gate_readl(gate);
 
 	/* if a set bit disables this clk, flip it before masking */
 	if (gate->flags & CLK_GATE_SET_TO_DISABLE)
@@ -106,20 +114,34 @@ int clk_gate_is_enabled(struct clk *clk)
 
 	return reg ? 1 : 0;
 }
+EXPORT_SYMBOL_GPL(clk_gate_is_enabled);
 
 const struct clk_ops clk_gate_ops = {
 	.enable = clk_gate_enable,
 	.disable = clk_gate_disable,
-	.get_rate = clk_generic_get_rate,
+	.is_enabled = clk_gate_is_enabled,
 };
+EXPORT_SYMBOL_GPL(clk_gate_ops);
 
-struct clk *clk_register_gate(struct device *dev, const char *name,
-			      const char *parent_name, unsigned long flags,
-			      void __iomem *reg, u8 bit_idx,
-			      u8 clk_gate_flags, spinlock_t *lock)
+/**
+ * clk_hw_register_gate - register a gate clock with the clock framework
+ * @dev: device that is registering this clock
+ * @name: name of this clock
+ * @parent_name: name of this clock's parent
+ * @flags: framework-specific flags for this clock
+ * @reg: register address to control gating of this clock
+ * @bit_idx: which bit in the register controls gating of this clock
+ * @clk_gate_flags: gate-specific flags for this clock
+ * @lock: shared register lock for this clock
+ */
+struct clk_hw *clk_hw_register_gate(struct device *dev, const char *name,
+		const char *parent_name, unsigned long flags,
+		void __iomem *reg, u8 bit_idx,
+		u8 clk_gate_flags, spinlock_t *lock)
 {
 	struct clk_gate *gate;
-	struct clk *clk;
+	struct clk_hw *hw;
+	struct clk_init_data init;
 	int ret;
 
 	if (clk_gate_flags & CLK_GATE_HIWORD_MASK) {
@@ -134,28 +156,68 @@ struct clk *clk_register_gate(struct device *dev, const char *name,
 	if (!gate)
 		return ERR_PTR(-ENOMEM);
 
+	init.name = name;
+	init.ops = &clk_gate_ops;
+	init.flags = flags;
+	init.parent_names = parent_name ? &parent_name : NULL;
+	init.num_parents = parent_name ? 1 : 0;
+
 	/* struct clk_gate assignments */
 	gate->reg = reg;
 	gate->bit_idx = bit_idx;
 	gate->flags = clk_gate_flags;
-#if CONFIG_IS_ENABLED(SANDBOX_CLK_CCF)
-	gate->io_gate_val = *(u32 *)reg;
-#endif
+	gate->lock = lock;
+	gate->hw.init = &init;
 
-	clk = &gate->clk;
-
-	ret = clk_register(clk, UBOOT_DM_CLK_GATE, name, parent_name);
+	hw = &gate->hw;
+	ret = clk_hw_register(dev, hw);
 	if (ret) {
 		kfree(gate);
-		return ERR_PTR(ret);
+		hw = ERR_PTR(ret);
 	}
 
-	return clk;
+	return hw;
 }
+EXPORT_SYMBOL_GPL(clk_hw_register_gate);
 
-U_BOOT_DRIVER(clk_gate) = {
-	.name	= UBOOT_DM_CLK_GATE,
-	.id	= UCLASS_CLK,
-	.ops	= &clk_gate_ops,
-	.flags = DM_FLAG_PRE_RELOC,
-};
+struct clk *clk_register_gate(struct device *dev, const char *name,
+		const char *parent_name, unsigned long flags,
+		void __iomem *reg, u8 bit_idx,
+		u8 clk_gate_flags, spinlock_t *lock)
+{
+	struct clk_hw *hw;
+
+	hw = clk_hw_register_gate(dev, name, parent_name, flags, reg,
+				  bit_idx, clk_gate_flags, lock);
+	if (IS_ERR(hw))
+		return ERR_CAST(hw);
+	return hw->clk;
+}
+EXPORT_SYMBOL_GPL(clk_register_gate);
+
+void clk_unregister_gate(struct clk *clk)
+{
+	struct clk_gate *gate;
+	struct clk_hw *hw;
+
+	hw = __clk_get_hw(clk);
+	if (!hw)
+		return;
+
+	gate = to_clk_gate(hw);
+
+	clk_unregister(clk);
+	kfree(gate);
+}
+EXPORT_SYMBOL_GPL(clk_unregister_gate);
+
+void clk_hw_unregister_gate(struct clk_hw *hw)
+{
+	struct clk_gate *gate;
+
+	gate = to_clk_gate(hw);
+
+	clk_hw_unregister(hw);
+	kfree(gate);
+}
+EXPORT_SYMBOL_GPL(clk_hw_unregister_gate);

@@ -1,195 +1,247 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "TI OMAP/AM/DM/DRA Family"
+	depends on ARCH_MULTI_V6 || ARCH_MULTI_V7
+
+config ARCH_OMAP2
+	bool "TI OMAP2"
+	depends on ARCH_MULTI_V6
+	select ARCH_OMAP2PLUS
+	select CPU_V6
+	select SOC_HAS_OMAP2_SDRC
+
+config ARCH_OMAP3
+	bool "TI OMAP3"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARM_CPU_SUSPEND if PM
+	select OMAP_INTERCONNECT
+	select PM_OPP if PM
+	select PM if CPU_IDLE
+	select SOC_HAS_OMAP2_SDRC
+	select ARM_ERRATA_430973
+
+config ARCH_OMAP4
+	bool "TI OMAP4"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARCH_NEEDS_CPU_IDLE_COUPLED if SMP
+	select ARM_CPU_SUSPEND if PM
+	select ARM_ERRATA_720789
+	select ARM_GIC
+	select HAVE_ARM_SCU if SMP
+	select HAVE_ARM_TWD if SMP
+	select OMAP_INTERCONNECT
+	select OMAP_INTERCONNECT_BARRIER
+	select PL310_ERRATA_588369 if CACHE_L2X0
+	select PL310_ERRATA_727915 if CACHE_L2X0
+	select PM_OPP if PM
+	select PM if CPU_IDLE
+	select ARM_ERRATA_754322
+	select ARM_ERRATA_775420
+	select OMAP_INTERCONNECT
+
+config SOC_OMAP5
+	bool "TI OMAP5"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARM_CPU_SUSPEND if PM
+	select ARM_GIC
+	select HAVE_ARM_SCU if SMP
+	select HAVE_ARM_ARCH_TIMER
+	select ARM_ERRATA_798181 if SMP
+	select OMAP_INTERCONNECT
+	select OMAP_INTERCONNECT_BARRIER
+	select PM_OPP if PM
+	select ZONE_DMA if ARM_LPAE
+
+config SOC_AM33XX
+	bool "TI AM33XX"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARM_CPU_SUSPEND if PM
+
+config SOC_AM43XX
+	bool "TI AM43x"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARM_GIC
+	select MACH_OMAP_GENERIC
+	select MIGHT_HAVE_CACHE_L2X0
+	select HAVE_ARM_SCU
+	select GENERIC_CLOCKEVENTS_BROADCAST
+	select HAVE_ARM_TWD
+	select ARM_ERRATA_754322
+	select ARM_ERRATA_775420
+	select OMAP_INTERCONNECT
+	select ARM_CPU_SUSPEND if PM
+
+config SOC_DRA7XX
+	bool "TI DRA7XX"
+	depends on ARCH_MULTI_V7
+	select ARCH_OMAP2PLUS
+	select ARM_CPU_SUSPEND if PM
+	select ARM_GIC
+	select HAVE_ARM_SCU if SMP
+	select HAVE_ARM_ARCH_TIMER
+	select IRQ_CROSSBAR
+	select ARM_ERRATA_798181 if SMP
+	select OMAP_INTERCONNECT
+	select OMAP_INTERCONNECT_BARRIER
+	select PM_OPP if PM
+	select ZONE_DMA if ARM_LPAE
+	select PINCTRL_TI_IODELAY if OF && PINCTRL
+
+config ARCH_OMAP2PLUS
+	bool
+	select ARCH_HAS_BANDGAP
+	select ARCH_HAS_HOLES_MEMORYMODEL
+	select ARCH_OMAP
+	select CLKSRC_MMIO
+	select GENERIC_IRQ_CHIP
+	select GPIOLIB
+	select MACH_OMAP_GENERIC
+	select MEMORY
+	select MFD_SYSCON
+	select OMAP_DM_TIMER
+	select OMAP_GPMC
+	select PINCTRL
+	select SOC_BUS
+	select TI_SYSC
+	select OMAP_IRQCHIP
+	select CLKSRC_TI_32K
+	help
+	  Systems based on OMAP2, OMAP3, OMAP4 or OMAP5
+
+config OMAP_INTERCONNECT_BARRIER
+	bool
+	select ARM_HEAVY_MB
+	
+
 if ARCH_OMAP2PLUS
 
-choice
-	prompt "OMAP2+ platform select"
-	default OMAP34XX
+menu "TI OMAP2/3/4 Specific Features"
 
-config OMAP34XX
-	bool "OMAP34XX SoC"
-	select ARM_CORTEX_A8_CVE_2017_5715
-	select ARM_ERRATA_430973
-	select ARM_ERRATA_454179
-	select ARM_ERRATA_621766
-	select ARM_ERRATA_725233
-	select SPL_USE_TINY_PRINTF if SPL
-	imply NAND_OMAP_GPMC
-	imply SPL_FS_EXT4
-	imply SPL_FS_FAT
-	imply SPL_GPIO_SUPPORT
-	imply SPL_I2C_SUPPORT
-	imply SPL_LIBCOMMON_SUPPORT
-	imply SPL_LIBDISK_SUPPORT
-	imply SPL_LIBGENERIC_SUPPORT
-	imply SPL_MMC_SUPPORT
-	imply SPL_NAND_SUPPORT
-	imply SPL_OMAP3_ID_NAND
-	imply SPL_POWER_SUPPORT
-	imply SPL_SERIAL_SUPPORT
-	imply SYS_I2C_OMAP24XX
-	imply SYS_THUMB_BUILD
-	imply TWL4030_POWER
-
-config OMAP44XX
-	bool "OMAP44XX SoC"
-	select SPL_USE_TINY_PRINTF
-	imply NAND_OMAP_ELM
-	imply NAND_OMAP_GPMC
-	imply SPL_DISPLAY_PRINT
-	imply SPL_FS_EXT4
-	imply SPL_FS_FAT
-	imply SPL_GPIO_SUPPORT
-	imply SPL_I2C_SUPPORT
-	imply SPL_LIBCOMMON_SUPPORT
-	imply SPL_LIBDISK_SUPPORT
-	imply SPL_LIBGENERIC_SUPPORT
-	imply SPL_MMC_SUPPORT
-	imply SPL_NAND_SIMPLE
-	imply SPL_NAND_SUPPORT
-	imply SPL_POWER_SUPPORT
-	imply SPL_SERIAL_SUPPORT
-	imply SYS_I2C_OMAP24XX
-	imply SYS_THUMB_BUILD
-
-config OMAP54XX
-	bool "OMAP54XX SoC"
-	select ARM_CORTEX_A15_CVE_2017_5715
-	select ARM_ERRATA_798870
-	select SYS_THUMB_BUILD
-	imply NAND_OMAP_ELM
-	imply NAND_OMAP_GPMC
-	imply SPL_DISPLAY_PRINT
-	imply SPL_ENV_SUPPORT
-	imply SPL_FS_EXT4
-	imply SPL_FS_FAT
-	imply SPL_GPIO_SUPPORT
-	imply SPL_I2C_SUPPORT
-	imply SPL_LIBCOMMON_SUPPORT
-	imply SPL_LIBDISK_SUPPORT
-	imply SPL_LIBGENERIC_SUPPORT
-	imply SPL_MMC_SUPPORT
-	imply SPL_NAND_AM33XX_BCH
-	imply SPL_NAND_AM33XX_BCH
-	imply SPL_NAND_SUPPORT
-	imply SPL_POWER_SUPPORT
-	imply SPL_SERIAL_SUPPORT
-	imply SYS_I2C_OMAP24XX
-
-config TI814X
-	bool "TI814X SoC"
-	select SPECIFY_CONSOLE_INDEX
+config ARCH_OMAP2PLUS_TYPICAL
+	bool "Typical OMAP configuration"
+	default y
+	select AEABI
+	select HIGHMEM
+	select I2C
+	select I2C_OMAP
+	select MENELAUS if ARCH_OMAP2
+	select NEON if CPU_V7
+	select PM
+	select REGULATOR
+	select REGULATOR_FIXED_VOLTAGE
+	select TWL4030_CORE if ARCH_OMAP3 || ARCH_OMAP4
+	select TWL4030_POWER if ARCH_OMAP3 || ARCH_OMAP4
+	select VFP
 	help
-	  Support for AM335x SOC from Texas Instruments.
-	  The AM335x high performance SOC features a Cortex-A8
-	  ARM core and more.
+	  Compile a kernel suitable for booting most boards
 
-config TI816X
-	bool "TI816X SoC"
-	select SPECIFY_CONSOLE_INDEX
-	imply NAND_OMAP_ELM
-	imply NAND_OMAP_GPMC
+config SOC_HAS_OMAP2_SDRC
+	bool "OMAP2 SDRAM Controller support"
+
+config SOC_HAS_REALTIME_COUNTER
+	bool "Real time free running counter"
+	depends on SOC_OMAP5 || SOC_DRA7XX
+	default y
+
+comment "OMAP Core Type"
+	depends on ARCH_OMAP2
+
+config SOC_OMAP2420
+	bool "OMAP2420 support"
+	depends on ARCH_OMAP2
+	default y
+	select OMAP_DM_TIMER
+	select SOC_HAS_OMAP2_SDRC
+
+config SOC_OMAP2430
+	bool "OMAP2430 support"
+	depends on ARCH_OMAP2
+	default y
+	select SOC_HAS_OMAP2_SDRC
+
+config SOC_OMAP3430
+	bool "OMAP3430 support"
+	depends on ARCH_OMAP3
+	default y
+	select SOC_HAS_OMAP2_SDRC
+
+config SOC_TI81XX
+	bool "TI81XX support"
+	depends on ARCH_OMAP3
+	default y
+
+config OMAP_PACKAGE_CBC
+       bool
+
+config OMAP_PACKAGE_CBB
+       bool
+
+config OMAP_PACKAGE_CUS
+       bool
+
+config OMAP_PACKAGE_CBP
+       bool
+
+comment "OMAP Legacy Platform Data Board Type"
+	depends on ARCH_OMAP2PLUS
+
+config MACH_OMAP_GENERIC
+	bool
+
+config MACH_OMAP2_TUSB6010
+	bool
+	depends on ARCH_OMAP2 && SOC_OMAP2420
+	default y if MACH_NOKIA_N8X0
+
+config MACH_OMAP3517EVM
+	bool "OMAP3517/ AM3517 EVM board"
+	depends on ARCH_OMAP3
+	default y
+
+config MACH_OMAP3_PANDORA
+	bool "OMAP3 Pandora"
+	depends on ARCH_OMAP3
+	default y
+	select OMAP_PACKAGE_CBB
+
+config MACH_NOKIA_N810
+       bool
+
+config MACH_NOKIA_N810_WIMAX
+       bool
+
+config MACH_NOKIA_N8X0
+	bool "Nokia N800/N810"
+	depends on SOC_OMAP2420
+	default y
+	select MACH_NOKIA_N810
+	select MACH_NOKIA_N810_WIMAX
+
+config OMAP3_SDRC_AC_TIMING
+	bool "Enable SDRC AC timing register changes"
+	depends on ARCH_OMAP3
 	help
-	  Support for AM335x SOC from Texas Instruments.
-	  The AM335x high performance SOC features a Cortex-A8
-	  ARM core and more.
+	  If you know that none of your system initiators will attempt to
+	  access SDRAM during CORE DVFS, select Y here.  This should boost
+	  SDRAM performance at lower CORE OPPs.  There are relatively few
+	  users who will wish to say yes at this point - almost everyone will
+	  wish to say no.  Selecting yes without understanding what is
+	  going on could result in system crashes;
 
-config AM43XX
-	bool "AM43XX SoC"
-	select SPECIFY_CONSOLE_INDEX
-	imply NAND_OMAP_ELM
-	imply NAND_OMAP_GPMC
-	imply SPL_DM
-	imply SPL_DM_SEQ_ALIAS
-	imply SPL_NAND_AM33XX_BCH
-	imply SPL_NAND_SUPPORT
-	imply SPL_OF_CONTROL
-	imply SPL_OF_TRANSLATE
-	imply SPL_SEPARATE_BSS
-	imply SPL_SYS_MALLOC_SIMPLE
-	imply SYS_I2C_OMAP24XX
-	imply SYS_THUMB_BUILD
-	help
-	  Support for AM43xx SOC from Texas Instruments.
-	  The AM43xx high performance SOC features a Cortex-A9
-	  ARM core, a quad core PRU-ICSS for industrial Ethernet
-	  protocols, dual camera support, optional 3D graphics
-	  and an optional customer programmable secure boot.
-
-config AM33XX
-	bool "AM33XX SoC"
-	select ARM_CORTEX_A8_CVE_2017_5715
-	select SPECIFY_CONSOLE_INDEX
-	imply NAND_OMAP_ELM
-	imply NAND_OMAP_GPMC
-	imply SPL_NAND_AM33XX_BCH
-	imply SPL_NAND_SUPPORT
-	imply SYS_I2C_OMAP24XX
-	imply SYS_THUMB_BUILD
-	imply SPL_USE_TINY_PRINTF
-	help
-	  Support for AM335x SOC from Texas Instruments.
-	  The AM335x high performance SOC features a Cortex-A8
-	  ARM core, a dual core PRU-ICSS for industrial Ethernet
-	  protocols, optional 3D graphics and an optional customer
-	  programmable secure boot.
-
-endchoice
-
-config SYS_MPUCLK
-	int "MPU CLK speed"
-	depends on AM33XX
-	default 500
-	help
-	  Defines the MPU clock speed (in MHz).
-
-config TI_SECURE_EMIF_REGION_START
-	hex "Reserved EMIF region start address"
-	depends on TI_SECURE_DEVICE
-	default 0x0
-	help
-	  Reserved EMIF region start address. Set to "0" to auto-select
-	  to be at the end of the external memory region.
-
-config TI_SECURE_EMIF_TOTAL_REGION_SIZE
-	hex "Reserved EMIF region size"
-	depends on TI_SECURE_DEVICE
-	default 0x0
-	help
-	  Total reserved EMIF region size. Default is 0, which means no reserved EMIF
-	  region on secure devices.
-
-config TI_SECURE_EMIF_PROTECTED_REGION_SIZE
-	hex "Size of protected region within reserved EMIF region"
-	depends on TI_SECURE_DEVICE
-	default 0x0
-	help
-	  This config option is used to specify the size of the portion of the total
-	  reserved EMIF region set aside for secure OS needs that will  be protected
-	  using hardware memory firewalls. This value must be smaller than the
-	  TI_SECURE_EMIF_TOTAL_REGION_SIZE value.
-
-source "arch/arm/mach-omap2/omap3/Kconfig"
-
-source "arch/arm/mach-omap2/omap4/Kconfig"
-
-source "arch/arm/mach-omap2/omap5/Kconfig"
-
-source "arch/arm/mach-omap2/am33xx/Kconfig"
-
-source "board/BuR/brxre1/Kconfig"
-source "board/BuR/brsmarc1/Kconfig"
-source "board/BuR/brppt1/Kconfig"
-source "board/siemens/draco/Kconfig"
-source "board/siemens/pxm2/Kconfig"
-source "board/siemens/rut/Kconfig"
-source "board/ti/ti814x/Kconfig"
-source "board/ti/ti816x/Kconfig"
-source "board/ti/am43xx/Kconfig"
-source "board/ti/am335x/Kconfig"
-source "board/compulab/cm_t335/Kconfig"
-source "board/compulab/cm_t43/Kconfig"
-source "board/phytec/phycore_am335x_r2/Kconfig"
-
-config SPL_LDSCRIPT
-        default "arch/arm/mach-omap2/u-boot-spl.lds"
+endmenu
 
 endif
+
+config OMAP5_ERRATA_801819
+	bool "Errata 801819: An eviction from L1 data cache might stall indefinitely"
+	depends on SOC_OMAP5 || SOC_DRA7XX
+	help
+	  A livelock can occur in the L2 cache arbitration that might prevent
+	  a snoop from completing. Under certain conditions this can cause the
+	  system to deadlock.
+
+endmenu

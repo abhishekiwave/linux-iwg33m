@@ -9,9 +9,10 @@
  * Copyright (C) 2013 Ideas On Board SPRL
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
+#include <linux/device.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/soc/renesas/rcar-rst.h>
 
 #include <dt-bindings/clock/r8a7794-cpg-mssr.h>
 
@@ -37,7 +38,7 @@ enum clk_ids {
 	MOD_CLK_BASE
 };
 
-static const struct cpg_core_clk r8a7794_core_clks[] = {
+static const struct cpg_core_clk r8a7794_core_clks[] __initconst = {
 	/* External Clock Inputs */
 	DEF_INPUT("extal",     CLK_EXTAL),
 	DEF_INPUT("usb_extal", CLK_USB_EXTAL),
@@ -82,7 +83,7 @@ static const struct cpg_core_clk r8a7794_core_clks[] = {
 	DEF_DIV6P1("mmc0",  R8A7794_CLK_MMC0,  CLK_PLL1_DIV2, 0x240),
 };
 
-static const struct mssr_mod_clk r8a7794_mod_clks[] = {
+static const struct mssr_mod_clk r8a7794_mod_clks[] __initconst = {
 	DEF_MOD("msiof0",		   0,	R8A7794_CLK_MP),
 	DEF_MOD("vcp0",			 101,	R8A7794_CLK_ZS),
 	DEF_MOD("vpc0",			 103,	R8A7794_CLK_ZS),
@@ -186,6 +187,11 @@ static const struct mssr_mod_clk r8a7794_mod_clks[] = {
 	DEF_MOD("scifa5",		1108,	R8A7794_CLK_MP),
 };
 
+static const unsigned int r8a7794_crit_mod_clks[] __initconst = {
+	MOD_CLK_ID(402),	/* RWDT */
+	MOD_CLK_ID(408),	/* INTC-SYS (GIC) */
+};
+
 /*
  * CPG Clock Data
  */
@@ -204,67 +210,45 @@ static const struct mssr_mod_clk r8a7794_mod_clks[] = {
  */
 #define CPG_PLL_CONFIG_INDEX(md)	((((md) & BIT(14)) >> 13) | \
 					 (((md) & BIT(13)) >> 13))
-static const struct rcar_gen2_cpg_pll_config cpg_pll_configs[4] = {
+static const struct rcar_gen2_cpg_pll_config cpg_pll_configs[4] __initconst = {
 	{ 1, 208,  88, 200 },
 	{ 1, 156,  66, 150 },
 	{ 2, 240, 102, 230 },
 	{ 2, 208,  88, 200 },
 };
 
-static const struct mstp_stop_table r8a7794_mstp_table[] = {
-	{ 0x00440801, 0x400000, 0x00440801, 0x0 },
-	{ 0x936899DA, 0x0, 0x936899DA, 0x0 },
-	{ 0x100D21FC, 0x2000, 0x100D21FC, 0x0 },
-	{ 0xE084D810, 0x0, 0xE084D810, 0x0 },
-	{ 0x800001C4, 0x180, 0x800001C4, 0x0 },
-	{ 0x40C00044, 0x0, 0x40C00044, 0x0 },
-	{ 0x0, 0x0, 0x0, 0x0 },	/* SMSTP6 is not present on Gen2 */
-	{ 0x013FE618, 0x80000, 0x013FE618, 0x0 },
-	{ 0x40803C05, 0x0, 0x40803C05, 0x0 },
-	{ 0xFB879FEE, 0x0, 0xFB879FEE, 0x0 },
-	{ 0xFFFEFFE0, 0x0, 0xFFFEFFE0, 0x0 },
-	{ 0x000001C0, 0x0, 0x000001C0, 0x0 },
-};
-
-static const void *r8a7794_get_pll_config(const u32 cpg_mode)
+static int __init r8a7794_cpg_mssr_init(struct device *dev)
 {
-	return &cpg_pll_configs[CPG_PLL_CONFIG_INDEX(cpg_mode)];
+	const struct rcar_gen2_cpg_pll_config *cpg_pll_config;
+	u32 cpg_mode;
+	int error;
+
+	error = rcar_rst_read_mode_pins(&cpg_mode);
+	if (error)
+		return error;
+
+	cpg_pll_config = &cpg_pll_configs[CPG_PLL_CONFIG_INDEX(cpg_mode)];
+
+	return rcar_gen2_cpg_init(cpg_pll_config, 3, cpg_mode);
 }
 
-static const struct cpg_mssr_info r8a7794_cpg_mssr_info = {
-	.core_clk		= r8a7794_core_clks,
-	.core_clk_size		= ARRAY_SIZE(r8a7794_core_clks),
-	.mod_clk		= r8a7794_mod_clks,
-	.mod_clk_size		= ARRAY_SIZE(r8a7794_mod_clks),
-	.mstp_table		= r8a7794_mstp_table,
-	.mstp_table_size	= ARRAY_SIZE(r8a7794_mstp_table),
-	.reset_node		= "renesas,r8a7794-rst",
-	.extal_usb_node		= "usb_extal",
-	.mod_clk_base		= MOD_CLK_BASE,
-	.clk_extal_id		= CLK_EXTAL,
-	.clk_extal_usb_id	= CLK_USB_EXTAL,
-	.pll0_div		= 2,
-	.get_pll_config		= r8a7794_get_pll_config,
-};
+const struct cpg_mssr_info r8a7794_cpg_mssr_info __initconst = {
+	/* Core Clocks */
+	.core_clks = r8a7794_core_clks,
+	.num_core_clks = ARRAY_SIZE(r8a7794_core_clks),
+	.last_dt_core_clk = LAST_DT_CORE_CLK,
+	.num_total_core_clks = MOD_CLK_BASE,
 
-static const struct udevice_id r8a7794_clk_ids[] = {
-	{
-		.compatible	= "renesas,r8a7794-cpg-mssr",
-		.data		= (ulong)&r8a7794_cpg_mssr_info
-	},
-	{
-		.compatible	= "renesas,r8a7793-cpg-mssr",
-		.data		= (ulong)&r8a7794_cpg_mssr_info
-	},
-	{ }
-};
+	/* Module Clocks */
+	.mod_clks = r8a7794_mod_clks,
+	.num_mod_clks = ARRAY_SIZE(r8a7794_mod_clks),
+	.num_hw_mod_clks = 12 * 32,
 
-U_BOOT_DRIVER(clk_r8a7794) = {
-	.name		= "clk_r8a7794",
-	.id		= UCLASS_CLK,
-	.of_match	= r8a7794_clk_ids,
-	.priv_auto_alloc_size = sizeof(struct gen2_clk_priv),
-	.ops		= &gen2_clk_ops,
-	.probe		= gen2_clk_probe,
-	.remove		= gen2_clk_remove,
+	/* Critical Module Clocks */
+	.crit_mod_clks = r8a7794_crit_mod_clks,
+	.num_crit_mod_clks = ARRAY_SIZE(r8a7794_crit_mod_clks),
+
+	/* Callbacks */
+	.init = r8a7794_cpg_mssr_init,
+	.cpg_clk_register = rcar_gen2_cpg_clk_register,
 };

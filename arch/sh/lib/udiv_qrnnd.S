@@ -1,8 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/* Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
+/* SPDX-License-Identifier: GPL-2.0+ WITH GCC-exception-2.0
+
+   Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
    2004, 2005, 2006
    Free Software Foundation, Inc.
- */
+*/
 
 !! libgcc routines for the Renesas / SuperH SH CPUs.
 !! Contributed by Steve Chamberlain.
@@ -25,7 +26,7 @@ __udiv_qrnnd_16:
 	cmp/hi r6,r0
 	bt .Lots
 	.rept 16
-	div1 r6,r0
+	div1 r6,r0 
 	.endr
 	extu.w r0,r1
 	bt 0f
@@ -56,4 +57,4 @@ __udiv_qrnnd_16:
 	bf/s 1b
 	 shlr16 r1
 0:	rts
-	nop
+	 nop

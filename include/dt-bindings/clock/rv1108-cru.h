@@ -1,6 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Copyright (c) 2017 Rockchip Electronics Co. Ltd.
+ * Copyright (c) 2016 Rockchip Electronics Co. Ltd.
  * Author: Shawn Lin <shawn.lin@rock-chips.com>
  */
 
@@ -77,9 +77,6 @@
 #define SCLK_UART0_SRC			127
 #define SCLK_UART1_SRC			128
 #define SCLK_UART2_SRC			129
-#define SCLK_MAC_TX			130
-#define SCLK_MACREF			131
-#define SCLK_MACREF_OUT			132
 
 #define DCLK_VOP_SRC			185
 #define DCLK_HDMIPHY			186

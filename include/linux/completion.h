@@ -8,9 +8,8 @@
  * Atomic wait-for-completion handler data structures.
  * See kernel/sched/completion.c for details.
  */
-#ifndef __UBOOT__
+
 #include <linux/wait.h>
-#endif /* __UBOOT__ */
 
 /*
  * struct completion - structure used to maintain state for a "completion"
@@ -26,9 +25,7 @@
  */
 struct completion {
 	unsigned int done;
-#ifndef __UBOOT__
 	wait_queue_head_t wait;
-#endif /* __UBOOT__ */
 };
 
 #define init_completion_map(x, m) __init_completion(x)
@@ -88,9 +85,7 @@ static inline void complete_release(struct completion *x) {}
 static inline void __init_completion(struct completion *x)
 {
 	x->done = 0;
-#ifndef __UBOOT__
 	init_waitqueue_head(&x->wait);
-#endif /* __UBOOT__ */
 }
 
 /**
@@ -105,7 +100,6 @@ static inline void reinit_completion(struct completion *x)
 	x->done = 0;
 }
 
-#ifndef __UBOOT__
 extern void wait_for_completion(struct completion *);
 extern void wait_for_completion_io(struct completion *);
 extern int wait_for_completion_interruptible(struct completion *x);
@@ -123,51 +117,5 @@ extern bool completion_done(struct completion *x);
 
 extern void complete(struct completion *);
 extern void complete_all(struct completion *);
-
-#else /* __UBOOT __ */
-
-#define wait_for_completion(x)		do {} while (0)
-#define wait_for_completion_io(x)	do {} while (0)
-
-inline int wait_for_completion_interruptible(struct completion *x)
-{
-	return 1;
-}
-inline int wait_for_completion_killable(struct completion *x)
-{
-	return 1;
-}
-inline unsigned long wait_for_completion_timeout(struct completion *x,
-						 unsigned long timeout)
-{
-	return 1;
-}
-inline unsigned long wait_for_completion_io_timeout(struct completion *x,
-						    unsigned long timeout)
-{
-	return 1;
-}
-inline long wait_for_completion_interruptible_timeout(struct completion *x,
-						      unsigned long timeout)
-{
-	return 1;
-}
-inline long wait_for_completion_killable_timeout(struct completion *x,
-						 unsigned long timeout)
-{
-	return 1;
-}
-inline bool try_wait_for_completion(struct completion *x)
-{
-	return 1;
-}
-inline bool completion_done(struct completion *x)
-{
-	return 1;
-}
-
-#define complete(x)		do {} while (0)
-#define complete_all(x)		do {} while (0)
-#endif /* __UBOOT__ */
 
 #endif

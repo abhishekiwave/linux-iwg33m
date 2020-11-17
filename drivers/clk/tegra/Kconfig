@@ -1,13 +1,13 @@
-config TEGRA_CAR_CLOCK
-	bool "Enable Tegra CAR-based clock driver"
-	depends on TEGRA_CAR
-	help
-	  Enable support for manipulating Tegra's on-SoC clocks via direct
-	  register access to the Tegra CAR (Clock And Reset controller).
+# SPDX-License-Identifier: GPL-2.0-only
+config TEGRA_CLK_EMC
+	def_bool y
+	depends on TEGRA124_EMC
 
-config TEGRA186_CLOCK
-	bool "Enable Tegra186 BPMP-based clock driver"
-	depends on TEGRA186_BPMP
-	help
-	  Enable support for manipulating Tegra's on-SoC clocks via IPC
-	  requests to the BPMP (Boot and Power Management Processor).
+config CLK_TEGRA_BPMP
+	def_bool y
+	depends on TEGRA_BPMP
+
+config TEGRA_CLK_DFLL
+	depends on ARCH_TEGRA_124_SOC || ARCH_TEGRA_210_SOC
+	select PM_OPP
+	def_bool y

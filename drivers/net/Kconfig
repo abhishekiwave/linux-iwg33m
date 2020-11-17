@@ -1,649 +1,534 @@
-source "drivers/net/phy/Kconfig"
-source "drivers/net/pfe_eth/Kconfig"
-source "drivers/net/fsl-mc/Kconfig"
-
-config DM_ETH
-	bool "Enable Driver Model for Ethernet drivers"
-	depends on DM
-	help
-	  Enable driver model for Ethernet.
-
-	  The eth_*() interface will be implemented by the UCLASS_ETH class
-	  This is currently implemented in net/eth-uclass.c
-	  Look in include/net.h for details.
-
-config DM_MDIO
-	bool "Enable Driver Model for MDIO devices"
-	depends on DM_ETH && PHYLIB
-	help
-	  Enable driver model for MDIO devices
-
-	  Adds UCLASS_MDIO DM class supporting MDIO buses that are probed as
-	  stand-alone devices.  Useful in particular for systems that support
-	  DM_ETH and have a stand-alone MDIO hardware block shared by multiple
-	  Ethernet interfaces.
-	  This is currently implemented in net/mdio-uclass.c
-	  Look in include/miiphy.h for details.
-
-config DM_MDIO_MUX
-	bool "Enable Driver Model for MDIO MUX devices"
-	depends on DM_MDIO
-	help
-	  Enable driver model for MDIO MUX devices
-
-	  Adds UCLASS_MDIO_MUX DM class supporting MDIO MUXes.  Useful for
-	  systems that support DM_MDIO and integrate one or multiple muxes on
-	  the MDIO bus.
-	  This is currently implemented in net/mdio-mux-uclass.c
-	  Look in include/miiphy.h for details.
-
-config MDIO_SANDBOX
-	depends on DM_MDIO && SANDBOX
-	default y
-	bool "Sandbox: Mocked MDIO driver"
-	help
-	  This driver implements dummy read/write/reset MDIO functions mimicking
-	  a bus with a single PHY.
-
-	  This driver is used in for testing in test/dm/mdio.c
-
-config MDIO_MUX_SANDBOX
-	depends on DM_MDIO_MUX && MDIO_SANDBOX
-	default y
-	bool "Sandbox: Mocked MDIO-MUX driver"
-	help
-	  This driver implements dummy select/deselect ops mimicking a MUX on
-	  the MDIO bux.  It uses mdio_sandbox driver as parent MDIO.
-
-	  This driver is used for testing in test/dm/mdio.c
-
-config DM_ETH_PHY
-	bool "Enable Driver Model for Ethernet Generic PHY drivers"
-	depends on DM
-	help
-	  Enable driver model for Ethernet Generic PHY .
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Network device configuration
+#
 
 menuconfig NETDEVICES
-	bool "Network device support"
+	default y if UML
 	depends on NET
-	default y if DM_ETH
-	help
-	  You must select Y to enable any network device support
-	  Generally if you have any networking support this is a given
+	bool "Network device support"
+	---help---
+	  You can say N here if you don't intend to connect your Linux box to
+	  any other computer at all.
 
-	  If unsure, say Y
+	  You'll have to say Y if your computer contains a network card that
+	  you want to use under Linux. If you are going to run SLIP or PPP over
+	  telephone line or null modem cable you need say Y here. Connecting
+	  two machines with parallel ports using PLIP needs this, as well as
+	  AX.25/KISS for sending Internet traffic over amateur radio links.
 
+	  See also "The Linux Network Administrator's Guide" by Olaf Kirch and
+	  Terry Dawson. Available at <http://www.tldp.org/guides.html>.
+
+	  If unsure, say Y.
+
+# All the following symbols are dependent on NETDEVICES - do not repeat
+# that for each of the symbols.
 if NETDEVICES
 
-config PHY_GIGE
-	bool "Enable GbE PHY status parsing and configuration"
-	help
-	  Enables support for parsing the status output and for
-	  configuring GbE PHYs (affects the inner workings of some
-	  commands and miiphyutil.c).
-
-config AG7XXX
-	bool "Atheros AG7xxx Ethernet MAC support"
-	depends on DM_ETH && ARCH_ATH79
-	select PHYLIB
-	help
-	  This driver supports the Atheros AG7xxx Ethernet MAC. This MAC is
-	  present in the Atheros AR7xxx, AR9xxx and QCA9xxx MIPS chips.
-
-
-config ALTERA_TSE
-	bool "Altera Triple-Speed Ethernet MAC support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the Altera Triple-Speed (TSE) Ethernet MAC.
-	  Please find details on the "Triple-Speed Ethernet MegaCore Function
-	  Resource Center" of Altera.
-
-config BCM_SF2_ETH
-	bool "Broadcom SF2 (Starfighter2) Ethernet support"
-	select PHYLIB
-	help
-	  This is an abstract framework which provides a generic interface
-	  to MAC and DMA management for multiple Broadcom SoCs such as
-	  Cygnus, NSP and bcm28155_ap platforms.
-
-config BCM_SF2_ETH_DEFAULT_PORT
-	int "Broadcom SF2 (Starfighter2) Ethernet default port number"
-	depends on BCM_SF2_ETH
-	default 0
-	help
-	  Default port number for the Starfighter2 ethernet driver.
-
-config BCM_SF2_ETH_GMAC
-	bool "Broadcom SF2 (Starfighter2) GMAC Ethernet support"
-	depends on BCM_SF2_ETH
-	help
-	  This flag enables the ethernet support for Broadcom platforms with
-	  GMAC such as Cygnus. This driver is based on the framework provided
-	  by the BCM_SF2_ETH driver.
-	  Say Y to any bcmcygnus based platforms.
-
-config BCM6348_ETH
-	bool "BCM6348 EMAC support"
-	depends on DM_ETH && ARCH_BMIPS
-	select DMA
-	select DMA_CHANNELS
-	select MII
-	select PHYLIB
-	help
-	  This driver supports the BCM6348 Ethernet MAC.
-
-config BCM6368_ETH
-	bool "BCM6368 EMAC support"
-	depends on DM_ETH && ARCH_BMIPS
-	select DMA
-	select MII
-	help
-	  This driver supports the BCM6368 Ethernet MAC.
-
-config BCMGENET
-	bool "BCMGENET V5 support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the BCMGENET Ethernet MAC.
-
-config DWC_ETH_QOS
-	bool "Synopsys DWC Ethernet QOS device support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the Synopsys Designware Ethernet QOS (Quality
-	  Of Service) IP block. The IP supports many options for bus type,
-	  clocking/reset structure, and feature list. This driver currently
-	  supports the specific configuration used in NVIDIA's Tegra186 chip,
-	  but should be extensible to other combinations quite easily.
-
-config E1000
-	bool "Intel PRO/1000 Gigabit Ethernet support"
-	help
-	  This driver supports Intel(R) PRO/1000 gigabit ethernet family of
-	  adapters.  For more information on how to identify your adapter, go
-	  to the Adapter & Driver ID Guide at:
-
-	  <http://support.intel.com/support/network/adapter/pro100/21397.htm>
-
-config E1000_SPI_GENERIC
-	bool "Allow access to the Intel 8257x SPI bus"
-	depends on E1000
-	help
-	  Allow generic access to the SPI bus on the Intel 8257x, for
-	  example with the "sspi" command.
-
-config E1000_SPI
-	bool "Enable SPI bus utility code"
-	depends on E1000
-	help
-	  Utility code for direct access to the SPI bus on Intel 8257x.
-	  This does not do anything useful unless you set at least one
-	  of CONFIG_CMD_E1000 or CONFIG_E1000_SPI_GENERIC.
-
-config CMD_E1000
-	bool "Enable the e1000 command"
-	depends on E1000
-	help
-	  This enables the 'e1000' management command for E1000 devices. When
-	  used on devices with SPI support you can reprogram the EEPROM from
-	  U-Boot.
-
-config ETH_SANDBOX
-	depends on DM_ETH && SANDBOX
-	default y
-	bool "Sandbox: Mocked Ethernet driver"
-	help
-	  This driver simply responds with fake ARP replies and ping
-	  replies that are used to verify network stack functionality
-
-	  This driver is particularly useful in the test/dm/eth.c tests
-
-config ETH_SANDBOX_RAW
-	depends on DM_ETH && SANDBOX
-	default y
-	bool "Sandbox: Bridge to Linux Raw Sockets"
-	help
-	  This driver is a bridge from the bottom of the network stack
-	  in U-Boot to the RAW AF_PACKET API in Linux. This allows real
-	  network traffic to be tested from within sandbox. See
-	  doc/arch/index.rst for more details.
-
-config ETH_DESIGNWARE
-	bool "Synopsys Designware Ethernet MAC"
-	select PHYLIB
-	imply ETH_DESIGNWARE_SOCFPGA if ARCH_SOCFPGA
-	help
-	  This MAC is present in SoCs from various vendors. It supports
-	  100Mbit and 1 Gbit operation. You must enable CONFIG_PHYLIB to
-	  provide the PHY (physical media interface).
-
-config ETH_DESIGNWARE_SOCFPGA
-	select REGMAP
-	select SYSCON
-	bool "Altera SoCFPGA extras for Synopsys Designware Ethernet MAC"
-	depends on DM_ETH && ETH_DESIGNWARE
-	help
-	  The Altera SoCFPGA requires additional configuration of the
-	  Altera system manager to correctly interface with the PHY.
-	  This code handles those SoC specifics.
-
-config ETHOC
-	bool "OpenCores 10/100 Mbps Ethernet MAC"
-	help
-	  This MAC is present in OpenRISC and Xtensa XTFPGA boards.
-
-config FEC_MXC_SHARE_MDIO
-	bool "Share the MDIO bus for FEC controller"
-	depends on FEC_MXC
-
-config FEC_MXC_MDIO_BASE
-	hex "MDIO base address for the FEC controller"
-	depends on FEC_MXC_SHARE_MDIO
-	help
-	  This specifies the MDIO registers base address. It is used when
-	  two FEC controllers share MDIO bus.
-
-config FEC_MXC
-	bool "FEC Ethernet controller"
-	depends on MX28 || MX5 || MX6 || MX7 || IMX8 || IMX8M || VF610
-	help
-	  This driver supports the 10/100 Fast Ethernet controller for
-	  NXP i.MX processors.
-
-config FMAN_ENET
-	bool "Freescale FMan ethernet support"
-	depends on ARM || PPC
-	help
-	  This driver support the Freescale FMan Ethernet controller
-
-config FTMAC100
-	bool "Ftmac100 Ethernet Support"
-	help
-	  This MAC is present in Andestech SoCs.
-
-config FTGMAC100
-	bool "Ftgmac100 Ethernet Support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the Faraday's FTGMAC100 Gigabit SoC
-	  Ethernet controller that can be found on Aspeed SoCs (which
-	  include NCSI).
-
-	  It is fully compliant with IEEE 802.3 specification for
-	  10/100 Mbps Ethernet and IEEE 802.3z specification for 1000
-	  Mbps Ethernet and includes Reduced Media Independent
-	  Interface (RMII) and Reduced Gigabit Media Independent
-	  Interface (RGMII) interfaces. It adopts an AHB bus interface
-	  and integrates a link list DMA engine with direct M-Bus
-	  accesses for transmitting and receiving packets. It has
-	  independent TX/RX fifos, supports half and full duplex (1000
-	  Mbps mode only supports full duplex), flow control for full
-	  duplex and backpressure for half duplex.
-
-	  The FTGMAC100 also implements IP, TCP, UDP checksum offloads
-	  and supports IEEE 802.1Q VLAN tag insertion and removal. It
-	  offers high-priority transmit queue for QoS and CoS
-	  applications.
-
-
-config MCFFEC
-	bool "ColdFire Ethernet Support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the network interface units in the
-	  ColdFire family.
-
-config FSLDMAFEC
-        bool "ColdFire DMA Ethernet Support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the network interface units in the
-	  ColdFire family.
-
-config MVGBE
-	bool "Marvell Orion5x/Kirkwood network interface support"
-	depends on KIRKWOOD || ORION5X
-	select PHYLIB if DM_ETH
-	help
-	  This driver supports the network interface units in the
-	  Marvell Orion5x and Kirkwood SoCs
-
-config MVNETA
-	bool "Marvell Armada XP/385/3700 network interface support"
-	depends on ARMADA_XP || ARMADA_38X || ARMADA_3700
-	select PHYLIB
-	help
-	  This driver supports the network interface units in the
-	  Marvell ARMADA XP, ARMADA 38X and ARMADA 3700 SoCs
-
-config MVPP2
-	bool "Marvell Armada 375/7K/8K network interface support"
-	depends on ARMADA_375 || ARMADA_8K
-	select PHYLIB
-	select MVMDIO
-	select DM_MDIO
-	help
-	  This driver supports the network interface units in the
-	  Marvell ARMADA 375, 7K and 8K SoCs.
-
-config MACB
-	bool "Cadence MACB/GEM Ethernet Interface"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  The Cadence MACB ethernet interface is found on many Atmel
-	  AT91 and SAMA5 parts.  This driver also supports the Cadence
-	  GEM (Gigabit Ethernet MAC) found in some ARM SoC devices.
-	  Say Y to include support for the MACB/GEM chip.
-
-config MACB_ZYNQ
-	bool "Cadence MACB/GEM Ethernet Interface for Xilinx Zynq"
-	depends on MACB
-	help
-	  The Cadence MACB ethernet interface was used on Zynq platform.
-	  Say Y to enable support for the MACB/GEM in Zynq chip.
-
-config MT7628_ETH
-	bool "MediaTek MT7628 Ethernet Interface"
-	depends on SOC_MT7628
-	select PHYLIB
-	help
-	  The MediaTek MT7628 ethernet interface is used on MT7628 and
-	  MT7688 based boards.
-
-config PCH_GBE
-	bool "Intel Platform Controller Hub EG20T GMAC driver"
-	depends on DM_ETH && DM_PCI
-	select PHYLIB
-	help
-	  This MAC is present in Intel Platform Controller Hub EG20T. It
-	  supports 10/100/1000 Mbps operation.
-
-config RGMII
-	bool "Enable RGMII"
-	help
-	  Enable the support of the Reduced Gigabit Media-Independent
-	  Interface (RGMII).
-
 config MII
-	bool "Enable MII"
-	help
-	  Enable support of the Media-Independent Interface (MII)
+	tristate
 
-config RTL8139
-	bool "Realtek 8139 series Ethernet controller driver"
-	help
-	  This driver supports Realtek 8139 series fast ethernet family of
-	  PCI chipsets/adapters.
-
-config RTL8169
-	bool "Realtek 8169 series Ethernet controller driver"
-	help
-	  This driver supports Realtek 8169 series gigabit ethernet family of
-	  PCI/PCIe chipsets/adapters.
-
-config SMC911X
-	bool "SMSC LAN911x and LAN921x controller driver"
-
-if SMC911X
-
-config SMC911X_BASE
-	hex "SMC911X Base Address"
-	help
-	  Define this to hold the physical address
-	  of the device (I/O space)
-
-choice
-	prompt "SMC911X bus width"
-	default SMC911X_16_BIT
-
-config SMC911X_32_BIT
-	bool "Enable 32-bit interface"
-
-config SMC911X_16_BIT
-	bool "Enable 16-bit interface"
-	help
-	  Define this if data bus is 16 bits. If your processor
-	  automatically converts one 32 bit word to two 16 bit
-	  words you may also try CONFIG_SMC911X_32_BIT.
-
-endchoice
-endif #SMC911X
-
-config SUN7I_GMAC
-	bool "Enable Allwinner GMAC Ethernet support"
-	help
-	  Enable the support for Sun7i GMAC Ethernet controller
-
-config SUN7I_GMAC_FORCE_TXERR
-	bool "Force PA17 as gmac function"
-	depends on SUN7I_GMAC
-	help
-	  Some ethernet phys needs TXERR control. Since the GMAC
-	  doesn't have such signal, setting PA17 as GMAC function
-	  makes the pin output low, which enables data transmission.
-
-config SUN4I_EMAC
-	bool "Allwinner Sun4i Ethernet MAC support"
-	depends on DM_ETH
-	select PHYLIB
-	help
-	  This driver supports the Allwinner based SUN4I Ethernet MAC.
-
-config SUN8I_EMAC
-        bool "Allwinner Sun8i Ethernet MAC support"
-        depends on DM_ETH
-        select PHYLIB
-	select PHY_GIGE
-        help
-          This driver supports the  Allwinner based SUN8I/SUN50I Ethernet MAC.
-	  It can be found in H3/A64/A83T based SoCs and compatible with both
-	  External and Internal PHYs.
-
-config SH_ETHER
-	bool "Renesas SH Ethernet MAC"
-	select PHYLIB
-	help
-	  This driver supports the Ethernet for Renesas SH and ARM SoCs.
-
-source "drivers/net/ti/Kconfig"
-
-config XILINX_AXIEMAC
-	depends on DM_ETH && (MICROBLAZE || ARCH_ZYNQ || ARCH_ZYNQMP)
-	select PHYLIB
-	select MII
-	bool "Xilinx AXI Ethernet"
-	help
-	  This MAC is present in Xilinx Microblaze, Zynq and ZynqMP SoCs.
-
-config XILINX_EMACLITE
-	depends on DM_ETH && (MICROBLAZE || ARCH_ZYNQ || ARCH_ZYNQMP || MIPS)
-	select PHYLIB
-	select MII
-	bool "Xilinx Ethernetlite"
-	help
-	  This MAC is present in Xilinx Microblaze, Zynq and ZynqMP SoCs.
-
-config ZYNQ_GEM
-	depends on DM_ETH && (ARCH_ZYNQ || ARCH_ZYNQMP || ARCH_VERSAL)
-	select PHYLIB
-	bool "Xilinx Ethernet GEM"
-	help
-	  This MAC is present in Xilinx Zynq and ZynqMP SoCs.
-
-config PIC32_ETH
-	bool "Microchip PIC32 Ethernet Support"
-	depends on DM_ETH && MACH_PIC32
-	select PHYLIB
-	help
-	  This driver implements 10/100 Mbps Ethernet and MAC layer for
-	  Microchip PIC32 microcontrollers.
-
-config GMAC_ROCKCHIP
-	bool "Rockchip Synopsys Designware Ethernet MAC"
-	depends on DM_ETH && ETH_DESIGNWARE
-	help
-	  This driver provides Rockchip SoCs network support based on the
-	  Synopsys Designware driver.
-
-config RENESAS_RAVB
-	bool "Renesas Ethernet AVB MAC"
-	depends on DM_ETH && RCAR_GEN3
-	select PHYLIB
-	help
-	  This driver implements support for the Ethernet AVB block in
-	  Renesas M3 and H3 SoCs.
-
-config MPC8XX_FEC
-	bool "Fast Ethernet Controller on MPC8XX"
-	depends on MPC8xx
-	select MII
-	help
-	  This driver implements support for the Fast Ethernet Controller
-	  on MPC8XX
-
-config SNI_AVE
-	bool "Socionext AVE Ethernet support"
-	depends on DM_ETH && ARCH_UNIPHIER
-	select PHYLIB
-	select SYSCON
-	select REGMAP
-	help
-	  This driver implements support for the Socionext AVE Ethernet
-	  controller, as found on the Socionext UniPhier family.
-
-source "drivers/net/mscc_eswitch/Kconfig"
-
-config ETHER_ON_FEC1
-	bool "FEC1"
-	depends on MPC8XX_FEC
+config NET_CORE
 	default y
+	bool "Network core driver support"
+	---help---
+	  You can say N here if you do not intend to use any of the
+	  networking core drivers (i.e. VLAN, bridging, bonding, etc.)
 
-config FEC1_PHY
-	int "FEC1 PHY"
-	depends on ETHER_ON_FEC1
-	default -1
+if NET_CORE
+
+config BONDING
+	tristate "Bonding driver support"
+	depends on INET
+	depends on IPV6 || IPV6=n
+	---help---
+	  Say 'Y' or 'M' if you wish to be able to 'bond' multiple Ethernet
+	  Channels together. This is called 'Etherchannel' by Cisco,
+	  'Trunking' by Sun, 802.3ad by the IEEE, and 'Bonding' in Linux.
+
+	  The driver supports multiple bonding modes to allow for both high
+	  performance and high availability operation.
+
+	  Refer to <file:Documentation/networking/bonding.txt> for more
+	  information.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called bonding.
+
+config DUMMY
+	tristate "Dummy net driver support"
+	---help---
+	  This is essentially a bit-bucket device (i.e. traffic you send to
+	  this device is consigned into oblivion) with a configurable IP
+	  address. It is most commonly used in order to make your currently
+	  inactive SLIP address seem like a real address for local programs.
+	  If you use SLIP or PPP, you might want to say Y here. It won't
+	  enlarge your kernel. What a deal. Read about it in the Network
+	  Administrator's Guide, available from
+	  <http://www.tldp.org/docs.html#guide>.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called dummy.
+
+config EQUALIZER
+	tristate "EQL (serial line load balancing) support"
+	---help---
+	  If you have two serial connections to some other computer (this
+	  usually requires two modems and two telephone lines) and you use
+	  SLIP (the protocol for sending Internet traffic over telephone
+	  lines) or PPP (a better SLIP) on them, you can make them behave like
+	  one double speed connection using this driver.  Naturally, this has
+	  to be supported at the other end as well, either with a similar EQL
+	  Linux driver or with a Livingston Portmaster 2e.
+
+	  Say Y if you want this and read
+	  <file:Documentation/networking/eql.txt>.  You may also want to read
+	  section 6.2 of the NET-3-HOWTO, available from
+	  <http://www.tldp.org/docs.html#howto>.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called eql.  If unsure, say N.
+
+config NET_FC
+	bool "Fibre Channel driver support"
+	depends on SCSI && PCI
 	help
-	  Define to the hardcoded PHY address which corresponds
-	  to the given FEC; i. e.
-		#define CONFIG_FEC1_PHY 4
-	  means that the PHY with address 4 is connected to FEC1
+	  Fibre Channel is a high speed serial protocol mainly used to connect
+	  large storage devices to the computer; it is compatible with and
+	  intended to replace SCSI.
 
-	  When set to -1, means to probe for first available.
+	  If you intend to use Fibre Channel, you need to have a Fibre channel
+	  adaptor card in your computer; say Y here and to the driver for your
+	  adaptor below. You also should have said Y to "SCSI support" and
+	  "SCSI generic support".
 
-config PHY_NORXERR
-	bool "PHY_NORXERR"
-	depends on ETHER_ON_FEC1
+config IFB
+	tristate "Intermediate Functional Block support"
+	depends on NET_CLS_ACT
+	---help---
+	  This is an intermediate driver that allows sharing of
+	  resources.
+	  To compile this driver as a module, choose M here: the module
+	  will be called ifb.  If you want to use more than one ifb
+	  device at a time, you need to compile this driver as a module.
+	  Instead of 'ifb', the devices will then be called 'ifb0',
+	  'ifb1' etc.
+	  Look at the iproute2 documentation directory for usage etc
+
+source "drivers/net/team/Kconfig"
+
+config MACVLAN
+	tristate "MAC-VLAN support"
+	---help---
+	  This allows one to create virtual interfaces that map packets to
+	  or from specific MAC addresses to a particular interface.
+
+	  Macvlan devices can be added using the "ip" command from the
+	  iproute2 package starting with the iproute2-2.6.23 release:
+
+	  "ip link add link <real dev> [ address MAC ] [ NAME ] type macvlan"
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called macvlan.
+
+config MACVTAP
+	tristate "MAC-VLAN based tap driver"
+	depends on MACVLAN
+	depends on INET
+	select TAP
+	help
+	  This adds a specialized tap character device driver that is based
+	  on the MAC-VLAN network interface, called macvtap. A macvtap device
+	  can be added in the same way as a macvlan device, using 'type
+	  macvtap', and then be accessed through the tap user space interface.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called macvtap.
+
+config IPVLAN_L3S
+	depends on NETFILTER
+	depends on IPVLAN
+	def_bool y
+	select NET_L3_MASTER_DEV
+
+config IPVLAN
+    tristate "IP-VLAN support"
+    depends on INET
+    depends on IPV6 || !IPV6
+    ---help---
+      This allows one to create virtual devices off of a main interface
+      and packets will be delivered based on the dest L3 (IPv6/IPv4 addr)
+      on packets. All interfaces (including the main interface) share L2
+      making it transparent to the connected L2 switch.
+
+      Ipvlan devices can be added using the "ip" command from the
+      iproute2 package starting with the iproute2-3.19 release:
+
+      "ip link add link <main-dev> [ NAME ] type ipvlan"
+
+      To compile this driver as a module, choose M here: the module
+      will be called ipvlan.
+
+config IPVTAP
+	tristate "IP-VLAN based tap driver"
+	depends on IPVLAN
+	depends on INET
+	select TAP
+	---help---
+	  This adds a specialized tap character device driver that is based
+	  on the IP-VLAN network interface, called ipvtap. An ipvtap device
+	  can be added in the same way as a ipvlan device, using 'type
+	  ipvtap', and then be accessed through the tap user space interface.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called ipvtap.
+
+config VXLAN
+       tristate "Virtual eXtensible Local Area Network (VXLAN)"
+       depends on INET
+       select NET_UDP_TUNNEL
+       select GRO_CELLS
+       ---help---
+	  This allows one to create vxlan virtual interfaces that provide
+	  Layer 2 Networks over Layer 3 Networks. VXLAN is often used
+	  to tunnel virtual network infrastructure in virtualized environments.
+	  For more information see:
+	    http://tools.ietf.org/html/draft-mahalingam-dutt-dcops-vxlan-02
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called vxlan.
+
+config GENEVE
+       tristate "Generic Network Virtualization Encapsulation"
+       depends on INET
+       depends on IPV6 || !IPV6
+       select NET_UDP_TUNNEL
+       select GRO_CELLS
+       ---help---
+	  This allows one to create geneve virtual interfaces that provide
+	  Layer 2 Networks over Layer 3 Networks. GENEVE is often used
+	  to tunnel virtual network infrastructure in virtualized environments.
+	  For more information see:
+	    http://tools.ietf.org/html/draft-gross-geneve-02
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called geneve.
+
+config GTP
+	tristate "GPRS Tunneling Protocol datapath (GTP-U)"
+	depends on INET
+	select NET_UDP_TUNNEL
+	---help---
+	  This allows one to create gtp virtual interfaces that provide
+	  the GPRS Tunneling Protocol datapath (GTP-U). This tunneling protocol
+	  is used to prevent subscribers from accessing mobile carrier core
+	  network infrastructure. This driver requires a userspace software that
+	  implements the signaling protocol (GTP-C) to update its PDP context
+	  base, such as OpenGGSN <http://git.osmocom.org/openggsn/). This
+	  tunneling protocol is implemented according to the GSM TS 09.60 and
+	  3GPP TS 29.060 standards.
+
+	  To compile this drivers as a module, choose M here: the module
+	  wil be called gtp.
+
+config MACSEC
+	tristate "IEEE 802.1AE MAC-level encryption (MACsec)"
+	select CRYPTO
+	select CRYPTO_AES
+	select CRYPTO_GCM
+	select GRO_CELLS
+	---help---
+	   MACsec is an encryption standard for Ethernet.
+
+config NETCONSOLE
+	tristate "Network console logging support"
+	---help---
+	If you want to log kernel messages over the network, enable this.
+	See <file:Documentation/networking/netconsole.txt> for details.
+
+config NETCONSOLE_DYNAMIC
+	bool "Dynamic reconfiguration of logging targets"
+	depends on NETCONSOLE && SYSFS && CONFIGFS_FS && \
+			!(NETCONSOLE=y && CONFIGFS_FS=m)
+	help
+	  This option enables the ability to dynamically reconfigure target
+	  parameters (interface, IP addresses, port numbers, MAC addresses)
+	  at runtime through a userspace interface exported using configfs.
+	  See <file:Documentation/networking/netconsole.txt> for details.
+
+config NETPOLL
+	def_bool NETCONSOLE
+	select SRCU
+
+config NET_POLL_CONTROLLER
+	def_bool NETPOLL
+
+config NTB_NETDEV
+	tristate "Virtual Ethernet over NTB Transport"
+	depends on NTB_TRANSPORT
+
+config RIONET
+	tristate "RapidIO Ethernet over messaging driver support"
+	depends on RAPIDIO
+
+config RIONET_TX_SIZE
+	int "Number of outbound queue entries"
+	depends on RIONET
+	default "128"
+
+config RIONET_RX_SIZE
+	int "Number of inbound queue entries"
+	depends on RIONET
+	default "128"
+
+config TUN
+	tristate "Universal TUN/TAP device driver support"
+	depends on INET
+	select CRC32
+	---help---
+	  TUN/TAP provides packet reception and transmission for user space
+	  programs.  It can be viewed as a simple Point-to-Point or Ethernet
+	  device, which instead of receiving packets from a physical media,
+	  receives them from user space program and instead of sending packets
+	  via physical media writes them to the user space program.
+
+	  When a program opens /dev/net/tun, driver creates and registers
+	  corresponding net device tunX or tapX.  After a program closed above
+	  devices, driver will automatically delete tunXX or tapXX device and
+	  all routes corresponding to it.
+
+	  Please read <file:Documentation/networking/tuntap.txt> for more
+	  information.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called tun.
+
+	  If you don't know what to use this for, you don't need it.
+
+config TAP
+	tristate
+	---help---
+	  This option is selected by any driver implementing tap user space
+	  interface for a virtual interface to re-use core tap functionality.
+
+config TUN_VNET_CROSS_LE
+	bool "Support for cross-endian vnet headers on little-endian kernels"
 	default n
-	help
-	  The PHY does not have a RXERR line (RMII only).
-	  (so program the FEC to ignore it).
+	---help---
+	  This option allows TUN/TAP and MACVTAP device drivers in a
+	  little-endian kernel to parse vnet headers that come from a
+	  big-endian legacy virtio device.
 
-config ETHER_ON_FEC2
-	bool "FEC2"
-	depends on MPC8XX_FEC && MPC885
+	  Userspace programs can control the feature using the TUNSETVNETBE
+	  and TUNGETVNETBE ioctls.
+
+	  Unless you have a little-endian system hosting a big-endian virtual
+	  machine with a legacy virtio NIC, you should say N.
+
+config VETH
+	tristate "Virtual ethernet pair device"
+	---help---
+	  This device is a local ethernet tunnel. Devices are created in pairs.
+	  When one end receives the packet it appears on its pair and vice
+	  versa.
+
+config VIRTIO_NET
+	tristate "Virtio network driver"
+	depends on VIRTIO
+	select NET_FAILOVER
+	---help---
+	  This is the virtual network driver for virtio.  It can be used with
+	  QEMU based VMMs (like KVM or Xen).  Say Y or M.
+
+config NLMON
+	tristate "Virtual netlink monitoring device"
+	---help---
+	  This option enables a monitoring net device for netlink skbs. The
+	  purpose of this is to analyze netlink messages with packet sockets.
+	  Thus applications like tcpdump will be able to see local netlink
+	  messages if they tap into the netlink device, record pcaps for further
+	  diagnostics, etc. This is mostly intended for developers or support
+	  to debug netlink issues. If unsure, say N.
+
+config NET_VRF
+	tristate "Virtual Routing and Forwarding (Lite)"
+	depends on IP_MULTIPLE_TABLES
+	depends on NET_L3_MASTER_DEV
+	depends on IPV6 || IPV6=n
+	depends on IPV6_MULTIPLE_TABLES || IPV6=n
+	---help---
+	  This option enables the support for mapping interfaces into VRF's. The
+	  support enables VRF devices.
+
+config VSOCKMON
+    tristate "Virtual vsock monitoring device"
+    depends on VHOST_VSOCK
+    ---help---
+     This option enables a monitoring net device for vsock sockets. It is
+     mostly intended for developers or support to debug vsock issues. If
+     unsure, say N.
+
+endif # NET_CORE
+
+config SUNGEM_PHY
+	tristate
+
+source "drivers/net/arcnet/Kconfig"
+
+source "drivers/atm/Kconfig"
+
+source "drivers/net/caif/Kconfig"
+
+source "drivers/net/dsa/Kconfig"
+
+source "drivers/net/ethernet/Kconfig"
+
+source "drivers/net/fddi/Kconfig"
+
+source "drivers/net/hippi/Kconfig"
+
+config NET_SB1000
+	tristate "General Instruments Surfboard 1000"
+	depends on PNP
+	---help---
+	  This is a driver for the General Instrument (also known as
+	  NextLevel) SURFboard 1000 internal
+	  cable modem. This is an ISA card which is used by a number of cable
+	  TV companies to provide cable modem access. It's a one-way
+	  downstream-only cable modem, meaning that your upstream net link is
+	  provided by your regular phone modem.
+
+	  At present this driver only compiles as a module, so say M here if
+	  you have this card. The module will be called sb1000. Then read
+	  <file:Documentation/networking/device_drivers/sb1000.txt> for
+	  information on how to use this module, as it needs special ppp
+	  scripts for establishing a connection. Further documentation
+	  and the necessary scripts can be found at:
+
+	  <http://www.jacksonville.net/~fventuri/>
+	  <http://home.adelphia.net/~siglercm/sb1000.html>
+	  <http://linuxpower.cx/~cable/>
+
+	  If you don't have this card, of course say N.
+
+source "drivers/net/phy/Kconfig"
+
+source "drivers/net/plip/Kconfig"
+
+source "drivers/net/ppp/Kconfig"
+
+source "drivers/net/slip/Kconfig"
+
+source "drivers/s390/net/Kconfig"
+
+source "drivers/net/usb/Kconfig"
+
+source "drivers/net/wireless/Kconfig"
+
+source "drivers/net/wimax/Kconfig"
+
+source "drivers/net/wan/Kconfig"
+
+source "drivers/net/ieee802154/Kconfig"
+
+config XEN_NETDEV_FRONTEND
+	tristate "Xen network device frontend driver"
+	depends on XEN
+	select XEN_XENBUS_FRONTEND
 	default y
-
-config FEC2_PHY
-	int "FEC2 PHY"
-	depends on ETHER_ON_FEC2
-	default -1
 	help
-	  Define to the hardcoded PHY address which corresponds
-	  to the given FEC; i. e.
-		#define CONFIG_FEC1_PHY 4
-	  means that the PHY with address 4 is connected to FEC1
+	  This driver provides support for Xen paravirtual network
+	  devices exported by a Xen network driver domain (often
+	  domain 0).
 
-	  When set to -1, means to probe for first available.
+	  The corresponding Linux backend driver is enabled by the
+	  CONFIG_XEN_NETDEV_BACKEND option.
 
-config FEC2_PHY_NORXERR
-	bool "PHY_NORXERR"
-	depends on ETHER_ON_FEC2
-	default n
+	  If you are compiling a kernel for use as Xen guest, you
+	  should say Y here. To compile this driver as a module, chose
+	  M here: the module will be called xen-netfront.
+
+config XEN_NETDEV_BACKEND
+	tristate "Xen backend network device"
+	depends on XEN_BACKEND
 	help
-	  The PHY does not have a RXERR line (RMII only).
-	  (so program the FEC to ignore it).
+	  This driver allows the kernel to act as a Xen network driver
+	  domain which exports paravirtual network devices to other
+	  Xen domains. These devices can be accessed by any operating
+	  system that implements a compatible front end.
 
-config SYS_DPAA_QBMAN
-	bool "Device tree fixup for QBMan on freescale SOCs"
-	depends on (ARM || PPC) && !SPL_BUILD
-	default y if ARCH_B4860 || \
-		     ARCH_B4420 || \
-		     ARCH_P1023 || \
-		     ARCH_P2041 || \
-		     ARCH_T1023 || \
-		     ARCH_T1024 || \
-		     ARCH_T1040 || \
-		     ARCH_T1042 || \
-		     ARCH_T2080 || \
-		     ARCH_T2081 || \
-		     ARCH_T4240 || \
-		     ARCH_T4160 || \
-		     ARCH_P4080 || \
-		     ARCH_P3041 || \
-		     ARCH_P5040 || \
-		     ARCH_P5020 || \
-		     ARCH_LS1043A || \
-		     ARCH_LS1046A
+	  The corresponding Linux frontend driver is enabled by the
+	  CONFIG_XEN_NETDEV_FRONTEND configuration option.
+
+	  The backend driver presents a standard network device
+	  endpoint for each paravirtual network device to the driver
+	  domain network stack. These can then be bridged or routed
+	  etc in order to provide full network connectivity.
+
+	  If you are compiling a kernel to run in a Xen network driver
+	  domain (often this is domain 0) you should say Y here. To
+	  compile this driver as a module, chose M here: the module
+	  will be called xen-netback.
+
+config VMXNET3
+	tristate "VMware VMXNET3 ethernet driver"
+	depends on PCI && INET
+	depends on !(PAGE_SIZE_64KB || ARM64_64K_PAGES || \
+		     IA64_PAGE_SIZE_64KB || MICROBLAZE_64K_PAGES || \
+		     PARISC_PAGE_SIZE_64KB || PPC_64K_PAGES)
 	help
-	  QBman fixups to allow deep sleep in DPAA 1 SOCs
+	  This driver supports VMware's vmxnet3 virtual ethernet NIC.
+	  To compile this driver as a module, choose M here: the
+	  module will be called vmxnet3.
 
-config TSEC_ENET
-	select PHYLIB
-	bool "Enable Three-Speed Ethernet Controller"
+config FUJITSU_ES
+	tristate "FUJITSU Extended Socket Network Device driver"
+	depends on ACPI
 	help
-	  This driver implements support for the (Enhanced) Three-Speed
-	  Ethernet Controller found on Freescale SoCs.
+	  This driver provides support for Extended Socket network device
+	  on Extended Partitioning of FUJITSU PRIMEQUEST 2000 E2 series.
 
-config MEDIATEK_ETH
-	bool "MediaTek Ethernet GMAC Driver"
-	depends on DM_ETH
-	select PHYLIB
-	select DM_GPIO
-	select DM_RESET
+config THUNDERBOLT_NET
+	tristate "Networking over Thunderbolt cable"
+	depends on THUNDERBOLT && INET
 	help
-	  This Driver support MediaTek Ethernet GMAC
-	  Say Y to enable support for the MediaTek Ethernet GMAC.
+	  Select this if you want to create network between two
+	  computers over a Thunderbolt cable. The driver supports Apple
+	  ThunderboltIP protocol and allows communication with any host
+	  supporting the same protocol including Windows and macOS.
 
-config HIGMACV300_ETH
-	bool "HiSilicon Gigabit Ethernet Controller"
-	depends on DM_ETH
-	select DM_RESET
-	select PHYLIB
+	  To compile this driver a module, choose M here. The module will be
+	  called thunderbolt-net.
+
+source "drivers/net/hyperv/Kconfig"
+
+config NETDEVSIM
+	tristate "Simulated networking device"
+	depends on DEBUG_FS
+	select NET_DEVLINK
 	help
-	  This driver supports HIGMACV300 Ethernet controller found on
-	  HiSilicon SoCs.
+	  This driver is a developer testing tool and software model that can
+	  be used to test various control path networking APIs, especially
+	  HW-offload related.
 
-config FSL_ENETC
-	bool "NXP ENETC Ethernet controller"
-	depends on DM_PCI && DM_ETH && DM_MDIO
+	  To compile this driver as a module, choose M here: the module
+	  will be called netdevsim.
+
+config NET_FAILOVER
+	tristate "Failover driver"
+	select FAILOVER
 	help
-	  This driver supports the NXP ENETC Ethernet controller found on some
-	  of the NXP SoCs.
+	  This provides an automated failover mechanism via APIs to create
+	  and destroy a failover master netdev and manages a primary and
+	  standby slave netdevs that get registered via the generic failover
+	  infrastructure. This can be used by paravirtual drivers to enable
+	  an alternate low latency datapath. It also enables live migration of
+	  a VM with direct attached VF by failing over to the paravirtual
+	  datapath when the VF is unplugged.
 
-config MDIO_MUX_I2CREG
-	bool "MDIO MUX accessed as a register over I2C"
-	depends on DM_MDIO_MUX && DM_I2C
-	help
-	  This driver is used for MDIO muxes driven by writing to a register of
-	  an I2C chip.  The board it was developed for uses a mux controlled by
-	  on-board FPGA which in turn is accessed as a chip over I2C.
-
-config MVMDIO
-	bool "Marvell MDIO interface support"
-	depends on DM_MDIO
-	help
-	  This driver supports the MDIO interface found in the network
-	  interface units of the Marvell EBU SoCs (Kirkwood, Orion5x,
-	  Dove, Armada 370, Armada XP, Armada 37xx and Armada7K/8K/8KP).
-
-	  This driver is used by the MVPP2 and MVNETA drivers.
+config IVSHMEM_NET
+	tristate "IVSHMEM virtual network device"
+	depends on PCI
 
 endif # NETDEVICES

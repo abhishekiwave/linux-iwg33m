@@ -1,23 +1,32 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 Socionext Inc.
- *   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
+ * NAND Flash Controller Device Driver for DT
+ *
+ * Copyright © 2011, Picochip.
  */
 
-#include <clk.h>
-#include <dm.h>
-#include <dm/device_compat.h>
+#include <linux/clk.h>
+#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
-#include <linux/printk.h>
-#include <reset.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #include "denali.h"
+
+struct denali_dt {
+	struct denali_controller controller;
+	struct clk *clk;	/* core clock */
+	struct clk *clk_x;	/* bus interface clock */
+	struct clk *clk_ecc;	/* ECC circuit clock */
+};
 
 struct denali_dt_data {
 	unsigned int revision;
 	unsigned int caps;
-	unsigned int oob_skip_bytes;
 	const struct nand_ecc_caps *ecc_caps;
 };
 
@@ -25,7 +34,6 @@ NAND_ECC_CAPS_SINGLE(denali_socfpga_ecc_caps, denali_calc_ecc_bytes,
 		     512, 8, 15);
 static const struct denali_dt_data denali_socfpga_data = {
 	.caps = DENALI_CAP_HW_ECC_FIXUP,
-	.oob_skip_bytes = 2,
 	.ecc_caps = &denali_socfpga_ecc_caps,
 };
 
@@ -34,7 +42,6 @@ NAND_ECC_CAPS_SINGLE(denali_uniphier_v5a_ecc_caps, denali_calc_ecc_bytes,
 static const struct denali_dt_data denali_uniphier_v5a_data = {
 	.caps = DENALI_CAP_HW_ECC_FIXUP |
 		DENALI_CAP_DMA_64BIT,
-	.oob_skip_bytes = 8,
 	.ecc_caps = &denali_uniphier_v5a_ecc_caps,
 };
 
@@ -44,138 +51,220 @@ static const struct denali_dt_data denali_uniphier_v5b_data = {
 	.revision = 0x0501,
 	.caps = DENALI_CAP_HW_ECC_FIXUP |
 		DENALI_CAP_DMA_64BIT,
-	.oob_skip_bytes = 8,
 	.ecc_caps = &denali_uniphier_v5b_ecc_caps,
 };
 
-static const struct udevice_id denali_nand_dt_ids[] = {
+static const struct of_device_id denali_nand_dt_ids[] = {
 	{
 		.compatible = "altr,socfpga-denali-nand",
-		.data = (unsigned long)&denali_socfpga_data,
+		.data = &denali_socfpga_data,
 	},
 	{
 		.compatible = "socionext,uniphier-denali-nand-v5a",
-		.data = (unsigned long)&denali_uniphier_v5a_data,
+		.data = &denali_uniphier_v5a_data,
 	},
 	{
 		.compatible = "socionext,uniphier-denali-nand-v5b",
-		.data = (unsigned long)&denali_uniphier_v5b_data,
+		.data = &denali_uniphier_v5b_data,
 	},
 	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, denali_nand_dt_ids);
 
-static int denali_dt_probe(struct udevice *dev)
+static int denali_dt_chip_init(struct denali_controller *denali,
+			       struct device_node *chip_np)
 {
-	struct denali_nand_info *denali = dev_get_priv(dev);
-	const struct denali_dt_data *data;
-	struct clk clk, clk_x, clk_ecc;
-	struct reset_ctl_bulk resets;
-	struct resource res;
+	struct denali_chip *dchip;
+	u32 bank;
+	int nsels, i, ret;
+
+	nsels = of_property_count_u32_elems(chip_np, "reg");
+	if (nsels < 0)
+		return nsels;
+
+	dchip = devm_kzalloc(denali->dev, struct_size(dchip, sels, nsels),
+			     GFP_KERNEL);
+	if (!dchip)
+		return -ENOMEM;
+
+	dchip->nsels = nsels;
+
+	for (i = 0; i < nsels; i++) {
+		ret = of_property_read_u32_index(chip_np, "reg", i, &bank);
+		if (ret)
+			return ret;
+
+		dchip->sels[i].bank = bank;
+
+		nand_set_flash_node(&dchip->chip, chip_np);
+	}
+
+	return denali_chip_init(denali, dchip);
+}
+
+/* Backward compatibility for old platforms */
+static int denali_dt_legacy_chip_init(struct denali_controller *denali)
+{
+	struct denali_chip *dchip;
+	int nsels, i;
+
+	nsels = denali->nbanks;
+
+	dchip = devm_kzalloc(denali->dev, struct_size(dchip, sels, nsels),
+			     GFP_KERNEL);
+	if (!dchip)
+		return -ENOMEM;
+
+	dchip->nsels = nsels;
+
+	for (i = 0; i < nsels; i++)
+		dchip->sels[i].bank = i;
+
+	nand_set_flash_node(&dchip->chip, denali->dev->of_node);
+
+	return denali_chip_init(denali, dchip);
+}
+
+/*
+ * Check the DT binding.
+ * The new binding expects chip subnodes in the controller node.
+ * So, #address-cells = <1>; #size-cells = <0>; are required.
+ * Check the #size-cells to distinguish the binding.
+ */
+static bool denali_dt_is_legacy_binding(struct device_node *np)
+{
+	u32 cells;
 	int ret;
 
-	data = (void *)dev_get_driver_data(dev);
-	if (WARN_ON(!data))
-		return -EINVAL;
+	ret = of_property_read_u32(np, "#size-cells", &cells);
+	if (ret)
+		return true;
 
-	denali->revision = data->revision;
-	denali->caps = data->caps;
-	denali->oob_skip_bytes = data->oob_skip_bytes;
-	denali->ecc_caps = data->ecc_caps;
+	return cells != 0;
+}
+
+static int denali_dt_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct resource *res;
+	struct denali_dt *dt;
+	const struct denali_dt_data *data;
+	struct denali_controller *denali;
+	struct device_node *np;
+	int ret;
+
+	dt = devm_kzalloc(dev, sizeof(*dt), GFP_KERNEL);
+	if (!dt)
+		return -ENOMEM;
+	denali = &dt->controller;
+
+	data = of_device_get_match_data(dev);
+	if (data) {
+		denali->revision = data->revision;
+		denali->caps = data->caps;
+		denali->ecc_caps = data->ecc_caps;
+	}
 
 	denali->dev = dev;
+	denali->irq = platform_get_irq(pdev, 0);
+	if (denali->irq < 0) {
+		dev_err(dev, "no irq defined\n");
+		return denali->irq;
+	}
 
-	ret = dev_read_resource_byname(dev, "denali_reg", &res);
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "denali_reg");
+	denali->reg = devm_ioremap_resource(dev, res);
+	if (IS_ERR(denali->reg))
+		return PTR_ERR(denali->reg);
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "nand_data");
+	denali->host = devm_ioremap_resource(dev, res);
+	if (IS_ERR(denali->host))
+		return PTR_ERR(denali->host);
+
+	dt->clk = devm_clk_get(dev, "nand");
+	if (IS_ERR(dt->clk))
+		return PTR_ERR(dt->clk);
+
+	dt->clk_x = devm_clk_get(dev, "nand_x");
+	if (IS_ERR(dt->clk_x))
+		return PTR_ERR(dt->clk_x);
+
+	dt->clk_ecc = devm_clk_get(dev, "ecc");
+	if (IS_ERR(dt->clk_ecc))
+		return PTR_ERR(dt->clk_ecc);
+
+	ret = clk_prepare_enable(dt->clk);
 	if (ret)
 		return ret;
 
-	denali->reg = devm_ioremap(dev, res.start, resource_size(&res));
-
-	ret = dev_read_resource_byname(dev, "nand_data", &res);
+	ret = clk_prepare_enable(dt->clk_x);
 	if (ret)
-		return ret;
+		goto out_disable_clk;
 
-	denali->host = devm_ioremap(dev, res.start, resource_size(&res));
-
-	ret = clk_get_by_name(dev, "nand", &clk);
+	ret = clk_prepare_enable(dt->clk_ecc);
 	if (ret)
-		ret = clk_get_by_index(dev, 0, &clk);
-	if (ret)
-		clk.dev = NULL;
+		goto out_disable_clk_x;
 
-	ret = clk_get_by_name(dev, "nand_x", &clk_x);
-	if (ret)
-		clk_x.dev = NULL;
+	denali->clk_rate = clk_get_rate(dt->clk);
+	denali->clk_x_rate = clk_get_rate(dt->clk_x);
 
-	ret = clk_get_by_name(dev, "ecc", &clk_ecc);
+	ret = denali_init(denali);
 	if (ret)
-		clk_ecc.dev = NULL;
+		goto out_disable_clk_ecc;
 
-	if (clk.dev) {
-		ret = clk_enable(&clk);
+	if (denali_dt_is_legacy_binding(dev->of_node)) {
+		ret = denali_dt_legacy_chip_init(denali);
 		if (ret)
-			return ret;
-	}
-
-	if (clk_x.dev) {
-		ret = clk_enable(&clk_x);
-		if (ret)
-			return ret;
-	}
-
-	if (clk_ecc.dev) {
-		ret = clk_enable(&clk_ecc);
-		if (ret)
-			return ret;
-	}
-
-	if (clk_x.dev) {
-		denali->clk_rate = clk_get_rate(&clk);
-		denali->clk_x_rate = clk_get_rate(&clk_x);
+			goto out_remove_denali;
 	} else {
-		/*
-		 * Hardcode the clock rates for the backward compatibility.
-		 * This works for both SOCFPGA and UniPhier.
-		 */
-		dev_notice(dev,
-			   "necessary clock is missing. default clock rates are used.\n");
-		denali->clk_rate = 50000000;
-		denali->clk_x_rate = 200000000;
+		for_each_child_of_node(dev->of_node, np) {
+			ret = denali_dt_chip_init(denali, np);
+			if (ret) {
+				of_node_put(np);
+				goto out_remove_denali;
+			}
+		}
 	}
 
-	ret = reset_get_bulk(dev, &resets);
-	if (ret) {
-		dev_warn(dev, "Can't get reset: %d\n", ret);
-	} else {
-		reset_deassert_bulk(&resets);
+	platform_set_drvdata(pdev, dt);
 
-		/*
-		 * When the reset is deasserted, the initialization sequence is
-		 * kicked (bootstrap process). The driver must wait until it is
-		 * finished. Otherwise, it will result in unpredictable behavior.
-		 */
-		udelay(200);
-	}
+	return 0;
 
-	return denali_init(denali);
+out_remove_denali:
+	denali_remove(denali);
+out_disable_clk_ecc:
+	clk_disable_unprepare(dt->clk_ecc);
+out_disable_clk_x:
+	clk_disable_unprepare(dt->clk_x);
+out_disable_clk:
+	clk_disable_unprepare(dt->clk);
+
+	return ret;
 }
 
-U_BOOT_DRIVER(denali_nand_dt) = {
-	.name = "denali-nand-dt",
-	.id = UCLASS_MTD,
-	.of_match = denali_nand_dt_ids,
-	.probe = denali_dt_probe,
-	.priv_auto_alloc_size = sizeof(struct denali_nand_info),
-};
-
-void board_nand_init(void)
+static int denali_dt_remove(struct platform_device *pdev)
 {
-	struct udevice *dev;
-	int ret;
+	struct denali_dt *dt = platform_get_drvdata(pdev);
 
-	ret = uclass_get_device_by_driver(UCLASS_MTD,
-					  DM_GET_DRIVER(denali_nand_dt),
-					  &dev);
-	if (ret && ret != -ENODEV)
-		pr_err("Failed to initialize Denali NAND controller. (error %d)\n",
-		       ret);
+	denali_remove(&dt->controller);
+	clk_disable_unprepare(dt->clk_ecc);
+	clk_disable_unprepare(dt->clk_x);
+	clk_disable_unprepare(dt->clk);
+
+	return 0;
 }
+
+static struct platform_driver denali_dt_driver = {
+	.probe		= denali_dt_probe,
+	.remove		= denali_dt_remove,
+	.driver		= {
+		.name	= "denali-nand-dt",
+		.of_match_table	= denali_nand_dt_ids,
+	},
+};
+module_platform_driver(denali_dt_driver);
+
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR("Jamie Iles");
+MODULE_DESCRIPTION("DT driver for Denali NAND controller");

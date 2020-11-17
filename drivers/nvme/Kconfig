@@ -1,11 +1,7 @@
-# SPDX-License-Identifier: GPL-2.0+
-#
-# Copyright (C) 2017, Bin Meng <bmeng.cn@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-only
+menu "NVME Support"
 
-config NVME
-	bool "NVM Express device support"
-	depends on BLK && PCI
-	select HAVE_BLOCK_DEVICE
-	help
-	  This option enables support for NVM Express devices.
-	  It supports basic functions of NVMe (read/write).
+source "drivers/nvme/host/Kconfig"
+source "drivers/nvme/target/Kconfig"
+
+endmenu

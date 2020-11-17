@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright 2020 iWave Systems Technologies
+ */
+
+/dts-v1/;
+
+#include "imx8mq-iwg33m-dcss-rm67198.dts"
+
+/ {
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		m4_reserved: m4@0x80000000 {
+			no-map;
+			reg = <0 0x80000000 0 0x1000000>;
+		};
+
+		rpmsg_reserved: rpmsg@0xb8000000 {
+			no-map;
+			reg = <0 0xb8000000 0 0x400000>;
+		};
+
+		rpmsg_dma_reserved:rpmsg_dma@0xb8400000 {
+			compatible = "shared-dma-pool";
+			no-map;
+			reg = <0 0xb8400000 0 0x100000>;
+		};
+	};
+};
+
+&rpmsg{
+	/*
+	 * 64K for one rpmsg instance:
+	 * --0xb8000000~0xb800ffff: pingpong
+	 */
+	vdev-nums = <1>;
+	reg = <0x0 0xb8000000 0x0 0x10000>;
+	memory-region = <&rpmsg_dma_reserved>;
+	status = "okay";
+};
+
+&uart2 {
+	status = "disabled";
+};

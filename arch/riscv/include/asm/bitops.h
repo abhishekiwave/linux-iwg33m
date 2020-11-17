@@ -1,176 +1,205 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright 1995, Russell King.
- * Various bits and pieces copyrights include:
- * Linus Torvalds (test_bit).
- *
- * Copyright (C) 2017 Andes Technology Corporation
- * Rick Chen, Andes Technology Corporation <rick@andestech.com>
- *
- * bit 0 is the LSB of addr; bit 32 is the LSB of (addr+1).
- *
- * Please note that the code in this file should never be included
- * from user space.  Many of these are not implemented in assembler
- * since they would be too costly.  Also, they require priviledged
- * instructions (which are not available from user mode) to ensure
- * that they are atomic.
+ * Copyright (C) 2012 Regents of the University of California
  */
 
-#ifndef __ASM_RISCV_BITOPS_H
-#define __ASM_RISCV_BITOPS_H
+#ifndef _ASM_RISCV_BITOPS_H
+#define _ASM_RISCV_BITOPS_H
 
-#ifdef __KERNEL__
+#ifndef _LINUX_BITOPS_H
+#error "Only <linux/bitops.h> can be included directly"
+#endif /* _LINUX_BITOPS_H */
 
-#include <asm/system.h>
+#include <linux/compiler.h>
+#include <linux/irqflags.h>
+#include <asm/barrier.h>
+#include <asm/bitsperlong.h>
+
+#include <asm-generic/bitops/__ffs.h>
+#include <asm-generic/bitops/ffz.h>
 #include <asm-generic/bitops/fls.h>
 #include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/fls64.h>
-#include <asm-generic/bitops/__ffs.h>
+#include <asm-generic/bitops/find.h>
+#include <asm-generic/bitops/sched.h>
+#include <asm-generic/bitops/ffs.h>
 
-#define smp_mb__before_clear_bit()	do { } while (0)
-#define smp_mb__after_clear_bit()	do { } while (0)
+#include <asm-generic/bitops/hweight.h>
 
-/*
- * Function prototypes to keep gcc -Wall happy.
+#if (BITS_PER_LONG == 64)
+#define __AMO(op)	"amo" #op ".d"
+#elif (BITS_PER_LONG == 32)
+#define __AMO(op)	"amo" #op ".w"
+#else
+#error "Unexpected BITS_PER_LONG"
+#endif
+
+#define __test_and_op_bit_ord(op, mod, nr, addr, ord)		\
+({								\
+	unsigned long __res, __mask;				\
+	__mask = BIT_MASK(nr);					\
+	__asm__ __volatile__ (					\
+		__AMO(op) #ord " %0, %2, %1"			\
+		: "=r" (__res), "+A" (addr[BIT_WORD(nr)])	\
+		: "r" (mod(__mask))				\
+		: "memory");					\
+	((__res & __mask) != 0);				\
+})
+
+#define __op_bit_ord(op, mod, nr, addr, ord)			\
+	__asm__ __volatile__ (					\
+		__AMO(op) #ord " zero, %1, %0"			\
+		: "+A" (addr[BIT_WORD(nr)])			\
+		: "r" (mod(BIT_MASK(nr)))			\
+		: "memory");
+
+#define __test_and_op_bit(op, mod, nr, addr) 			\
+	__test_and_op_bit_ord(op, mod, nr, addr, .aqrl)
+#define __op_bit(op, mod, nr, addr)				\
+	__op_bit_ord(op, mod, nr, addr, )
+
+/* Bitmask modifiers */
+#define __NOP(x)	(x)
+#define __NOT(x)	(~(x))
+
+/**
+ * test_and_set_bit - Set a bit and return its old value
+ * @nr: Bit to set
+ * @addr: Address to count from
+ *
+ * This operation may be reordered on other architectures than x86.
  */
-static inline void __set_bit(int nr, void *addr)
+static inline int test_and_set_bit(int nr, volatile unsigned long *addr)
 {
-	int *a = (int *)addr;
-	int mask;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	*a |= mask;
+	return __test_and_op_bit(or, __NOP, nr, addr);
 }
 
-#define PLATFORM__SET_BIT
-
-static inline void __clear_bit(int nr, void *addr)
-{
-	int *a = (int *)addr;
-	int mask;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	*a &= ~mask;
-}
-
-#define PLATFORM__CLEAR_BIT
-
-static inline void __change_bit(int nr, void *addr)
-{
-	int mask;
-	unsigned long *ADDR = (unsigned long *)addr;
-
-	ADDR += nr >> 5;
-	mask = 1 << (nr & 31);
-	*ADDR ^= mask;
-}
-
-static inline int __test_and_set_bit(int nr, void *addr)
-{
-	int mask, retval;
-	unsigned int *a = (unsigned int *)addr;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	retval = (mask & *a) != 0;
-	*a |= mask;
-	return retval;
-}
-
-static inline int __test_and_clear_bit(int nr, void *addr)
-{
-	int mask, retval;
-	unsigned int *a = (unsigned int *)addr;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	retval = (mask & *a) != 0;
-	*a &= ~mask;
-	return retval;
-}
-
-static inline int __test_and_change_bit(int nr, void *addr)
-{
-	int mask, retval;
-	unsigned int *a = (unsigned int *)addr;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	retval = (mask & *a) != 0;
-	*a ^= mask;
-	return retval;
-}
-
-/*
- * This routine doesn't need to be atomic.
+/**
+ * test_and_clear_bit - Clear a bit and return its old value
+ * @nr: Bit to clear
+ * @addr: Address to count from
+ *
+ * This operation can be reordered on other architectures other than x86.
  */
-static inline int test_bit(int nr, const void *addr)
+static inline int test_and_clear_bit(int nr, volatile unsigned long *addr)
 {
-	return ((unsigned char *)addr)[nr >> 3] & (1U << (nr & 7));
+	return __test_and_op_bit(and, __NOT, nr, addr);
 }
 
-/*
- * ffz = Find First Zero in word. Undefined if no zero exists,
- * so code should check against ~0UL first..
+/**
+ * test_and_change_bit - Change a bit and return its old value
+ * @nr: Bit to change
+ * @addr: Address to count from
+ *
+ * This operation is atomic and cannot be reordered.
+ * It also implies a memory barrier.
  */
-static inline unsigned long ffz(unsigned long word)
+static inline int test_and_change_bit(int nr, volatile unsigned long *addr)
 {
-	int k;
-
-	word = ~word;
-	k = 31;
-	if (word & 0x0000ffff) {
-		k -= 16; word <<= 16;
-	}
-	if (word & 0x00ff0000) {
-		k -= 8;  word <<= 8;
-	}
-	if (word & 0x0f000000) {
-		k -= 4;  word <<= 4;
-	}
-	if (word & 0x30000000) {
-		k -= 2;  word <<= 2;
-	}
-	if (word & 0x40000000)
-		k -= 1;
-
-	return k;
+	return __test_and_op_bit(xor, __NOP, nr, addr);
 }
 
-/*
- * ffs: find first bit set. This is defined the same way as
- * the libc and compiler builtin ffs routines, therefore
- * differs in spirit from the above ffz (man ffs).
+/**
+ * set_bit - Atomically set a bit in memory
+ * @nr: the bit to set
+ * @addr: the address to start counting from
+ *
+ * Note: there are no guarantees that this function will not be reordered
+ * on non x86 architectures, so if you are writing portable code,
+ * make sure not to rely on its reordering guarantees.
+ *
+ * Note that @nr may be almost arbitrarily large; this function is not
+ * restricted to acting on a single-word quantity.
  */
+static inline void set_bit(int nr, volatile unsigned long *addr)
+{
+	__op_bit(or, __NOP, nr, addr);
+}
 
-/*
- * redefined in include/linux/bitops.h
- * #define ffs(x) generic_ffs(x)
+/**
+ * clear_bit - Clears a bit in memory
+ * @nr: Bit to clear
+ * @addr: Address to start counting from
+ *
+ * Note: there are no guarantees that this function will not be reordered
+ * on non x86 architectures, so if you are writing portable code,
+ * make sure not to rely on its reordering guarantees.
  */
+static inline void clear_bit(int nr, volatile unsigned long *addr)
+{
+	__op_bit(and, __NOT, nr, addr);
+}
 
-/*
- * hweightN: returns the hamming weight (i.e. the number
- * of bits set) of a N-bit word
+/**
+ * change_bit - Toggle a bit in memory
+ * @nr: Bit to change
+ * @addr: Address to start counting from
+ *
+ * change_bit()  may be reordered on other architectures than x86.
+ * Note that @nr may be almost arbitrarily large; this function is not
+ * restricted to acting on a single-word quantity.
  */
+static inline void change_bit(int nr, volatile unsigned long *addr)
+{
+	__op_bit(xor, __NOP, nr, addr);
+}
 
-#define hweight32(x) generic_hweight32(x)
-#define hweight16(x) generic_hweight16(x)
-#define hweight8(x) generic_hweight8(x)
+/**
+ * test_and_set_bit_lock - Set a bit and return its old value, for lock
+ * @nr: Bit to set
+ * @addr: Address to count from
+ *
+ * This operation is atomic and provides acquire barrier semantics.
+ * It can be used to implement bit locks.
+ */
+static inline int test_and_set_bit_lock(
+	unsigned long nr, volatile unsigned long *addr)
+{
+	return __test_and_op_bit_ord(or, __NOP, nr, addr, .aq);
+}
 
-#define ext2_set_bit			test_and_set_bit
-#define ext2_clear_bit			test_and_clear_bit
-#define ext2_test_bit			test_bit
-#define ext2_find_first_zero_bit	find_first_zero_bit
-#define ext2_find_next_zero_bit		find_next_zero_bit
+/**
+ * clear_bit_unlock - Clear a bit in memory, for unlock
+ * @nr: the bit to set
+ * @addr: the address to start counting from
+ *
+ * This operation is atomic and provides release barrier semantics.
+ */
+static inline void clear_bit_unlock(
+	unsigned long nr, volatile unsigned long *addr)
+{
+	__op_bit_ord(and, __NOT, nr, addr, .rl);
+}
 
-/* Bitmap functions for the minix filesystem. */
-#define minix_test_and_set_bit(nr, addr)	test_and_set_bit(nr, addr)
-#define minix_set_bit(nr, addr)			set_bit(nr, addr)
-#define minix_test_and_clear_bit(nr, addr)	test_and_clear_bit(nr, addr)
-#define minix_test_bit(nr, addr)		test_bit(nr, addr)
-#define minix_find_first_zero_bit(addr, size)	find_first_zero_bit(addr, size)
+/**
+ * __clear_bit_unlock - Clear a bit in memory, for unlock
+ * @nr: the bit to set
+ * @addr: the address to start counting from
+ *
+ * This operation is like clear_bit_unlock, however it is not atomic.
+ * It does provide release barrier semantics so it can be used to unlock
+ * a bit lock, however it would only be used if no other CPU can modify
+ * any bits in the memory until the lock is released (a good example is
+ * if the bit lock itself protects access to the other bits in the word).
+ *
+ * On RISC-V systems there seems to be no benefit to taking advantage of the
+ * non-atomic property here: it's a lot more instructions and we still have to
+ * provide release semantics anyway.
+ */
+static inline void __clear_bit_unlock(
+	unsigned long nr, volatile unsigned long *addr)
+{
+	clear_bit_unlock(nr, addr);
+}
 
-#endif /* __KERNEL__ */
+#undef __test_and_op_bit
+#undef __op_bit
+#undef __NOP
+#undef __NOT
+#undef __AMO
 
-#endif /* __ASM_RISCV_BITOPS_H */
+#include <asm-generic/bitops/non-atomic.h>
+#include <asm-generic/bitops/le.h>
+#include <asm-generic/bitops/ext2-atomic.h>
+
+#endif /* _ASM_RISCV_BITOPS_H */

@@ -1,164 +1,239 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 Marek Vasut <marek.vasut@gmail.com>
+ * xHCI host controller driver for R-Car SoCs
  *
- * Renesas RCar USB HOST xHCI Controller
+ * Copyright (C) 2014 Renesas Electronics Corporation
  */
 
-#include <common.h>
-#include <clk.h>
-#include <dm.h>
-#include <fdtdec.h>
-#include <malloc.h>
-#include <usb.h>
-#include <wait_bit.h>
-#include <dm/device_compat.h>
+#include <linux/firmware.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/of.h>
+#include <linux/usb/phy.h>
+#include <linux/sys_soc.h>
 
-#include <usb/xhci.h>
-#include "xhci-rcar-r8a779x_usb3_v3.h"
+#include "xhci.h"
+#include "xhci-plat.h"
+#include "xhci-rcar.h"
 
-/* Register Offset */
+/*
+* - The V3 firmware is for almost all R-Car Gen3 (except r8a7795 ES1.x)
+* - The V2 firmware is for r8a7795 ES1.x.
+* - The V2 firmware is possible to use on R-Car Gen2. However, the V2 causes
+*   performance degradation. So, this driver continues to use the V1 if R-Car
+*   Gen2.
+* - The V1 firmware is impossible to use on R-Car Gen3.
+*/
+MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V1);
+MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V2);
+MODULE_FIRMWARE(XHCI_RCAR_FIRMWARE_NAME_V3);
+
+/*** Register Offset ***/
+#define RCAR_USB3_AXH_STA	0x104	/* AXI Host Control Status */
+#define RCAR_USB3_INT_ENA	0x224	/* Interrupt Enable */
 #define RCAR_USB3_DL_CTRL	0x250	/* FW Download Control & Status */
 #define RCAR_USB3_FW_DATA0	0x258	/* FW Data0 */
 
-/* Register Settings */
+#define RCAR_USB3_LCLK		0xa44	/* LCLK Select */
+#define RCAR_USB3_CONF1		0xa48	/* USB3.0 Configuration1 */
+#define RCAR_USB3_CONF2		0xa5c	/* USB3.0 Configuration2 */
+#define RCAR_USB3_CONF3		0xaa8	/* USB3.0 Configuration3 */
+#define RCAR_USB3_RX_POL	0xab0	/* USB3.0 RX Polarity */
+#define RCAR_USB3_TX_POL	0xab8	/* USB3.0 TX Polarity */
+
+/*** Register Settings ***/
+/* AXI Host Control Status */
+#define RCAR_USB3_AXH_STA_B3_PLL_ACTIVE		0x00010000
+#define RCAR_USB3_AXH_STA_B2_PLL_ACTIVE		0x00000001
+#define RCAR_USB3_AXH_STA_PLL_ACTIVE_MASK (RCAR_USB3_AXH_STA_B3_PLL_ACTIVE | \
+					   RCAR_USB3_AXH_STA_B2_PLL_ACTIVE)
+
+/* Interrupt Enable */
+#define RCAR_USB3_INT_XHC_ENA	0x00000001
+#define RCAR_USB3_INT_PME_ENA	0x00000002
+#define RCAR_USB3_INT_HSE_ENA	0x00000004
+#define RCAR_USB3_INT_ENA_VAL	(RCAR_USB3_INT_XHC_ENA | \
+				RCAR_USB3_INT_PME_ENA | RCAR_USB3_INT_HSE_ENA)
+
 /* FW Download Control & Status */
-#define RCAR_USB3_DL_CTRL_ENABLE	BIT(0)
-#define RCAR_USB3_DL_CTRL_FW_SUCCESS	BIT(4)
-#define RCAR_USB3_DL_CTRL_FW_SET_DATA0	BIT(8)
+#define RCAR_USB3_DL_CTRL_ENABLE	0x00000001
+#define RCAR_USB3_DL_CTRL_FW_SUCCESS	0x00000010
+#define RCAR_USB3_DL_CTRL_FW_SET_DATA0	0x00000100
 
-struct rcar_xhci_platdata {
-	fdt_addr_t	hcd_base;
-	struct clk	clk;
+/* LCLK Select */
+#define RCAR_USB3_LCLK_ENA_VAL	0x01030001
+
+/* USB3.0 Configuration */
+#define RCAR_USB3_CONF1_VAL	0x00030204
+#define RCAR_USB3_CONF2_VAL	0x00030300
+#define RCAR_USB3_CONF3_VAL	0x13802007
+
+/* USB3.0 Polarity */
+#define RCAR_USB3_RX_POL_VAL	BIT(21)
+#define RCAR_USB3_TX_POL_VAL	BIT(4)
+
+/* For soc_device_attribute */
+#define RCAR_XHCI_FIRMWARE_V2   BIT(0) /* FIRMWARE V2 */
+#define RCAR_XHCI_FIRMWARE_V3   BIT(1) /* FIRMWARE V3 */
+
+static const struct soc_device_attribute rcar_quirks_match[]  = {
+	{
+		.soc_id = "r8a7795", .revision = "ES1.*",
+		.data = (void *)RCAR_XHCI_FIRMWARE_V2,
+	},
+	{ /* sentinel */ },
 };
 
-/**
- * Contains pointers to register base addresses
- * for the usb controller.
- */
-struct rcar_xhci {
-	struct xhci_ctrl ctrl;	/* Needs to come first in this struct! */
-	struct usb_platdata usb_plat;
-	struct xhci_hccr *hcd;
-};
-
-static int xhci_rcar_download_fw(struct rcar_xhci *ctx, const u32 *fw_data,
-				 const size_t fw_array_size)
+static void xhci_rcar_start_gen2(struct usb_hcd *hcd)
 {
-	void __iomem *regs = (void __iomem *)ctx->hcd;
-	int i, ret;
+	/* LCLK Select */
+	writel(RCAR_USB3_LCLK_ENA_VAL, hcd->regs + RCAR_USB3_LCLK);
+	/* USB3.0 Configuration */
+	writel(RCAR_USB3_CONF1_VAL, hcd->regs + RCAR_USB3_CONF1);
+	writel(RCAR_USB3_CONF2_VAL, hcd->regs + RCAR_USB3_CONF2);
+	writel(RCAR_USB3_CONF3_VAL, hcd->regs + RCAR_USB3_CONF3);
+	/* USB3.0 Polarity */
+	writel(RCAR_USB3_RX_POL_VAL, hcd->regs + RCAR_USB3_RX_POL);
+	writel(RCAR_USB3_TX_POL_VAL, hcd->regs + RCAR_USB3_TX_POL);
+}
 
-	/* Download R-Car USB3.0 firmware */
-	setbits_le32(regs + RCAR_USB3_DL_CTRL, RCAR_USB3_DL_CTRL_ENABLE);
+static int xhci_rcar_is_gen2(struct device *dev)
+{
+	struct device_node *node = dev->of_node;
 
-	for (i = 0; i < fw_array_size; i++) {
-		writel(fw_data[i], regs + RCAR_USB3_FW_DATA0);
-		setbits_le32(regs + RCAR_USB3_DL_CTRL,
-			     RCAR_USB3_DL_CTRL_FW_SET_DATA0);
+	return of_device_is_compatible(node, "renesas,xhci-r8a7790") ||
+		of_device_is_compatible(node, "renesas,xhci-r8a7791") ||
+		of_device_is_compatible(node, "renesas,xhci-r8a7793") ||
+		of_device_is_compatible(node, "renesas,rcar-gen2-xhci");
+}
 
-		ret = wait_for_bit_le32(regs + RCAR_USB3_DL_CTRL,
-					RCAR_USB3_DL_CTRL_FW_SET_DATA0, false,
-					10, false);
-		if (ret)
+void xhci_rcar_start(struct usb_hcd *hcd)
+{
+	u32 temp;
+
+	if (hcd->regs != NULL) {
+		/* Interrupt Enable */
+		temp = readl(hcd->regs + RCAR_USB3_INT_ENA);
+		temp |= RCAR_USB3_INT_ENA_VAL;
+		writel(temp, hcd->regs + RCAR_USB3_INT_ENA);
+		if (xhci_rcar_is_gen2(hcd->self.controller))
+			xhci_rcar_start_gen2(hcd);
+	}
+}
+
+static int xhci_rcar_download_firmware(struct usb_hcd *hcd)
+{
+	struct device *dev = hcd->self.controller;
+	void __iomem *regs = hcd->regs;
+	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+	const struct firmware *fw;
+	int retval, index, j, time;
+	int timeout = 10000;
+	u32 data, val, temp;
+	u32 quirks = 0;
+	const struct soc_device_attribute *attr;
+	const char *firmware_name;
+
+	attr = soc_device_match(rcar_quirks_match);
+	if (attr)
+		quirks = (uintptr_t)attr->data;
+
+	if (quirks & RCAR_XHCI_FIRMWARE_V2)
+		firmware_name = XHCI_RCAR_FIRMWARE_NAME_V2;
+	else if (quirks & RCAR_XHCI_FIRMWARE_V3)
+		firmware_name = XHCI_RCAR_FIRMWARE_NAME_V3;
+	else
+		firmware_name = priv->firmware_name;
+
+	/* request R-Car USB3.0 firmware */
+	retval = request_firmware(&fw, firmware_name, dev);
+	if (retval)
+		return retval;
+
+	/* download R-Car USB3.0 firmware */
+	temp = readl(regs + RCAR_USB3_DL_CTRL);
+	temp |= RCAR_USB3_DL_CTRL_ENABLE;
+	writel(temp, regs + RCAR_USB3_DL_CTRL);
+
+	for (index = 0; index < fw->size; index += 4) {
+		/* to avoid reading beyond the end of the buffer */
+		for (data = 0, j = 3; j >= 0; j--) {
+			if ((j + index) < fw->size)
+				data |= fw->data[index + j] << (8 * j);
+		}
+		writel(data, regs + RCAR_USB3_FW_DATA0);
+		temp = readl(regs + RCAR_USB3_DL_CTRL);
+		temp |= RCAR_USB3_DL_CTRL_FW_SET_DATA0;
+		writel(temp, regs + RCAR_USB3_DL_CTRL);
+
+		for (time = 0; time < timeout; time++) {
+			val = readl(regs + RCAR_USB3_DL_CTRL);
+			if ((val & RCAR_USB3_DL_CTRL_FW_SET_DATA0) == 0)
+				break;
+			udelay(1);
+		}
+		if (time == timeout) {
+			retval = -ETIMEDOUT;
 			break;
+		}
 	}
 
-	clrbits_le32(regs + RCAR_USB3_DL_CTRL, RCAR_USB3_DL_CTRL_ENABLE);
+	temp = readl(regs + RCAR_USB3_DL_CTRL);
+	temp &= ~RCAR_USB3_DL_CTRL_ENABLE;
+	writel(temp, regs + RCAR_USB3_DL_CTRL);
 
-	ret = wait_for_bit_le32(regs + RCAR_USB3_DL_CTRL,
-				RCAR_USB3_DL_CTRL_FW_SUCCESS, true,
-				10, false);
+	for (time = 0; time < timeout; time++) {
+		val = readl(regs + RCAR_USB3_DL_CTRL);
+		if (val & RCAR_USB3_DL_CTRL_FW_SUCCESS) {
+			retval = 0;
+			break;
+		}
+		udelay(1);
+	}
+	if (time == timeout)
+		retval = -ETIMEDOUT;
 
-	return ret;
+	release_firmware(fw);
+
+	return retval;
 }
 
-static int xhci_rcar_probe(struct udevice *dev)
+static bool xhci_rcar_wait_for_pll_active(struct usb_hcd *hcd)
 {
-	struct rcar_xhci_platdata *plat = dev_get_platdata(dev);
-	struct rcar_xhci *ctx = dev_get_priv(dev);
-	struct xhci_hcor *hcor;
-	int len, ret;
+	int timeout = 1000;
+	u32 val, mask = RCAR_USB3_AXH_STA_PLL_ACTIVE_MASK;
 
-	ret = clk_get_by_index(dev, 0, &plat->clk);
-	if (ret < 0) {
-		dev_err(dev, "Failed to get USB3 clock\n");
-		return ret;
+	while (timeout > 0) {
+		val = readl(hcd->regs + RCAR_USB3_AXH_STA);
+		if ((val & mask) == mask)
+			return true;
+		udelay(1);
+		timeout--;
 	}
 
-	ret = clk_enable(&plat->clk);
-	if (ret) {
-		dev_err(dev, "Failed to enable USB3 clock\n");
-		goto err_clk;
-	}
-
-	ctx->hcd = (struct xhci_hccr *)plat->hcd_base;
-	len = HC_LENGTH(xhci_readl(&ctx->hcd->cr_capbase));
-	hcor = (struct xhci_hcor *)((uintptr_t)ctx->hcd + len);
-
-	ret = xhci_rcar_download_fw(ctx, firmware_r8a779x_usb3_v3,
-				    ARRAY_SIZE(firmware_r8a779x_usb3_v3));
-	if (ret) {
-		dev_err(dev, "Failed to download firmware\n");
-		goto err_fw;
-	}
-
-	ret = xhci_register(dev, ctx->hcd, hcor);
-	if (ret) {
-		dev_err(dev, "Failed to register xHCI\n");
-		goto err_fw;
-	}
-
-	return 0;
-
-err_fw:
-	clk_disable(&plat->clk);
-err_clk:
-	clk_free(&plat->clk);
-	return ret;
+	return false;
 }
 
-static int xhci_rcar_deregister(struct udevice *dev)
+/* This function needs to initialize a "phy" of usb before */
+int xhci_rcar_init_quirk(struct usb_hcd *hcd)
+{
+	/* If hcd->regs is NULL, we don't just call the following function */
+	if (!hcd->regs)
+		return 0;
+
+	if (!xhci_rcar_wait_for_pll_active(hcd))
+		return -ETIMEDOUT;
+
+	return xhci_rcar_download_firmware(hcd);
+}
+
+int xhci_rcar_resume_quirk(struct usb_hcd *hcd)
 {
 	int ret;
-	struct rcar_xhci_platdata *plat = dev_get_platdata(dev);
 
-	ret = xhci_deregister(dev);
-
-	clk_disable(&plat->clk);
-	clk_free(&plat->clk);
+	ret = xhci_rcar_download_firmware(hcd);
+	if (!ret)
+		xhci_rcar_start(hcd);
 
 	return ret;
 }
-
-static int xhci_rcar_ofdata_to_platdata(struct udevice *dev)
-{
-	struct rcar_xhci_platdata *plat = dev_get_platdata(dev);
-
-	plat->hcd_base = devfdt_get_addr(dev);
-	if (plat->hcd_base == FDT_ADDR_T_NONE) {
-		debug("Can't get the XHCI register base address\n");
-		return -ENXIO;
-	}
-
-	return 0;
-}
-
-static const struct udevice_id xhci_rcar_ids[] = {
-	{ .compatible = "renesas,xhci-r8a7795" },
-	{ .compatible = "renesas,xhci-r8a7796" },
-	{ .compatible = "renesas,xhci-r8a77965" },
-	{ }
-};
-
-U_BOOT_DRIVER(usb_xhci) = {
-	.name		= "xhci_rcar",
-	.id		= UCLASS_USB,
-	.probe		= xhci_rcar_probe,
-	.remove		= xhci_rcar_deregister,
-	.ops		= &xhci_usb_ops,
-	.of_match	= xhci_rcar_ids,
-	.ofdata_to_platdata = xhci_rcar_ofdata_to_platdata,
-	.platdata_auto_alloc_size = sizeof(struct rcar_xhci_platdata),
-	.priv_auto_alloc_size = sizeof(struct rcar_xhci),
-	.flags		= DM_FLAG_ALLOC_PRIV_DMA,
-};

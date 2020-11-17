@@ -2,20 +2,29 @@
 /*
  * Marvell Armada 37xx SoC Peripheral clocks
  *
- * Marek Behun <marek.behun@nic.cz>
+ * Copyright (C) 2016 Marvell
  *
- * Based on Linux driver by:
- *   Gregory CLEMENT <gregory.clement@free-electrons.com>
+ * Gregory CLEMENT <gregory.clement@free-electrons.com>
+ *
+ * Most of the peripheral clocks can be modelled like this:
+ *             _____    _______    _______
+ * TBG-A-P  --|     |  |       |  |       |   ______
+ * TBG-B-P  --| Mux |--| /div1 |--| /div2 |--| Gate |--> perip_clk
+ * TBG-A-S  --|     |  |       |  |       |  |______|
+ * TBG-B-S  --|_____|  |_______|  |_______|
+ *
+ * However some clocks may use only one or two block or and use the
+ * xtal clock as parent.
  */
 
-#include <common.h>
-#include <malloc.h>
-#include <clk-uclass.h>
-#include <clk.h>
-#include <dm.h>
-#include <asm/io.h>
-#include <asm/arch/cpu.h>
-#include <dm/device_compat.h>
+#include <linux/clk-provider.h>
+#include <linux/io.h>
+#include <linux/mfd/syscon.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
+#include <linux/slab.h>
 
 #define TBG_SEL		0x0
 #define DIV_SEL0	0x4
@@ -24,605 +33,766 @@
 #define CLK_SEL		0x10
 #define CLK_DIS		0x14
 
-enum a37xx_periph_parent {
-	TBG_A_P		= 0,
-	TBG_B_P		= 1,
-	TBG_A_S		= 2,
-	TBG_B_S		= 3,
-	MAX_TBG_PARENTS	= 4,
-	XTAL		= 4,
-	MAX_PARENTS	= 5,
-};
+#define  ARMADA_37XX_DVFS_LOAD_1 1
+#define LOAD_LEVEL_NR	4
 
-static const struct {
-	const char *name;
-	enum a37xx_periph_parent parent;
-} a37xx_periph_parent_names[] = {
-	{ "TBG-A-P", TBG_A_P },
-	{ "TBG-B-P", TBG_B_P },
-	{ "TBG-A-S", TBG_A_S },
-	{ "TBG-B-S", TBG_B_S },
-	{ "xtal",    XTAL    },
-};
+#define ARMADA_37XX_NB_L0L1	0x18
+#define ARMADA_37XX_NB_L2L3	0x1C
+#define		ARMADA_37XX_NB_TBG_DIV_OFF	13
+#define		ARMADA_37XX_NB_TBG_DIV_MASK	0x7
+#define		ARMADA_37XX_NB_CLK_SEL_OFF	11
+#define		ARMADA_37XX_NB_CLK_SEL_MASK	0x1
+#define		ARMADA_37XX_NB_TBG_SEL_OFF	9
+#define		ARMADA_37XX_NB_TBG_SEL_MASK	0x3
+#define		ARMADA_37XX_NB_CONFIG_SHIFT	16
+#define ARMADA_37XX_NB_DYN_MOD	0x24
+#define		ARMADA_37XX_NB_DFS_EN	31
+#define ARMADA_37XX_NB_CPU_LOAD	0x30
+#define		ARMADA_37XX_NB_CPU_LOAD_MASK	0x3
+#define		ARMADA_37XX_DVFS_LOAD_0		0
+#define		ARMADA_37XX_DVFS_LOAD_1		1
+#define		ARMADA_37XX_DVFS_LOAD_2		2
+#define		ARMADA_37XX_DVFS_LOAD_3		3
 
-struct clk_periph;
-
-struct a37xx_periphclk {
+struct clk_periph_driver_data {
+	struct clk_hw_onecell_data *hw_data;
+	spinlock_t lock;
 	void __iomem *reg;
 
-	ulong parents[MAX_PARENTS];
-
-	const struct clk_periph *clks;
-	bool clk_has_periph_parent[16];
-	int clk_parent[16];
-
-	int count;
+	/* Storage registers for suspend/resume operations */
+	u32 tbg_sel;
+	u32 div_sel0;
+	u32 div_sel1;
+	u32 div_sel2;
+	u32 clk_sel;
+	u32 clk_dis;
 };
 
-struct clk_div_table {
-	u32 div;
-	u32 val;
+struct clk_double_div {
+	struct clk_hw hw;
+	void __iomem *reg1;
+	u8 shift1;
+	void __iomem *reg2;
+	u8 shift2;
 };
 
-struct clk_periph {
+struct clk_pm_cpu {
+	struct clk_hw hw;
+	void __iomem *reg_mux;
+	u8 shift_mux;
+	u32 mask_mux;
+	void __iomem *reg_div;
+	u8 shift_div;
+	struct regmap *nb_pm_base;
+};
+
+#define to_clk_double_div(_hw) container_of(_hw, struct clk_double_div, hw)
+#define to_clk_pm_cpu(_hw) container_of(_hw, struct clk_pm_cpu, hw)
+
+struct clk_periph_data {
 	const char *name;
-
-	const char *parent_name;
-
-	u32 disable_bit;
-	int mux_shift;
-
-	const struct clk_div_table *div_table[2];
-	s32 div_reg_off[2];
-	u32 div_mask[2];
-	int div_shift[2];
-
-	unsigned can_gate : 1;
-	unsigned can_mux : 1;
-	unsigned dividers : 2;
+	const char * const *parent_names;
+	int num_parents;
+	struct clk_hw *mux_hw;
+	struct clk_hw *rate_hw;
+	struct clk_hw *gate_hw;
+	struct clk_hw *muxrate_hw;
+	bool is_double_div;
 };
 
-static const struct clk_div_table div_table1[] = {
-	{ 1, 1 },
-	{ 2, 2 },
-	{ 0, 0 },
+static const struct clk_div_table clk_table6[] = {
+	{ .val = 1, .div = 1, },
+	{ .val = 2, .div = 2, },
+	{ .val = 3, .div = 3, },
+	{ .val = 4, .div = 4, },
+	{ .val = 5, .div = 5, },
+	{ .val = 6, .div = 6, },
+	{ .val = 0, .div = 0, }, /* last entry */
 };
 
-static const struct clk_div_table div_table2[] = {
-	{ 2, 1 },
-	{ 4, 2 },
-	{ 0, 0 },
+static const struct clk_div_table clk_table1[] = {
+	{ .val = 0, .div = 1, },
+	{ .val = 1, .div = 2, },
+	{ .val = 0, .div = 0, }, /* last entry */
 };
 
-static const struct clk_div_table div_table6[] = {
-	{ 1, 1 },
-	{ 2, 2 },
-	{ 3, 3 },
-	{ 4, 4 },
-	{ 5, 5 },
-	{ 6, 6 },
-	{ 0, 0 },
+static const struct clk_div_table clk_table2[] = {
+	{ .val = 0, .div = 2, },
+	{ .val = 1, .div = 4, },
+	{ .val = 0, .div = 0, }, /* last entry */
 };
 
-#define CLK_FULL_DD(_n, _d, _mux, _r0, _r1, _s0, _s1)	\
-	{						\
-		.name = #_n,				\
-		.disable_bit = BIT(_d),			\
-		.mux_shift = _mux,			\
-		.div_table[0] = div_table6,		\
-		.div_table[1] = div_table6,		\
-		.div_reg_off[0] = _r0,			\
-		.div_reg_off[1] = _r1,			\
-		.div_shift[0] = _s0,			\
-		.div_shift[1] = _s1,			\
-		.div_mask[0] = 7,			\
-		.div_mask[1] = 7,			\
-		.can_gate = 1,				\
-		.can_mux = 1,				\
-		.dividers = 2,				\
+static const struct clk_ops clk_double_div_ops;
+static const struct clk_ops clk_pm_cpu_ops;
+
+#define PERIPH_GATE(_name, _bit)		\
+struct clk_gate gate_##_name = {		\
+	.reg = (void *)CLK_DIS,			\
+	.bit_idx = _bit,			\
+	.hw.init = &(struct clk_init_data){	\
+		.ops =  &clk_gate_ops,		\
+	}					\
+};
+
+#define PERIPH_MUX(_name, _shift)		\
+struct clk_mux mux_##_name = {			\
+	.reg = (void *)TBG_SEL,			\
+	.shift = _shift,			\
+	.mask = 3,				\
+	.hw.init = &(struct clk_init_data){	\
+		.ops =  &clk_mux_ro_ops,	\
+	}					\
+};
+
+#define PERIPH_DOUBLEDIV(_name, _reg1, _reg2, _shift1, _shift2)	\
+struct clk_double_div rate_##_name = {		\
+	.reg1 = (void *)_reg1,			\
+	.reg2 = (void *)_reg2,			\
+	.shift1 = _shift1,			\
+	.shift2 = _shift2,			\
+	.hw.init = &(struct clk_init_data){	\
+		.ops =  &clk_double_div_ops,	\
+	}					\
+};
+
+#define PERIPH_DIV(_name, _reg, _shift, _table)	\
+struct clk_divider rate_##_name = {		\
+	.reg = (void *)_reg,			\
+	.table = _table,			\
+	.shift = _shift,			\
+	.hw.init = &(struct clk_init_data){	\
+		.ops =  &clk_divider_ro_ops,	\
+	}					\
+};
+
+#define PERIPH_PM_CPU(_name, _shift1, _reg, _shift2)	\
+struct clk_pm_cpu muxrate_##_name = {		\
+	.reg_mux = (void *)TBG_SEL,		\
+	.mask_mux = 3,				\
+	.shift_mux = _shift1,			\
+	.reg_div = (void *)_reg,		\
+	.shift_div = _shift2,			\
+	.hw.init = &(struct clk_init_data){	\
+		.ops =  &clk_pm_cpu_ops,	\
+	}					\
+};
+
+#define PERIPH_CLK_FULL_DD(_name, _bit, _shift, _reg1, _reg2, _shift1, _shift2)\
+static PERIPH_GATE(_name, _bit);			    \
+static PERIPH_MUX(_name, _shift);			    \
+static PERIPH_DOUBLEDIV(_name, _reg1, _reg2, _shift1, _shift2);
+
+#define PERIPH_CLK_FULL(_name, _bit, _shift, _reg, _shift1, _table)	\
+static PERIPH_GATE(_name, _bit);			    \
+static PERIPH_MUX(_name, _shift);			    \
+static PERIPH_DIV(_name, _reg, _shift1, _table);
+
+#define PERIPH_CLK_GATE_DIV(_name, _bit,  _reg, _shift, _table)	\
+static PERIPH_GATE(_name, _bit);			\
+static PERIPH_DIV(_name, _reg, _shift, _table);
+
+#define PERIPH_CLK_MUX_DD(_name, _shift, _reg1, _reg2, _shift1, _shift2)\
+static PERIPH_MUX(_name, _shift);			    \
+static PERIPH_DOUBLEDIV(_name, _reg1, _reg2, _shift1, _shift2);
+
+#define REF_CLK_FULL(_name)				\
+	{ .name = #_name,				\
+	  .parent_names = (const char *[]){ "TBG-A-P",	\
+	      "TBG-B-P", "TBG-A-S", "TBG-B-S"},		\
+	  .num_parents = 4,				\
+	  .mux_hw = &mux_##_name.hw,			\
+	  .gate_hw = &gate_##_name.hw,			\
+	  .rate_hw = &rate_##_name.hw,			\
 	}
 
-#define CLK_FULL(_n, _d, _mux, _r, _s, _m, _t)	\
-	{					\
-		.name = #_n,			\
-		.disable_bit = BIT(_d),		\
-		.mux_shift = _mux,		\
-		.div_table[0] = _t,		\
-		.div_reg_off[0] = _r,		\
-		.div_shift[0] = _s,		\
-		.div_mask[0] = _m,		\
-		.can_gate = 1,			\
-		.can_mux = 1,			\
-		.dividers = 1,			\
+#define REF_CLK_FULL_DD(_name)				\
+	{ .name = #_name,				\
+	  .parent_names = (const char *[]){ "TBG-A-P",	\
+	      "TBG-B-P", "TBG-A-S", "TBG-B-S"},		\
+	  .num_parents = 4,				\
+	  .mux_hw = &mux_##_name.hw,			\
+	  .gate_hw = &gate_##_name.hw,			\
+	  .rate_hw = &rate_##_name.hw,			\
+	  .is_double_div = true,			\
 	}
 
-#define CLK_GATE_DIV(_n, _d, _r, _s, _m, _t, _p)	\
-	{						\
-		.name = #_n,				\
-		.parent_name = _p,			\
-		.disable_bit = BIT(_d),			\
-		.div_table[0] = _t,			\
-		.div_reg_off[0] = _r,			\
-		.div_shift[0] = _s,			\
-		.div_mask[0] = _m,			\
-		.can_gate = 1,				\
-		.dividers = 1,				\
+#define REF_CLK_GATE(_name, _parent_name)			\
+	{ .name = #_name,					\
+	  .parent_names = (const char *[]){ _parent_name},	\
+	  .num_parents = 1,					\
+	  .gate_hw = &gate_##_name.hw,				\
 	}
 
-#define CLK_GATE(_n, _d, _p)		\
-	{				\
-		.name = #_n,		\
-		.parent_name = _p,	\
-		.disable_bit = BIT(_d),	\
-		.can_gate = 1,		\
+#define REF_CLK_GATE_DIV(_name, _parent_name)			\
+	{ .name = #_name,					\
+	  .parent_names = (const char *[]){ _parent_name},	\
+	  .num_parents = 1,					\
+	  .gate_hw = &gate_##_name.hw,				\
+	  .rate_hw = &rate_##_name.hw,				\
 	}
 
-#define CLK_MUX_DIV(_n, _mux, _r, _s, _m, _t)	\
-	{					\
-		.name = #_n,			\
-		.mux_shift = _mux,		\
-		.div_table[0] = _t,		\
-		.div_reg_off[0] = _r,		\
-		.div_shift[0] = _s,		\
-		.div_mask[0] = _m,		\
-		.can_mux = 1,			\
-		.dividers = 1,			\
+#define REF_CLK_PM_CPU(_name)				\
+	{ .name = #_name,				\
+	  .parent_names = (const char *[]){ "TBG-A-P",	\
+	      "TBG-B-P", "TBG-A-S", "TBG-B-S"},		\
+	  .num_parents = 4,				\
+	  .muxrate_hw = &muxrate_##_name.hw,		\
 	}
 
-#define CLK_MUX_DD(_n, _mux, _r0, _r1, _s0, _s1)	\
-	{						\
-		.name = #_n,				\
-		.mux_shift = _mux,			\
-		.div_table[0] = div_table6,		\
-		.div_table[1] = div_table6,		\
-		.div_reg_off[0] = _r0,			\
-		.div_reg_off[1] = _r1,			\
-		.div_shift[0] = _s0,			\
-		.div_shift[1] = _s1,			\
-		.div_mask[0] = 7,			\
-		.div_mask[1] = 7,			\
-		.can_mux = 1,				\
-		.dividers = 2,				\
+#define REF_CLK_MUX_DD(_name)				\
+	{ .name = #_name,				\
+	  .parent_names = (const char *[]){ "TBG-A-P",	\
+	      "TBG-B-P", "TBG-A-S", "TBG-B-S"},		\
+	  .num_parents = 4,				\
+	  .mux_hw = &mux_##_name.hw,			\
+	  .rate_hw = &rate_##_name.hw,			\
+	  .is_double_div = true,			\
 	}
 
 /* NB periph clocks */
-static const struct clk_periph clks_nb[] = {
-	CLK_FULL_DD(mmc, 2, 0, DIV_SEL2, DIV_SEL2, 16, 13),
-	CLK_FULL_DD(sata_host, 3, 2, DIV_SEL2, DIV_SEL2, 10, 7),
-	CLK_FULL_DD(sec_at, 6, 4, DIV_SEL1, DIV_SEL1, 3, 0),
-	CLK_FULL_DD(sec_dap, 7, 6, DIV_SEL1, DIV_SEL1, 9, 6),
-	CLK_FULL_DD(tscem, 8, 8, DIV_SEL1, DIV_SEL1, 15, 12),
-	CLK_FULL(tscem_tmx, 10, 10, DIV_SEL1, 18, 7, div_table6),
-	CLK_GATE(avs, 11, "xtal"),
-	CLK_FULL_DD(sqf, 12, 12, DIV_SEL1, DIV_SEL1, 27, 24),
-	CLK_FULL_DD(pwm, 13, 14, DIV_SEL0, DIV_SEL0, 3, 0),
-	CLK_GATE(i2c_2, 16, "xtal"),
-	CLK_GATE(i2c_1, 17, "xtal"),
-	CLK_GATE_DIV(ddr_phy, 19, DIV_SEL0, 18, 1, div_table2, "TBG-A-S"),
-	CLK_FULL_DD(ddr_fclk, 21, 16, DIV_SEL0, DIV_SEL0, 15, 12),
-	CLK_FULL(trace, 22, 18, DIV_SEL0, 20, 7, div_table6),
-	CLK_FULL(counter, 23, 20, DIV_SEL0, 23, 7, div_table6),
-	CLK_FULL_DD(eip97, 24, 24, DIV_SEL2, DIV_SEL2, 22, 19),
-	CLK_MUX_DIV(cpu, 22, DIV_SEL0, 28, 7, div_table6),
+PERIPH_CLK_FULL_DD(mmc, 2, 0, DIV_SEL2, DIV_SEL2, 16, 13);
+PERIPH_CLK_FULL_DD(sata_host, 3, 2, DIV_SEL2, DIV_SEL2, 10, 7);
+PERIPH_CLK_FULL_DD(sec_at, 6, 4, DIV_SEL1, DIV_SEL1, 3, 0);
+PERIPH_CLK_FULL_DD(sec_dap, 7, 6, DIV_SEL1, DIV_SEL1, 9, 6);
+PERIPH_CLK_FULL_DD(tscem, 8, 8, DIV_SEL1, DIV_SEL1, 15, 12);
+PERIPH_CLK_FULL(tscem_tmx, 10, 10, DIV_SEL1, 18, clk_table6);
+static PERIPH_GATE(avs, 11);
+PERIPH_CLK_FULL_DD(pwm, 13, 14, DIV_SEL0, DIV_SEL0, 3, 0);
+PERIPH_CLK_FULL_DD(sqf, 12, 12, DIV_SEL1, DIV_SEL1, 27, 24);
+static PERIPH_GATE(i2c_2, 16);
+static PERIPH_GATE(i2c_1, 17);
+PERIPH_CLK_GATE_DIV(ddr_phy, 19, DIV_SEL0, 18, clk_table2);
+PERIPH_CLK_FULL_DD(ddr_fclk, 21, 16, DIV_SEL0, DIV_SEL0, 15, 12);
+PERIPH_CLK_FULL(trace, 22, 18, DIV_SEL0, 20, clk_table6);
+PERIPH_CLK_FULL(counter, 23, 20, DIV_SEL0, 23, clk_table6);
+PERIPH_CLK_FULL_DD(eip97, 24, 24, DIV_SEL2, DIV_SEL2, 22, 19);
+static PERIPH_PM_CPU(cpu, 22, DIV_SEL0, 28);
+
+static struct clk_periph_data data_nb[] = {
+	REF_CLK_FULL_DD(mmc),
+	REF_CLK_FULL_DD(sata_host),
+	REF_CLK_FULL_DD(sec_at),
+	REF_CLK_FULL_DD(sec_dap),
+	REF_CLK_FULL_DD(tscem),
+	REF_CLK_FULL(tscem_tmx),
+	REF_CLK_GATE(avs, "xtal"),
+	REF_CLK_FULL_DD(sqf),
+	REF_CLK_FULL_DD(pwm),
+	REF_CLK_GATE(i2c_2, "xtal"),
+	REF_CLK_GATE(i2c_1, "xtal"),
+	REF_CLK_GATE_DIV(ddr_phy, "TBG-A-S"),
+	REF_CLK_FULL_DD(ddr_fclk),
+	REF_CLK_FULL(trace),
+	REF_CLK_FULL(counter),
+	REF_CLK_FULL_DD(eip97),
+	REF_CLK_PM_CPU(cpu),
 	{ },
 };
 
 /* SB periph clocks */
-static const struct clk_periph clks_sb[] = {
-	CLK_MUX_DD(gbe_50, 6, DIV_SEL2, DIV_SEL2, 6, 9),
-	CLK_MUX_DD(gbe_core, 8, DIV_SEL1, DIV_SEL1, 18, 21),
-	CLK_MUX_DD(gbe_125, 10, DIV_SEL1, DIV_SEL1, 6, 9),
-	CLK_GATE(gbe1_50, 0, "gbe_50"),
-	CLK_GATE(gbe0_50, 1, "gbe_50"),
-	CLK_GATE(gbe1_125, 2, "gbe_125"),
-	CLK_GATE(gbe0_125, 3, "gbe_125"),
-	CLK_GATE_DIV(gbe1_core, 4, DIV_SEL1, 13, 1, div_table1, "gbe_core"),
-	CLK_GATE_DIV(gbe0_core, 5, DIV_SEL1, 14, 1, div_table1, "gbe_core"),
-	CLK_GATE_DIV(gbe_bm, 12, DIV_SEL1, 0, 1, div_table1, "gbe_core"),
-	CLK_FULL_DD(sdio, 11, 14, DIV_SEL0, DIV_SEL0, 3, 6),
-	CLK_FULL_DD(usb32_usb2_sys, 16, 16, DIV_SEL0, DIV_SEL0, 9, 12),
-	CLK_FULL_DD(usb32_ss_sys, 17, 18, DIV_SEL0, DIV_SEL0, 15, 18),
+PERIPH_CLK_MUX_DD(gbe_50, 6, DIV_SEL2, DIV_SEL2, 6, 9);
+PERIPH_CLK_MUX_DD(gbe_core, 8, DIV_SEL1, DIV_SEL1, 18, 21);
+PERIPH_CLK_MUX_DD(gbe_125, 10, DIV_SEL1, DIV_SEL1, 6, 9);
+static PERIPH_GATE(gbe1_50, 0);
+static PERIPH_GATE(gbe0_50, 1);
+static PERIPH_GATE(gbe1_125, 2);
+static PERIPH_GATE(gbe0_125, 3);
+PERIPH_CLK_GATE_DIV(gbe1_core, 4, DIV_SEL1, 13, clk_table1);
+PERIPH_CLK_GATE_DIV(gbe0_core, 5, DIV_SEL1, 14, clk_table1);
+PERIPH_CLK_GATE_DIV(gbe_bm, 12, DIV_SEL1, 0, clk_table1);
+PERIPH_CLK_FULL_DD(sdio, 11, 14, DIV_SEL0, DIV_SEL0, 3, 6);
+PERIPH_CLK_FULL_DD(usb32_usb2_sys, 16, 16, DIV_SEL0, DIV_SEL0, 9, 12);
+PERIPH_CLK_FULL_DD(usb32_ss_sys, 17, 18, DIV_SEL0, DIV_SEL0, 15, 18);
+
+static struct clk_periph_data data_sb[] = {
+	REF_CLK_MUX_DD(gbe_50),
+	REF_CLK_MUX_DD(gbe_core),
+	REF_CLK_MUX_DD(gbe_125),
+	REF_CLK_GATE(gbe1_50, "gbe_50"),
+	REF_CLK_GATE(gbe0_50, "gbe_50"),
+	REF_CLK_GATE(gbe1_125, "gbe_125"),
+	REF_CLK_GATE(gbe0_125, "gbe_125"),
+	REF_CLK_GATE_DIV(gbe1_core, "gbe_core"),
+	REF_CLK_GATE_DIV(gbe0_core, "gbe_core"),
+	REF_CLK_GATE_DIV(gbe_bm, "gbe_core"),
+	REF_CLK_FULL_DD(sdio),
+	REF_CLK_FULL_DD(usb32_usb2_sys),
+	REF_CLK_FULL_DD(usb32_ss_sys),
 	{ },
 };
 
-static int get_mux(struct a37xx_periphclk *priv, int shift)
+static unsigned int get_div(void __iomem *reg, int shift)
 {
-	return (readl(priv->reg + TBG_SEL) >> shift) & 3;
-}
+	u32 val;
 
-static void set_mux(struct a37xx_periphclk *priv, int shift, int val)
-{
-	u32 reg;
-
-	reg = readl(priv->reg + TBG_SEL);
-	reg &= ~(3 << shift);
-	reg |= (val & 3) << shift;
-	writel(reg, priv->reg + TBG_SEL);
-}
-
-static ulong periph_clk_get_rate(struct a37xx_periphclk *priv, int id);
-
-static ulong get_parent_rate(struct a37xx_periphclk *priv, int id)
-{
-	const struct clk_periph *clk = &priv->clks[id];
-	ulong res;
-
-	if (clk->can_mux) {
-		/* parent is one of TBG clocks */
-		int tbg = get_mux(priv, clk->mux_shift);
-
-		res = priv->parents[tbg];
-	} else if (priv->clk_has_periph_parent[id]) {
-		/* parent is one of other periph clocks */
-
-		if (priv->clk_parent[id] >= priv->count)
-			return -EINVAL;
-
-		res = periph_clk_get_rate(priv, priv->clk_parent[id]);
-	} else {
-		/* otherwise parent is one of TBGs or XTAL */
-
-		if (priv->clk_parent[id] >= MAX_PARENTS)
-			return -EINVAL;
-
-		res = priv->parents[priv->clk_parent[id]];
-	}
-
-	return res;
-}
-
-static ulong get_div(struct a37xx_periphclk *priv,
-		     const struct clk_periph *clk, int idx)
-{
-	const struct clk_div_table *i;
-	u32 reg;
-
-	reg = readl(priv->reg + clk->div_reg_off[idx]);
-	reg = (reg >> clk->div_shift[idx]) & clk->div_mask[idx];
-
-	/* find divisor for register value val */
-	for (i = clk->div_table[idx]; i && i->div != 0; ++i)
-		if (i->val == reg)
-			return i->div;
-
-	return 0;
-}
-
-static void set_div_val(struct a37xx_periphclk *priv,
-			const struct clk_periph *clk, int idx, int val)
-{
-	u32 reg;
-
-	reg = readl(priv->reg + clk->div_reg_off[idx]);
-	reg &= ~(clk->div_mask[idx] << clk->div_shift[idx]);
-	reg |= (val & clk->div_mask[idx]) << clk->div_shift[idx];
-	writel(reg, priv->reg + clk->div_reg_off[idx]);
-}
-
-static ulong periph_clk_get_rate(struct a37xx_periphclk *priv, int id)
-{
-	const struct clk_periph *clk = &priv->clks[id];
-	ulong rate, div;
-	int i;
-
-	rate = get_parent_rate(priv, id);
-	if (rate == -EINVAL)
-		return -EINVAL;
-
-	/* divide the parent rate by dividers */
-	div = 1;
-	for (i = 0; i < clk->dividers; ++i)
-		div *= get_div(priv, clk, i);
-
-	if (!div)
+	val = (readl(reg) >> shift) & 0x7;
+	if (val > 6)
 		return 0;
-
-	return DIV_ROUND_UP(rate, div);
+	return val;
 }
 
-static ulong armada_37xx_periph_clk_get_rate(struct clk *clk)
+static unsigned long clk_double_div_recalc_rate(struct clk_hw *hw,
+						unsigned long parent_rate)
 {
-	struct a37xx_periphclk *priv = dev_get_priv(clk->dev);
+	struct clk_double_div *double_div = to_clk_double_div(hw);
+	unsigned int div;
 
-	if (clk->id >= priv->count)
-		return -EINVAL;
+	div = get_div(double_div->reg1, double_div->shift1);
+	div *= get_div(double_div->reg2, double_div->shift2);
 
-	return periph_clk_get_rate(priv, clk->id);
+	return DIV_ROUND_UP_ULL((u64)parent_rate, div);
 }
 
-static int periph_clk_enable(struct clk *clk, int enable)
+static const struct clk_ops clk_double_div_ops = {
+	.recalc_rate = clk_double_div_recalc_rate,
+};
+
+static void armada_3700_pm_dvfs_update_regs(unsigned int load_level,
+					    unsigned int *reg,
+					    unsigned int *offset)
 {
-	struct a37xx_periphclk *priv = dev_get_priv(clk->dev);
-	const struct clk_periph *periph_clk = &priv->clks[clk->id];
-
-	if (clk->id >= priv->count)
-		return -EINVAL;
-
-	if (!periph_clk->can_gate)
-		return -ENOTSUPP;
-
-	if (enable)
-		clrbits_le32(priv->reg + CLK_DIS, periph_clk->disable_bit);
+	if (load_level <= ARMADA_37XX_DVFS_LOAD_1)
+		*reg = ARMADA_37XX_NB_L0L1;
 	else
-		setbits_le32(priv->reg + CLK_DIS, periph_clk->disable_bit);
+		*reg = ARMADA_37XX_NB_L2L3;
 
+	if (load_level == ARMADA_37XX_DVFS_LOAD_0 ||
+	    load_level ==  ARMADA_37XX_DVFS_LOAD_2)
+		*offset += ARMADA_37XX_NB_CONFIG_SHIFT;
+}
+
+static bool armada_3700_pm_dvfs_is_enabled(struct regmap *base)
+{
+	unsigned int val, reg = ARMADA_37XX_NB_DYN_MOD;
+
+	if (IS_ERR(base))
+		return false;
+
+	regmap_read(base, reg, &val);
+
+	return !!(val & BIT(ARMADA_37XX_NB_DFS_EN));
+}
+
+static unsigned int armada_3700_pm_dvfs_get_cpu_div(struct regmap *base)
+{
+	unsigned int reg = ARMADA_37XX_NB_CPU_LOAD;
+	unsigned int offset = ARMADA_37XX_NB_TBG_DIV_OFF;
+	unsigned int load_level, div;
+
+	/*
+	 * This function is always called after the function
+	 * armada_3700_pm_dvfs_is_enabled, so no need to check again
+	 * if the base is valid.
+	 */
+	regmap_read(base, reg, &load_level);
+
+	/*
+	 * The register and the offset inside this register accessed to
+	 * read the current divider depend on the load level
+	 */
+	load_level &= ARMADA_37XX_NB_CPU_LOAD_MASK;
+	armada_3700_pm_dvfs_update_regs(load_level, &reg, &offset);
+
+	regmap_read(base, reg, &div);
+
+	return (div >> offset) & ARMADA_37XX_NB_TBG_DIV_MASK;
+}
+
+static unsigned int armada_3700_pm_dvfs_get_cpu_parent(struct regmap *base)
+{
+	unsigned int reg = ARMADA_37XX_NB_CPU_LOAD;
+	unsigned int offset = ARMADA_37XX_NB_TBG_SEL_OFF;
+	unsigned int load_level, sel;
+
+	/*
+	 * This function is always called after the function
+	 * armada_3700_pm_dvfs_is_enabled, so no need to check again
+	 * if the base is valid
+	 */
+	regmap_read(base, reg, &load_level);
+
+	/*
+	 * The register and the offset inside this register accessed to
+	 * read the current divider depend on the load level
+	 */
+	load_level &= ARMADA_37XX_NB_CPU_LOAD_MASK;
+	armada_3700_pm_dvfs_update_regs(load_level, &reg, &offset);
+
+	regmap_read(base, reg, &sel);
+
+	return (sel >> offset) & ARMADA_37XX_NB_TBG_SEL_MASK;
+}
+
+static u8 clk_pm_cpu_get_parent(struct clk_hw *hw)
+{
+	struct clk_pm_cpu *pm_cpu = to_clk_pm_cpu(hw);
+	u32 val;
+
+	if (armada_3700_pm_dvfs_is_enabled(pm_cpu->nb_pm_base)) {
+		val = armada_3700_pm_dvfs_get_cpu_parent(pm_cpu->nb_pm_base);
+	} else {
+		val = readl(pm_cpu->reg_mux) >> pm_cpu->shift_mux;
+		val &= pm_cpu->mask_mux;
+	}
+
+	return val;
+}
+
+static int clk_pm_cpu_set_parent(struct clk_hw *hw, u8 index)
+{
+	struct clk_pm_cpu *pm_cpu = to_clk_pm_cpu(hw);
+	struct regmap *base = pm_cpu->nb_pm_base;
+	int load_level;
+
+	/*
+	 * We set the clock parent only if the DVFS is available but
+	 * not enabled.
+	 */
+	if (IS_ERR(base) || armada_3700_pm_dvfs_is_enabled(base))
+		return -EINVAL;
+
+	/* Set the parent clock for all the load level */
+	for (load_level = 0; load_level < LOAD_LEVEL_NR; load_level++) {
+		unsigned int reg, mask,  val,
+			offset = ARMADA_37XX_NB_TBG_SEL_OFF;
+
+		armada_3700_pm_dvfs_update_regs(load_level, &reg, &offset);
+
+		val = index << offset;
+		mask = ARMADA_37XX_NB_TBG_SEL_MASK << offset;
+		regmap_update_bits(base, reg, mask, val);
+	}
 	return 0;
 }
 
-static int armada_37xx_periph_clk_enable(struct clk *clk)
+static unsigned long clk_pm_cpu_recalc_rate(struct clk_hw *hw,
+					    unsigned long parent_rate)
 {
-	return periph_clk_enable(clk, 1);
+	struct clk_pm_cpu *pm_cpu = to_clk_pm_cpu(hw);
+	unsigned int div;
+
+	if (armada_3700_pm_dvfs_is_enabled(pm_cpu->nb_pm_base))
+		div = armada_3700_pm_dvfs_get_cpu_div(pm_cpu->nb_pm_base);
+	else
+		div = get_div(pm_cpu->reg_div, pm_cpu->shift_div);
+	return DIV_ROUND_UP_ULL((u64)parent_rate, div);
 }
 
-static int armada_37xx_periph_clk_disable(struct clk *clk)
+static long clk_pm_cpu_round_rate(struct clk_hw *hw, unsigned long rate,
+				  unsigned long *parent_rate)
 {
-	return periph_clk_enable(clk, 0);
+	struct clk_pm_cpu *pm_cpu = to_clk_pm_cpu(hw);
+	struct regmap *base = pm_cpu->nb_pm_base;
+	unsigned int div = *parent_rate / rate;
+	unsigned int load_level;
+	/* only available when DVFS is enabled */
+	if (!armada_3700_pm_dvfs_is_enabled(base))
+		return -EINVAL;
+
+	for (load_level = 0; load_level < LOAD_LEVEL_NR; load_level++) {
+		unsigned int reg, val, offset = ARMADA_37XX_NB_TBG_DIV_OFF;
+
+		armada_3700_pm_dvfs_update_regs(load_level, &reg, &offset);
+
+		regmap_read(base, reg, &val);
+
+		val >>= offset;
+		val &= ARMADA_37XX_NB_TBG_DIV_MASK;
+		if (val == div)
+			/*
+			 * We found a load level matching the target
+			 * divider, switch to this load level and
+			 * return.
+			 */
+			return *parent_rate / div;
+	}
+
+	/* We didn't find any valid divider */
+	return -EINVAL;
 }
 
-#define diff(a, b) abs((long)(a) - (long)(b))
-
-static ulong find_best_div(const struct clk_div_table *t0,
-			   const struct clk_div_table *t1, ulong parent_rate,
-			   ulong req_rate, int *v0, int *v1)
+/*
+ * Switching the CPU from the L2 or L3 frequencies (300 and 200 Mhz
+ * respectively) to L0 frequency (1.2 Ghz) requires a significant
+ * amount of time to let VDD stabilize to the appropriate
+ * voltage. This amount of time is large enough that it cannot be
+ * covered by the hardware countdown register. Due to this, the CPU
+ * might start operating at L0 before the voltage is stabilized,
+ * leading to CPU stalls.
+ *
+ * To work around this problem, we prevent switching directly from the
+ * L2/L3 frequencies to the L0 frequency, and instead switch to the L1
+ * frequency in-between. The sequence therefore becomes:
+ * 1. First switch from L2/L3(200/300MHz) to L1(600MHZ)
+ * 2. Sleep 20ms for stabling VDD voltage
+ * 3. Then switch from L1(600MHZ) to L0(1200Mhz).
+ */
+static void clk_pm_cpu_set_rate_wa(unsigned long rate, struct regmap *base)
 {
-	const struct clk_div_table *i, *j;
-	ulong rate, best_rate = 0;
+	unsigned int cur_level;
 
-	for (i = t0; i && i->div; ++i) {
-		for (j = t1; j && j->div; ++j) {
-			rate = DIV_ROUND_UP(parent_rate, i->div * j->div);
+	if (rate != 1200 * 1000 * 1000)
+		return;
 
-			if (!best_rate ||
-			    diff(rate, req_rate) < diff(best_rate, req_rate)) {
-				best_rate = rate;
-				*v0 = i->val;
-				*v1 = j->val;
-			}
+	regmap_read(base, ARMADA_37XX_NB_CPU_LOAD, &cur_level);
+	cur_level &= ARMADA_37XX_NB_CPU_LOAD_MASK;
+	if (cur_level <= ARMADA_37XX_DVFS_LOAD_1)
+		return;
+
+	regmap_update_bits(base, ARMADA_37XX_NB_CPU_LOAD,
+			   ARMADA_37XX_NB_CPU_LOAD_MASK,
+			   ARMADA_37XX_DVFS_LOAD_1);
+	msleep(20);
+}
+
+static int clk_pm_cpu_set_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long parent_rate)
+{
+	struct clk_pm_cpu *pm_cpu = to_clk_pm_cpu(hw);
+	struct regmap *base = pm_cpu->nb_pm_base;
+	unsigned int div = parent_rate / rate;
+	unsigned int load_level;
+
+	/* only available when DVFS is enabled */
+	if (!armada_3700_pm_dvfs_is_enabled(base))
+		return -EINVAL;
+
+	for (load_level = 0; load_level < LOAD_LEVEL_NR; load_level++) {
+		unsigned int reg, mask, val,
+			offset = ARMADA_37XX_NB_TBG_DIV_OFF;
+
+		armada_3700_pm_dvfs_update_regs(load_level, &reg, &offset);
+
+		regmap_read(base, reg, &val);
+		val >>= offset;
+		val &= ARMADA_37XX_NB_TBG_DIV_MASK;
+
+		if (val == div) {
+			/*
+			 * We found a load level matching the target
+			 * divider, switch to this load level and
+			 * return.
+			 */
+			reg = ARMADA_37XX_NB_CPU_LOAD;
+			mask = ARMADA_37XX_NB_CPU_LOAD_MASK;
+
+			clk_pm_cpu_set_rate_wa(rate, base);
+
+			regmap_update_bits(base, reg, mask, load_level);
+
+			return rate;
 		}
 	}
 
-	return best_rate;
+	/* We didn't find any valid divider */
+	return -EINVAL;
 }
 
-static ulong armada_37xx_periph_clk_set_rate(struct clk *clk, ulong req_rate)
+static const struct clk_ops clk_pm_cpu_ops = {
+	.get_parent = clk_pm_cpu_get_parent,
+	.set_parent = clk_pm_cpu_set_parent,
+	.round_rate = clk_pm_cpu_round_rate,
+	.set_rate = clk_pm_cpu_set_rate,
+	.recalc_rate = clk_pm_cpu_recalc_rate,
+};
+
+static const struct of_device_id armada_3700_periph_clock_of_match[] = {
+	{ .compatible = "marvell,armada-3700-periph-clock-nb",
+	  .data = data_nb, },
+	{ .compatible = "marvell,armada-3700-periph-clock-sb",
+	.data = data_sb, },
+	{ }
+};
+
+static int armada_3700_add_composite_clk(const struct clk_periph_data *data,
+					 void __iomem *reg, spinlock_t *lock,
+					 struct device *dev, struct clk_hw **hw)
 {
-	struct a37xx_periphclk *priv = dev_get_priv(clk->dev);
-	const struct clk_periph *periph_clk = &priv->clks[clk->id];
-	ulong rate, old_rate, parent_rate;
-	int div_val0 = 0, div_val1 = 0;
-	const struct clk_div_table *t1;
-	static const struct clk_div_table empty_table[2] = {
-		{ 1, 0 },
-		{ 0, 0 }
-	};
+	const struct clk_ops *mux_ops = NULL, *gate_ops = NULL,
+		*rate_ops = NULL;
+	struct clk_hw *mux_hw = NULL, *gate_hw = NULL, *rate_hw = NULL;
 
-	if (clk->id > priv->count)
-		return -EINVAL;
+	if (data->mux_hw) {
+		struct clk_mux *mux;
 
-	old_rate = periph_clk_get_rate(priv, clk->id);
-	if (old_rate == -EINVAL)
-		return -EINVAL;
+		mux_hw = data->mux_hw;
+		mux = to_clk_mux(mux_hw);
+		mux->lock = lock;
+		mux_ops = mux_hw->init->ops;
+		mux->reg = reg + (u64)mux->reg;
+	}
 
-	if (old_rate == req_rate)
-		return old_rate;
+	if (data->gate_hw) {
+		struct clk_gate *gate;
 
-	if (!periph_clk->can_gate || !periph_clk->dividers)
-		return -ENOTSUPP;
+		gate_hw = data->gate_hw;
+		gate = to_clk_gate(gate_hw);
+		gate->lock = lock;
+		gate_ops = gate_hw->init->ops;
+		gate->reg = reg + (u64)gate->reg;
+		gate->flags = CLK_GATE_SET_TO_DISABLE;
+	}
 
-	parent_rate = get_parent_rate(priv, clk->id);
-	if (parent_rate == -EINVAL)
-		return -EINVAL;
+	if (data->rate_hw) {
+		rate_hw = data->rate_hw;
+		rate_ops = rate_hw->init->ops;
+		if (data->is_double_div) {
+			struct clk_double_div *rate;
 
-	t1 = empty_table;
-	if (periph_clk->dividers > 1)
-		t1 = periph_clk->div_table[1];
+			rate =  to_clk_double_div(rate_hw);
+			rate->reg1 = reg + (u64)rate->reg1;
+			rate->reg2 = reg + (u64)rate->reg2;
+		} else {
+			struct clk_divider *rate = to_clk_divider(rate_hw);
+			const struct clk_div_table *clkt;
+			int table_size = 0;
 
-	rate = find_best_div(periph_clk->div_table[0], t1, parent_rate,
-			     req_rate, &div_val0, &div_val1);
+			rate->reg = reg + (u64)rate->reg;
+			for (clkt = rate->table; clkt->div; clkt++)
+				table_size++;
+			rate->width = order_base_2(table_size);
+			rate->lock = lock;
+		}
+	}
 
-	periph_clk_enable(clk, 0);
+	if (data->muxrate_hw) {
+		struct clk_pm_cpu *pmcpu_clk;
+		struct clk_hw *muxrate_hw = data->muxrate_hw;
+		struct regmap *map;
 
-	set_div_val(priv, periph_clk, 0, div_val0);
-	if (periph_clk->dividers > 1)
-		set_div_val(priv, periph_clk, 1, div_val1);
+		pmcpu_clk =  to_clk_pm_cpu(muxrate_hw);
+		pmcpu_clk->reg_mux = reg + (u64)pmcpu_clk->reg_mux;
+		pmcpu_clk->reg_div = reg + (u64)pmcpu_clk->reg_div;
 
-	periph_clk_enable(clk, 1);
+		mux_hw = muxrate_hw;
+		rate_hw = muxrate_hw;
+		mux_ops = muxrate_hw->init->ops;
+		rate_ops = muxrate_hw->init->ops;
 
-	return rate;
+		map = syscon_regmap_lookup_by_compatible(
+				"marvell,armada-3700-nb-pm");
+		pmcpu_clk->nb_pm_base = map;
+	}
+
+	*hw = clk_hw_register_composite(dev, data->name, data->parent_names,
+					data->num_parents, mux_hw,
+					mux_ops, rate_hw, rate_ops,
+					gate_hw, gate_ops, CLK_IGNORE_UNUSED);
+
+	return PTR_ERR_OR_ZERO(*hw);
 }
 
-static int armada_37xx_periph_clk_set_parent(struct clk *clk,
-					     struct clk *parent)
+static int __maybe_unused armada_3700_periph_clock_suspend(struct device *dev)
 {
-	struct a37xx_periphclk *priv = dev_get_priv(clk->dev);
-	const struct clk_periph *periph_clk = &priv->clks[clk->id];
-	struct clk check_parent;
-	int ret;
+	struct clk_periph_driver_data *data = dev_get_drvdata(dev);
 
-	/* We also check if parent is our TBG clock */
-	if (clk->id > priv->count || parent->id >= MAX_TBG_PARENTS)
-		return -EINVAL;
-
-	if (!periph_clk->can_mux || !periph_clk->can_gate)
-		return -ENOTSUPP;
-
-	ret = clk_get_by_index(clk->dev, 0, &check_parent);
-	if (ret < 0)
-		return ret;
-
-	if (parent->dev != check_parent.dev)
-		ret = -EINVAL;
-
-	clk_free(&check_parent);
-	if (ret < 0)
-		return ret;
-
-	periph_clk_enable(clk, 0);
-	set_mux(priv, periph_clk->mux_shift, parent->id);
-	periph_clk_enable(clk, 1);
+	data->tbg_sel = readl(data->reg + TBG_SEL);
+	data->div_sel0 = readl(data->reg + DIV_SEL0);
+	data->div_sel1 = readl(data->reg + DIV_SEL1);
+	data->div_sel2 = readl(data->reg + DIV_SEL2);
+	data->clk_sel = readl(data->reg + CLK_SEL);
+	data->clk_dis = readl(data->reg + CLK_DIS);
 
 	return 0;
 }
 
-#if defined(CONFIG_CMD_CLK) && defined(CONFIG_CLK_ARMADA_3720)
-static int armada_37xx_periph_clk_dump(struct udevice *dev)
+static int __maybe_unused armada_3700_periph_clock_resume(struct device *dev)
 {
-	struct a37xx_periphclk *priv = dev_get_priv(dev);
-	const struct clk_periph *clks;
+	struct clk_periph_driver_data *data = dev_get_drvdata(dev);
+
+	/* Follow the same order than what the Cortex-M3 does (ATF code) */
+	writel(data->clk_dis, data->reg + CLK_DIS);
+	writel(data->div_sel0, data->reg + DIV_SEL0);
+	writel(data->div_sel1, data->reg + DIV_SEL1);
+	writel(data->div_sel2, data->reg + DIV_SEL2);
+	writel(data->tbg_sel, data->reg + TBG_SEL);
+	writel(data->clk_sel, data->reg + CLK_SEL);
+
+	return 0;
+}
+
+static const struct dev_pm_ops armada_3700_periph_clock_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(armada_3700_periph_clock_suspend,
+				armada_3700_periph_clock_resume)
+};
+
+static int armada_3700_periph_clock_probe(struct platform_device *pdev)
+{
+	struct clk_periph_driver_data *driver_data;
+	struct device_node *np = pdev->dev.of_node;
+	const struct clk_periph_data *data;
+	struct device *dev = &pdev->dev;
+	int num_periph = 0, i, ret;
+	struct resource *res;
+
+	data = of_device_get_match_data(dev);
+	if (!data)
+		return -ENODEV;
+
+	while (data[num_periph].name)
+		num_periph++;
+
+	driver_data = devm_kzalloc(dev, sizeof(*driver_data), GFP_KERNEL);
+	if (!driver_data)
+		return -ENOMEM;
+
+	driver_data->hw_data = devm_kzalloc(dev,
+					    struct_size(driver_data->hw_data,
+							hws, num_periph),
+					    GFP_KERNEL);
+	if (!driver_data->hw_data)
+		return -ENOMEM;
+	driver_data->hw_data->num = num_periph;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	driver_data->reg = devm_ioremap_resource(dev, res);
+	if (IS_ERR(driver_data->reg))
+		return PTR_ERR(driver_data->reg);
+
+	spin_lock_init(&driver_data->lock);
+
+	for (i = 0; i < num_periph; i++) {
+		struct clk_hw **hw = &driver_data->hw_data->hws[i];
+		if (armada_3700_add_composite_clk(&data[i], driver_data->reg,
+						  &driver_data->lock, dev, hw))
+			dev_err(dev, "Can't register periph clock %s\n",
+				data[i].name);
+	}
+
+	ret = of_clk_add_hw_provider(np, of_clk_hw_onecell_get,
+				     driver_data->hw_data);
+	if (ret) {
+		for (i = 0; i < num_periph; i++)
+			clk_hw_unregister(driver_data->hw_data->hws[i]);
+		return ret;
+	}
+
+	platform_set_drvdata(pdev, driver_data);
+	return 0;
+}
+
+static int armada_3700_periph_clock_remove(struct platform_device *pdev)
+{
+	struct clk_periph_driver_data *data = platform_get_drvdata(pdev);
+	struct clk_hw_onecell_data *hw_data = data->hw_data;
 	int i;
 
-	if (!priv)
-		return -ENODEV;
+	of_clk_del_provider(pdev->dev.of_node);
 
-	clks = priv->clks;
-
-	for (i = 0; i < priv->count; ++i)
-		printf("  %s at %lu Hz\n", clks[i].name,
-		       periph_clk_get_rate(priv, i));
-	printf("\n");
+	for (i = 0; i < hw_data->num; i++)
+		clk_hw_unregister(hw_data->hws[i]);
 
 	return 0;
 }
 
-static int clk_dump(const char *name, int (*func)(struct udevice *))
-{
-	struct udevice *dev;
-
-	if (uclass_get_device_by_name(UCLASS_CLK, name, &dev)) {
-		printf("Cannot find device %s\n", name);
-		return -ENODEV;
-	}
-
-	return func(dev);
-}
-
-int armada_37xx_tbg_clk_dump(struct udevice *);
-
-int soc_clk_dump(void)
-{
-	printf("  xtal at %u000000 Hz\n\n", get_ref_clk());
-
-	if (clk_dump("tbg@13200", armada_37xx_tbg_clk_dump))
-		return 1;
-
-	if (clk_dump("nb-periph-clk@13000",
-		     armada_37xx_periph_clk_dump))
-		return 1;
-
-	if (clk_dump("sb-periph-clk@18000",
-		     armada_37xx_periph_clk_dump))
-		return 1;
-
-	return 0;
-}
-#endif
-
-static int armada_37xx_periph_clk_probe(struct udevice *dev)
-{
-	struct a37xx_periphclk *priv = dev_get_priv(dev);
-	const struct clk_periph *clks;
-	int ret, i;
-
-	clks = (const struct clk_periph *)dev_get_driver_data(dev);
-	if (!clks)
-		return -ENODEV;
-
-	priv->reg = dev_read_addr_ptr(dev);
-	if (!priv->reg) {
-		dev_err(dev, "no io address\n");
-		return -ENODEV;
-	}
-
-	/* count clk_periph nodes */
-	priv->count = 0;
-	while (clks[priv->count].name)
-		priv->count++;
-
-	priv->clks = clks;
-
-	/* assign parent IDs to nodes which have non-NULL parent_name */
-	for (i = 0; i < priv->count; ++i) {
-		int j;
-
-		if (!clks[i].parent_name)
-			continue;
-
-		/* first try if parent_name is one of TBGs or XTAL */
-		for (j = 0; j < MAX_PARENTS; ++j)
-			if (!strcmp(clks[i].parent_name,
-				    a37xx_periph_parent_names[j].name))
-				break;
-
-		if (j < MAX_PARENTS) {
-			priv->clk_has_periph_parent[i] = false;
-			priv->clk_parent[i] =
-				a37xx_periph_parent_names[j].parent;
-			continue;
-		}
-
-		/* else parent_name should be one of other periph clocks */
-		for (j = 0; j < priv->count; ++j) {
-			if (!strcmp(clks[i].parent_name, clks[j].name))
-				break;
-		}
-
-		if (j < priv->count) {
-			priv->clk_has_periph_parent[i] = true;
-			priv->clk_parent[i] = j;
-			continue;
-		}
-
-		dev_err(dev, "undefined parent %s\n", clks[i].parent_name);
-		return -EINVAL;
-	}
-
-	for (i = 0; i < MAX_PARENTS; ++i) {
-		struct clk clk;
-
-		if (i == XTAL) {
-			priv->parents[i] = get_ref_clk() * 1000000;
-			continue;
-		}
-
-		ret = clk_get_by_index(dev, i, &clk);
-		if (ret) {
-			dev_err(dev, "one of parent clocks (%i) missing: %i\n",
-				i, ret);
-			return -ENODEV;
-		}
-
-		priv->parents[i] = clk_get_rate(&clk);
-		clk_free(&clk);
-	}
-
-	return 0;
-}
-
-static const struct clk_ops armada_37xx_periph_clk_ops = {
-	.get_rate = armada_37xx_periph_clk_get_rate,
-	.set_rate = armada_37xx_periph_clk_set_rate,
-	.set_parent = armada_37xx_periph_clk_set_parent,
-	.enable = armada_37xx_periph_clk_enable,
-	.disable = armada_37xx_periph_clk_disable,
-};
-
-static const struct udevice_id armada_37xx_periph_clk_ids[] = {
-	{
-		.compatible = "marvell,armada-3700-periph-clock-nb",
-		.data = (ulong)clks_nb,
+static struct platform_driver armada_3700_periph_clock_driver = {
+	.probe = armada_3700_periph_clock_probe,
+	.remove = armada_3700_periph_clock_remove,
+	.driver		= {
+		.name	= "marvell-armada-3700-periph-clock",
+		.of_match_table = armada_3700_periph_clock_of_match,
+		.pm	= &armada_3700_periph_clock_pm_ops,
 	},
-	{
-		.compatible = "marvell,armada-3700-periph-clock-sb",
-		.data = (ulong)clks_sb,
-	},
-	{}
 };
 
-U_BOOT_DRIVER(armada_37xx_periph_clk) = {
-	.name		= "armada_37xx_periph_clk",
-	.id		= UCLASS_CLK,
-	.of_match	= armada_37xx_periph_clk_ids,
-	.ops		= &armada_37xx_periph_clk_ops,
-	.priv_auto_alloc_size = sizeof(struct a37xx_periphclk),
-	.probe		= armada_37xx_periph_clk_probe,
-};
+builtin_platform_driver(armada_3700_periph_clock_driver);

@@ -1,101 +1,85 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 Marvell International Ltd.
- *
- * MVEBU USB HOST xHCI Controller
+ * Copyright (C) 2014 Marvell
+ * Author: Gregory CLEMENT <gregory.clement@free-electrons.com>
  */
 
-#include <common.h>
-#include <dm.h>
-#include <fdtdec.h>
-#include <usb.h>
-#include <power/regulator.h>
-#include <asm/gpio.h>
+#include <linux/io.h>
+#include <linux/mbus.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 
-#include <usb/xhci.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
 
-struct mvebu_xhci_platdata {
-	fdt_addr_t hcd_base;
-};
+#include "xhci-mvebu.h"
+#include "xhci.h"
 
-/**
- * Contains pointers to register base addresses
- * for the usb controller.
- */
-struct mvebu_xhci {
-	struct xhci_ctrl ctrl;	/* Needs to come first in this struct! */
-	struct usb_platdata usb_plat;
-	struct xhci_hccr *hcd;
-};
+#define USB3_MAX_WINDOWS	4
+#define USB3_WIN_CTRL(w)	(0x0 + ((w) * 8))
+#define USB3_WIN_BASE(w)	(0x4 + ((w) * 8))
 
-/*
- * Dummy implementation that can be overwritten by a board
- * specific function
- */
-__weak int board_xhci_enable(fdt_addr_t base)
+static void xhci_mvebu_mbus_config(void __iomem *base,
+			const struct mbus_dram_target_info *dram)
 {
-	return 0;
-}
+	int win;
 
-static int xhci_usb_probe(struct udevice *dev)
-{
-	struct mvebu_xhci_platdata *plat = dev_get_platdata(dev);
-	struct mvebu_xhci *ctx = dev_get_priv(dev);
-	struct xhci_hcor *hcor;
-	int len, ret;
-	struct udevice *regulator;
-
-	ctx->hcd = (struct xhci_hccr *)plat->hcd_base;
-	len = HC_LENGTH(xhci_readl(&ctx->hcd->cr_capbase));
-	hcor = (struct xhci_hcor *)((uintptr_t)ctx->hcd + len);
-
-	ret = device_get_supply_regulator(dev, "vbus-supply", &regulator);
-	if (!ret) {
-		ret = regulator_set_enable(regulator, true);
-		if (ret) {
-			printf("Failed to turn ON the VBUS regulator\n");
-			return ret;
-		}
+	/* Clear all existing windows */
+	for (win = 0; win < USB3_MAX_WINDOWS; win++) {
+		writel(0, base + USB3_WIN_CTRL(win));
+		writel(0, base + USB3_WIN_BASE(win));
 	}
 
-	/* Enable USB xHCI (VBUS, reset etc) in board specific code */
-	board_xhci_enable(devfdt_get_addr_index(dev, 1));
+	/* Program each DRAM CS in a seperate window */
+	for (win = 0; win < dram->num_cs; win++) {
+		const struct mbus_dram_window *cs = dram->cs + win;
 
-	return xhci_register(dev, ctx->hcd, hcor);
+		writel(((cs->size - 1) & 0xffff0000) | (cs->mbus_attr << 8) |
+		       (dram->mbus_dram_target_id << 4) | 1,
+		       base + USB3_WIN_CTRL(win));
+
+		writel((cs->base & 0xffff0000), base + USB3_WIN_BASE(win));
+	}
 }
 
-static int xhci_usb_ofdata_to_platdata(struct udevice *dev)
+int xhci_mvebu_mbus_init_quirk(struct usb_hcd *hcd)
 {
-	struct mvebu_xhci_platdata *plat = dev_get_platdata(dev);
+	struct device *dev = hcd->self.controller;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct resource	*res;
+	void __iomem *base;
+	const struct mbus_dram_target_info *dram;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (!res)
+		return -ENODEV;
 
 	/*
-	 * Get the base address for XHCI controller from the device node
+	 * We don't use devm_ioremap() because this mapping should
+	 * only exists for the duration of this probe function.
 	 */
-	plat->hcd_base = devfdt_get_addr(dev);
-	if (plat->hcd_base == FDT_ADDR_T_NONE) {
-		debug("Can't get the XHCI register base address\n");
-		return -ENXIO;
-	}
+	base = ioremap(res->start, resource_size(res));
+	if (!base)
+		return -ENODEV;
+
+	dram = mv_mbus_dram_info();
+	xhci_mvebu_mbus_config(base, dram);
+
+	/*
+	 * This memory area was only needed to configure the MBus
+	 * windows, and is therefore no longer useful.
+	 */
+	iounmap(base);
 
 	return 0;
 }
 
-static const struct udevice_id xhci_usb_ids[] = {
-	{ .compatible = "marvell,armada3700-xhci" },
-	{ .compatible = "marvell,armada-380-xhci" },
-	{ .compatible = "marvell,armada-8k-xhci" },
-	{ }
-};
+int xhci_mvebu_a3700_init_quirk(struct usb_hcd *hcd)
+{
+	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 
-U_BOOT_DRIVER(usb_xhci) = {
-	.name	= "xhci_mvebu",
-	.id	= UCLASS_USB,
-	.of_match = xhci_usb_ids,
-	.ofdata_to_platdata = xhci_usb_ofdata_to_platdata,
-	.probe = xhci_usb_probe,
-	.remove = xhci_deregister,
-	.ops	= &xhci_usb_ops,
-	.platdata_auto_alloc_size = sizeof(struct mvebu_xhci_platdata),
-	.priv_auto_alloc_size = sizeof(struct mvebu_xhci),
-	.flags	= DM_FLAG_ALLOC_PRIV_DMA,
-};
+	/* Without reset on resume, the HC won't work at all */
+	xhci->quirks |= XHCI_RESET_ON_RESUME;
+
+	return 0;
+}

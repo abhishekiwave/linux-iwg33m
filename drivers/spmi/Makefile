@@ -1,7 +1,7 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# (C) Copyright 2015 Mateusz Kulikowski <mateusz.kulikowski@gmail.com>
+# Makefile for kernel SPMI framework.
+#
+obj-$(CONFIG_SPMI)	+= spmi.o
 
-obj-$(CONFIG_SPMI)  += spmi-uclass.o
-obj-$(CONFIG_SPMI_MSM) += spmi-msm.o
-obj-$(CONFIG_SPMI_SANDBOX) += spmi-sandbox.o
+obj-$(CONFIG_SPMI_MSM_PMIC_ARB)	+= spmi-pmic-arb.o

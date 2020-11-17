@@ -1,147 +1,71 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * include/asm-microblaze/io.h -- Misc I/O operations
+ * Copyright (C) 2007-2009 Michal Simek <monstr@monstr.eu>
+ * Copyright (C) 2007-2009 PetaLogix
+ * Copyright (C) 2006 Atmark Techno, Inc.
  *
- *  Copyright (C) 2003     John Williams <jwilliams@itee.uq.edu.au>
- *  Copyright (C) 2001,02  NEC Corporation
- *  Copyright (C) 2001,02  Miles Bader <miles@gnu.org>
- *
- * This file is subject to the terms and conditions of the GNU General
- * Public License.  See the file COPYING in the main directory of this
- * archive for more details.
- *
- * Written by Miles Bader <miles@gnu.org>
- * Microblaze port by John Williams
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License. See the file "COPYING" in the main directory of this archive
+ * for more details.
  */
 
-#ifndef __MICROBLAZE_IO_H__
-#define __MICROBLAZE_IO_H__
+#ifndef _ASM_MICROBLAZE_IO_H
+#define _ASM_MICROBLAZE_IO_H
 
-#include <asm/types.h>
+#include <asm/byteorder.h>
+#include <asm/page.h>
+#include <linux/types.h>
+#include <linux/mm.h>          /* Get struct page {...} */
 
-#define IO_SPACE_LIMIT 0xFFFFFFFF
+#ifndef CONFIG_PCI
+#define _IO_BASE	0
+#define _ISA_MEM_BASE	0
+#else
+#define _IO_BASE	isa_io_base
+#define _ISA_MEM_BASE	isa_mem_base
+struct pci_dev;
+extern void pci_iounmap(struct pci_dev *dev, void __iomem *);
+#define pci_iounmap pci_iounmap
 
-#define readb(addr) \
-	({ unsigned char __v = (*(volatile unsigned char *)(addr)); __v; })
+extern unsigned long isa_io_base;
+extern resource_size_t isa_mem_base;
+#endif
 
-#define readw(addr) \
-	({ unsigned short __v = (*(volatile unsigned short *)(addr)); __v; })
+#define PCI_IOBASE	((void __iomem *)_IO_BASE)
+#define IO_SPACE_LIMIT (0xFFFFFFFF)
 
-#define readl(addr) \
-	({ unsigned int __v = (*(volatile unsigned int *)(addr)); __v; })
+#ifdef CONFIG_MMU
+#define page_to_bus(page)	(page_to_phys(page))
 
-#define writeb(b, addr) \
-	(void)((*(volatile unsigned char *)(addr)) = (b))
+extern void iounmap(volatile void __iomem *addr);
 
-#define writew(b, addr) \
-	(void)((*(volatile unsigned short *)(addr)) = (b))
+extern void __iomem *ioremap(phys_addr_t address, unsigned long size);
+#define ioremap_nocache(addr, size)		ioremap((addr), (size))
+#define ioremap_wc(addr, size)			ioremap((addr), (size))
+#define ioremap_wt(addr, size)			ioremap((addr), (size))
 
-#define writel(b, addr) \
-	(void)((*(volatile unsigned int *)(addr)) = (b))
+#endif /* CONFIG_MMU */
 
-#define memset_io(a, b, c)        memset((void *)(a), (b), (c))
-#define memcpy_fromio(a, b, c)    memcpy((a), (void *)(b), (c))
-#define memcpy_toio(a, b, c)      memcpy((void *)(a), (b), (c))
+/* Big Endian */
+#define out_be32(a, v) __raw_writel((v), (void __iomem __force *)(a))
+#define out_be16(a, v) __raw_writew((v), (a))
 
-#define inb(addr)	readb(addr)
-#define inw(addr)	readw(addr)
-#define inl(addr)	readl(addr)
-#define outb(x, addr)	((void)writeb(x, addr))
-#define outw(x, addr)	((void)writew(x, addr))
-#define outl(x, addr)	((void)writel(x, addr))
+#define in_be32(a) __raw_readl((const void __iomem __force *)(a))
+#define in_be16(a) __raw_readw(a)
 
-/* Some #definitions to keep strange Xilinx code happy */
-#define in_8(addr)	readb(addr)
-#define in_be16(addr)	readw(addr)
-#define in_be32(addr)	readl(addr)
+#define writel_be(v, a)	out_be32((__force unsigned *)a, v)
+#define readl_be(a)	in_be32((__force unsigned *)a)
 
-#define out_8(addr, x)		outb(x, addr)
-#define out_be16(addr, x)	outw(x, addr)
-#define out_be32(addr, x)	outl(x, addr)
+/* Little endian */
+#define out_le32(a, v) __raw_writel(__cpu_to_le32(v), (a))
+#define out_le16(a, v) __raw_writew(__cpu_to_le16(v), (a))
 
-#define inb_p(port)		inb((port))
-#define outb_p(val, port)	outb((val), (port))
-#define inw_p(port)		inw((port))
-#define outw_p(val, port)	outw((val), (port))
-#define inl_p(port)		inl((port))
-#define outl_p(val, port)	outl((val), (port))
+#define in_le32(a) __le32_to_cpu(__raw_readl(a))
+#define in_le16(a) __le16_to_cpu(__raw_readw(a))
 
-/* Some defines to keep the MTD flash drivers happy */
-
-#define __raw_readb readb
-#define __raw_readw readw
-#define __raw_readl readl
-#define __raw_writeb writeb
-#define __raw_writew writew
-#define __raw_writel writel
-
-static inline void io_insb(unsigned long port, void *dst, unsigned long count)
-{
-	unsigned char *p = dst;
-
-	while (count--)
-		*p++ = inb(port);
-}
-
-static inline void io_insw(unsigned long port, void *dst, unsigned long count)
-{
-	unsigned short *p = dst;
-
-	while (count--)
-		*p++ = inw(port);
-}
-
-static inline void io_insl(unsigned long port, void *dst, unsigned long count)
-{
-	unsigned long *p = dst;
-
-	while (count--)
-		*p++ = inl(port);
-}
-
-static inline void
-io_outsb(unsigned long port, const void *src, unsigned long count)
-{
-	const unsigned char *p = src;
-
-	while (count--)
-		outb(*p++, port);
-}
-
-static inline void
-io_outsw(unsigned long port, const void *src, unsigned long count)
-{
-	const unsigned short *p = src;
-
-	while (count--)
-		outw(*p++, port);
-}
-
-static inline void
-io_outsl(unsigned long port, const void *src, unsigned long count)
-{
-	const unsigned long *p = src;
-
-	while (count--)
-		outl(*p++, port);
-}
-
-#define outsb(a, b, l) io_outsb(a, b, l)
-#define outsw(a, b, l) io_outsw(a, b, l)
-#define outsl(a, b, l) io_outsl(a, b, l)
-
-#define insb(a, b, l) io_insb(a, b, l)
-#define insw(a, b, l) io_insw(a, b, l)
-#define insl(a, b, l) io_insl(a, b, l)
-
-#define ioremap_nocache(physaddr, size)		(physaddr)
-#define ioremap_writethrough(physaddr, size)	(physaddr)
-#define ioremap_fullcache(physaddr, size)	(physaddr)
-
-static inline void sync(void)
-{
-}
+/* Byte ops */
+#define out_8(a, v) __raw_writeb((v), (a))
+#define in_8(a) __raw_readb(a)
 
 #include <asm-generic/io.h>
 
-#endif /* __MICROBLAZE_IO_H__ */
+#endif /* _ASM_MICROBLAZE_IO_H */

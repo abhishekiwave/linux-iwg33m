@@ -1,97 +1,63 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2002-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for x86 specific library files.
+#
 
-ifndef CONFIG_X86_64
-ifndef CONFIG_TPL_BUILD
-obj-y += bios.o
-obj-y += bios_asm.o
-obj-y += bios_interrupts.o
-endif
-obj-y += string.o
-endif
-ifndef CONFIG_SPL_BUILD
-obj-$(CONFIG_CMD_BOOTM) += bootm.o
-endif
-obj-y	+= cmd_boot.o
-obj-$(CONFIG_SEABIOS) += coreboot_table.o
-obj-y	+= early_cmos.o
-obj-y	+= e820.o
-obj-y	+= init_helpers.o
-obj-y	+= interrupts.o
-obj-y	+= lpc-uclass.o
-obj-y	+= mpspec.o
-obj-$(CONFIG_ENABLE_MRC_CACHE) += mrccache.o
-obj-y	+= northbridge-uclass.o
-obj-$(CONFIG_I8259_PIC) += i8259.o
-obj-$(CONFIG_I8254_TIMER) += i8254.o
-obj-$(CONFIG_PINCTRL_ICH6) += pinctrl_ich6.o
-obj-y	+= pirq_routing.o
-obj-y	+= relocate.o
-obj-y += physmem.o
-obj-$(CONFIG_INTEL_MID) += pmu.o
-obj-$(CONFIG_X86_RAMTEST) += ramtest.o
-obj-$(CONFIG_INTEL_MID) += scu.o
-obj-y	+= sections.o
-obj-y += sfi.o
-obj-y	+= acpi.o
-obj-$(CONFIG_HAVE_ACPI_RESUME) += acpi_s3.o
-ifndef CONFIG_QEMU
-obj-$(CONFIG_GENERATE_ACPI_TABLE) += acpi_table.o
-endif
-obj-y	+= tables.o
-ifndef CONFIG_SPL_BUILD
-obj-$(CONFIG_CMD_ZBOOT)	+= zimage.o
-endif
-obj-$(CONFIG_USE_HOB) += hob.o
-obj-$(CONFIG_HAVE_FSP) += fsp/
-obj-$(CONFIG_FSP_VERSION1) += fsp1/
-obj-$(CONFIG_FSP_VERSION2) += fsp2/
+# Produces uninteresting flaky coverage.
+KCOV_INSTRUMENT_delay.o	:= n
 
-ifdef CONFIG_SPL_BUILD
-ifdef CONFIG_TPL_BUILD
-obj-y += tpl.o
+# Early boot use of cmdline; don't instrument it
+ifdef CONFIG_AMD_MEM_ENCRYPT
+KCOV_INSTRUMENT_cmdline.o := n
+KASAN_SANITIZE_cmdline.o  := n
+
+ifdef CONFIG_FUNCTION_TRACER
+CFLAGS_REMOVE_cmdline.o = -pg
+endif
+
+CFLAGS_cmdline.o := $(call cc-option, -fno-stack-protector)
+endif
+
+inat_tables_script = $(srctree)/arch/x86/tools/gen-insn-attr-x86.awk
+inat_tables_maps = $(srctree)/arch/x86/lib/x86-opcode-map.txt
+quiet_cmd_inat_tables = GEN     $@
+      cmd_inat_tables = $(AWK) -f $(inat_tables_script) $(inat_tables_maps) > $@
+
+$(obj)/inat-tables.c: $(inat_tables_script) $(inat_tables_maps)
+	$(call cmd,inat_tables)
+
+$(obj)/inat.o: $(obj)/inat-tables.c
+
+clean-files := inat-tables.c
+
+obj-$(CONFIG_SMP) += msr-smp.o cache-smp.o
+
+lib-y := delay.o misc.o cmdline.o cpu.o
+lib-y += usercopy_$(BITS).o usercopy.o getuser.o putuser.o
+lib-y += memcpy_$(BITS).o
+lib-$(CONFIG_INSTRUCTION_DECODER) += insn.o inat.o insn-eval.o
+lib-$(CONFIG_RANDOMIZE_BASE) += kaslr.o
+lib-$(CONFIG_FUNCTION_ERROR_INJECTION)	+= error-inject.o
+lib-$(CONFIG_RETPOLINE) += retpoline.o
+
+obj-y += msr.o msr-reg.o msr-reg-export.o hweight.o
+obj-y += iomem.o
+
+ifeq ($(CONFIG_X86_32),y)
+        obj-y += atomic64_32.o
+        lib-y += atomic64_cx8_32.o
+        lib-y += checksum_32.o
+        lib-y += strstr_32.o
+        lib-y += string_32.o
+ifneq ($(CONFIG_X86_CMPXCHG64),y)
+        lib-y += cmpxchg8b_emu.o atomic64_386_32.o
+endif
+        lib-$(CONFIG_X86_USE_3DNOW) += mmx_32.o
 else
-obj-y += spl.o
-endif
-endif
-
-lib-$(CONFIG_USE_PRIVATE_LIBGCC) += div64.o
-
-ifeq ($(CONFIG_$(SPL_)X86_64),)
-obj-$(CONFIG_EFI_APP) += crt0_ia32_efi.o reloc_ia32_efi.o
-endif
-
-ifneq ($(CONFIG_EFI_STUB),)
-
-CFLAGS_REMOVE_reloc_ia32_efi.o += -mregparm=3
-CFLAGS_reloc_ia32_efi.o += -fpic -fshort-wchar
-
-# When building for 64-bit we must remove the i386-specific flags
-CFLAGS_REMOVE_reloc_x86_64_efi.o += -mregparm=3 -march=i386 -m32
-CFLAGS_reloc_x86_64_efi.o += -fpic -fshort-wchar -m64
-
-AFLAGS_REMOVE_crt0_x86_64_efi.o += -mregparm=3 -march=i386 -m32
-AFLAGS_crt0_x86_64_efi.o += -fpic -fshort-wchar -m64
-
-extra-$(CONFIG_EFI_STUB_32BIT) += crt0_ia32_efi.o reloc_ia32_efi.o
-extra-$(CONFIG_EFI_STUB_64BIT) += crt0_x86_64_efi.o reloc_x86_64_efi.o
-
-endif
-
-ifdef CONFIG_EFI_STUB
-
-ifeq ($(CONFIG_$(SPL_)X86_64),)
-extra-y += $(EFI_CRT0) $(EFI_RELOC)
-endif
-
-else
-
-ifndef CONFIG_SPL_BUILD
-ifneq ($(CONFIG_CMD_BOOTEFI_SELFTEST)$(CONFIG_CMD_BOOTEFI_HELLO_COMPILE),)
-extra-y += $(EFI_CRT0) $(EFI_RELOC)
-endif
-endif
-
+        obj-y += iomap_copy_64.o
+        lib-y += csum-partial_64.o csum-copy_64.o csum-wrappers_64.o
+        lib-y += clear_page_64.o copy_page_64.o
+        lib-y += memmove_64.o memset_64.o
+        lib-y += copy_user_64.o
+	lib-y += cmpxchg16b_emu.o
 endif

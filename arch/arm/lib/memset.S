@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/memset.S
  *
@@ -8,16 +8,14 @@
  */
 #include <linux/linkage.h>
 #include <asm/assembler.h>
+#include <asm/unwind.h>
 
 	.text
 	.align	5
 
-	.syntax unified
-#if CONFIG_IS_ENABLED(SYS_THUMB_BUILD) && !defined(MEMSET_NO_THUMB_BUILD)
-	.thumb
-	.thumb_func
-#endif
+ENTRY(mmioset)
 ENTRY(memset)
+UNWIND( .fnstart         )
 	ands	r3, r0, #3		@ 1 unaligned?
 	mov	ip, r0			@ preserve r0 as return value
 	bne	6f			@ 1
@@ -27,7 +25,7 @@ ENTRY(memset)
 1:	orr	r1, r1, r1, lsl #8
 	orr	r1, r1, r1, lsl #16
 	mov	r3, r1
-	cmp	r2, #16
+7:	cmp	r2, #16
 	blt	4f
 
 #if ! CALGN(1)+0
@@ -36,8 +34,11 @@ ENTRY(memset)
  * We need 2 extra registers for this loop - use r8 and the LR
  */
 	stmfd	sp!, {r8, lr}
+UNWIND( .fnend              )
+UNWIND( .fnstart            )
+UNWIND( .save {r8, lr}      )
 	mov	r8, r1
-	mov	lr, r1
+	mov	lr, r3
 
 2:	subs	r2, r2, #64
 	stmiage	ip!, {r1, r3, r8, lr}	@ 64 bytes at a time.
@@ -55,6 +56,7 @@ ENTRY(memset)
 	tst	r2, #16
 	stmiane	ip!, {r1, r3, r8, lr}
 	ldmfd	sp!, {r8, lr}
+UNWIND( .fnend              )
 
 #else
 
@@ -64,12 +66,15 @@ ENTRY(memset)
  */
 
 	stmfd	sp!, {r4-r8, lr}
+UNWIND( .fnend                 )
+UNWIND( .fnstart               )
+UNWIND( .save {r4-r8, lr}      )
 	mov	r4, r1
-	mov	r5, r1
+	mov	r5, r3
 	mov	r6, r1
-	mov	r7, r1
+	mov	r7, r3
 	mov	r8, r1
-	mov	lr, r1
+	mov	lr, r3
 
 	cmp	r2, #96
 	tstgt	ip, #31
@@ -96,15 +101,17 @@ ENTRY(memset)
 	tst	r2, #16
 	stmiane	ip!, {r4-r7}
 	ldmfd	sp!, {r4-r8, lr}
+UNWIND( .fnend                 )
 
 #endif
 
+UNWIND( .fnstart            )
 4:	tst	r2, #8
 	stmiane	ip!, {r1, r3}
 	tst	r2, #4
 	strne	r1, [ip], #4
 /*
- * When we get here, we've got less than 4 bytes to zero.  We
+ * When we get here, we've got less than 4 bytes to set.  We
  * may have an unaligned pointer as well.
  */
 5:	tst	r2, #2
@@ -122,4 +129,18 @@ ENTRY(memset)
 	strb	r1, [ip], #1		@ 1
 	add	r2, r2, r3		@ 1 (r2 = r2 - (4 - r3))
 	b	1b
+UNWIND( .fnend   )
 ENDPROC(memset)
+ENDPROC(mmioset)
+
+ENTRY(__memset32)
+UNWIND( .fnstart         )
+	mov	r3, r1			@ copy r1 to r3 and fall into memset64
+UNWIND( .fnend   )
+ENDPROC(__memset32)
+ENTRY(__memset64)
+UNWIND( .fnstart         )
+	mov	ip, r0			@ preserve r0 as return value
+	b	7b			@ jump into the middle of memset
+UNWIND( .fnend   )
+ENDPROC(__memset64)

@@ -1,26 +1,36 @@
-#ifndef _GENERIC_UNALIGNED_H
-#define _GENERIC_UNALIGNED_H
-
-#include <asm/byteorder.h>
-
-#include <linux/unaligned/le_byteshift.h>
-#include <linux/unaligned/be_byteshift.h>
-#include <linux/unaligned/generic.h>
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __ASM_GENERIC_UNALIGNED_H
+#define __ASM_GENERIC_UNALIGNED_H
 
 /*
- * Select endianness
+ * This is the most generic implementation of unaligned accesses
+ * and should work almost anywhere.
  */
+#include <asm/byteorder.h>
+
+/* Set by the arch if it can handle unaligned accesses in hardware. */
+#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+# include <linux/unaligned/access_ok.h>
+#endif
+
 #if defined(__LITTLE_ENDIAN)
-#define get_unaligned	__get_unaligned_le
-#define put_unaligned	__put_unaligned_le
+# ifndef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+#  include <linux/unaligned/le_struct.h>
+#  include <linux/unaligned/be_byteshift.h>
+# endif
+# include <linux/unaligned/generic.h>
+# define get_unaligned	__get_unaligned_le
+# define put_unaligned	__put_unaligned_le
 #elif defined(__BIG_ENDIAN)
-#define get_unaligned	__get_unaligned_be
-#define put_unaligned	__put_unaligned_be
+# ifndef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+#  include <linux/unaligned/be_struct.h>
+#  include <linux/unaligned/le_byteshift.h>
+# endif
+# include <linux/unaligned/generic.h>
+# define get_unaligned	__get_unaligned_be
+# define put_unaligned	__put_unaligned_be
 #else
-#error invalid endian
+# error need to define endianess
 #endif
 
-/* Allow unaligned memory access */
-void allow_unaligned(void);
-
-#endif
+#endif /* __ASM_GENERIC_UNALIGNED_H */

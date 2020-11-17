@@ -13,8 +13,6 @@
 static int fdt_blocks_misordered_(const void *fdt,
 				  int mem_rsv_size, int struct_size)
 {
-	if (!fdt_chk_basic())
-		return false;
 	return (fdt_off_mem_rsvmap(fdt) < FDT_ALIGN(sizeof(struct fdt_header), 8))
 		|| (fdt_off_dt_struct(fdt) <
 		    (fdt_off_mem_rsvmap(fdt) + mem_rsv_size))
@@ -26,16 +24,14 @@ static int fdt_blocks_misordered_(const void *fdt,
 
 static int fdt_rw_probe_(void *fdt)
 {
-	if (!fdt_chk_basic())
-		return 0;
 	FDT_RO_PROBE(fdt);
 
-	if (fdt_chk_version() && fdt_version(fdt) < 17)
+	if (fdt_version(fdt) < 17)
 		return -FDT_ERR_BADVERSION;
 	if (fdt_blocks_misordered_(fdt, sizeof(struct fdt_reserve_entry),
 				   fdt_size_dt_struct(fdt)))
 		return -FDT_ERR_BADLAYOUT;
-	if (fdt_chk_version() && fdt_version(fdt) > 17)
+	if (fdt_version(fdt) > 17)
 		fdt_set_version(fdt, 17);
 
 	return 0;
@@ -44,7 +40,7 @@ static int fdt_rw_probe_(void *fdt)
 #define FDT_RW_PROBE(fdt) \
 	{ \
 		int err_; \
-		if (fdt_chk_extra() && (err_ = fdt_rw_probe_(fdt)) != 0) \
+		if ((err_ = fdt_rw_probe_(fdt)) != 0) \
 			return err_; \
 	}
 
@@ -116,15 +112,6 @@ static int fdt_splice_string_(void *fdt, int newlen)
 	return 0;
 }
 
-/**
- * fdt_find_add_string_() - Find or allocate a string
- *
- * @fdt: pointer to the device tree to check/adjust
- * @s: string to find/add
- * @allocated: Set to 0 if the string was found, 1 if not found and so
- *	allocated. Ignored if !fdt_chk_basic()
- * @return offset of string in the string table (whether found or added)
- */
 static int fdt_find_add_string_(void *fdt, const char *s, int *allocated)
 {
 	char *strtab = (char *)fdt + fdt_off_dt_strings(fdt);
@@ -133,8 +120,7 @@ static int fdt_find_add_string_(void *fdt, const char *s, int *allocated)
 	int len = strlen(s) + 1;
 	int err;
 
-	if (fdt_chk_basic())
-		*allocated = 0;
+	*allocated = 0;
 
 	p = fdt_find_string_(strtab, fdt_size_dt_strings(fdt), s);
 	if (p)
@@ -146,8 +132,7 @@ static int fdt_find_add_string_(void *fdt, const char *s, int *allocated)
 	if (err)
 		return err;
 
-	if (fdt_chk_basic())
-		*allocated = 1;
+	*allocated = 1;
 
 	memcpy(new, s, len);
 	return (new - strtab);
@@ -221,8 +206,7 @@ static int fdt_add_property_(void *fdt, int nodeoffset, const char *name,
 
 	err = fdt_splice_struct_(fdt, *prop, 0, proplen);
 	if (err) {
-		/* Delete the string if we failed to add it */
-		if (fdt_chk_basic() && allocated)
+		if (allocated)
 			fdt_del_last_string_(fdt, name);
 		return err;
 	}
@@ -427,7 +411,7 @@ int fdt_open_into(const void *fdt, void *buf, int bufsize)
 	mem_rsv_size = (fdt_num_mem_rsv(fdt)+1)
 		* sizeof(struct fdt_reserve_entry);
 
-	if (!fdt_chk_version() || fdt_version(fdt) >= 17) {
+	if (fdt_version(fdt) >= 17) {
 		struct_size = fdt_size_dt_struct(fdt);
 	} else {
 		struct_size = 0;

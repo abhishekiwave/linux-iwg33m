@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Linux driver for Disk-On-Chip devices
  *
@@ -6,16 +6,13 @@
  * Copyright © 1999-2010 David Woodhouse <dwmw2@infradead.org>
  * Copyright © 2002-2003 Greg Ungerer <gerg@snapgear.com>
  * Copyright © 2002-2003 SnapGear Inc
- *
  */
 
 #ifndef __MTD_DOC2000_H__
 #define __MTD_DOC2000_H__
 
 #include <linux/mtd/mtd.h>
-#if 0
 #include <linux/mutex.h>
-#endif
 
 #define DoC_Sig1 0
 #define DoC_Sig2 1
@@ -25,8 +22,8 @@
 #define DoC_DOCControl		0x1002
 #define DoC_FloorSelect		0x1003
 #define DoC_CDSNControl		0x1004
-#define DoC_CDSNDeviceSelect	0x1005
-#define DoC_ECCConf		0x1006
+#define DoC_CDSNDeviceSelect 	0x1005
+#define DoC_ECCConf 		0x1006
 #define DoC_2k_ECCStatus	0x1007
 
 #define DoC_CDSNSlowIO		0x100d
@@ -36,15 +33,15 @@
 #define DoC_ECCSyndrome3	0x1013
 #define DoC_ECCSyndrome4	0x1014
 #define DoC_ECCSyndrome5	0x1015
-#define DoC_AliasResolution	0x101b
+#define DoC_AliasResolution 	0x101b
 #define DoC_ConfigInput		0x101c
-#define DoC_ReadPipeInit	0x101d
-#define DoC_WritePipeTerm	0x101e
-#define DoC_LastDataRead	0x101f
-#define DoC_NOP			0x1020
+#define DoC_ReadPipeInit 	0x101d
+#define DoC_WritePipeTerm 	0x101e
+#define DoC_LastDataRead 	0x101f
+#define DoC_NOP 		0x1020
 
-#define DoC_Mil_CDSN_IO		0x0800
-#define DoC_2k_CDSN_IO		0x1800
+#define DoC_Mil_CDSN_IO 	0x0800
+#define DoC_2k_CDSN_IO 		0x1800
 
 #define DoC_Mplus_NOP			0x1002
 #define DoC_Mplus_AliasResolution	0x1004
@@ -81,12 +78,26 @@
  * Others use readb/writeb
  */
 #if defined(__arm__)
-#define ReadDOC_(adr, reg)      ((unsigned char)(*(volatile __u32 *)(((unsigned long)adr)+((reg)<<2))))
-#define WriteDOC_(d, adr, reg)  do{ *(volatile __u32 *)(((unsigned long)adr)+((reg)<<2)) = (__u32)d; wmb();} while(0)
+static inline u8 ReadDOC_(u32 __iomem *addr, unsigned long reg)
+{
+	return __raw_readl(addr + reg);
+}
+static inline void WriteDOC_(u8 data, u32 __iomem *addr, unsigned long reg)
+{
+	__raw_writel(data, addr + reg);
+	wmb();
+}
 #define DOC_IOREMAP_LEN 0x8000
 #elif defined(__ppc__)
-#define ReadDOC_(adr, reg)      ((unsigned char)(*(volatile __u16 *)(((unsigned long)adr)+((reg)<<1))))
-#define WriteDOC_(d, adr, reg)  do{ *(volatile __u16 *)(((unsigned long)adr)+((reg)<<1)) = (__u16)d; wmb();} while(0)
+static inline u8 ReadDOC_(u16 __iomem *addr, unsigned long reg)
+{
+	return __raw_readw(addr + reg);
+}
+static inline void WriteDOC_(u8 data, u16 __iomem *addr, unsigned long reg)
+{
+	__raw_writew(data, addr + reg);
+	wmb();
+}
 #define DOC_IOREMAP_LEN 0x4000
 #else
 #define ReadDOC_(adr, reg)      readb((void __iomem *)(adr) + (reg))
@@ -103,39 +114,39 @@
 #define ReadDOC(adr, reg)      ReadDOC_(adr,DoC_##reg)
 #define WriteDOC(d, adr, reg)  WriteDOC_(d,adr,DoC_##reg)
 
-#define DOC_MODE_RESET		0
-#define DOC_MODE_NORMAL		1
-#define DOC_MODE_RESERVED1	2
-#define DOC_MODE_RESERVED2	3
+#define DOC_MODE_RESET 		0
+#define DOC_MODE_NORMAL 	1
+#define DOC_MODE_RESERVED1 	2
+#define DOC_MODE_RESERVED2 	3
 
-#define DOC_MODE_CLR_ERR	0x80
+#define DOC_MODE_CLR_ERR 	0x80
 #define	DOC_MODE_RST_LAT	0x10
 #define	DOC_MODE_BDECT		0x08
-#define DOC_MODE_MDWREN	0x04
+#define DOC_MODE_MDWREN 	0x04
 
-#define DOC_ChipID_Doc2k	0x20
-#define DOC_ChipID_Doc2kTSOP	0x21	/* internal number for MTD */
-#define DOC_ChipID_DocMil	0x30
+#define DOC_ChipID_Doc2k 	0x20
+#define DOC_ChipID_Doc2kTSOP 	0x21	/* internal number for MTD */
+#define DOC_ChipID_DocMil 	0x30
 #define DOC_ChipID_DocMilPlus32	0x40
 #define DOC_ChipID_DocMilPlus16	0x41
 
-#define CDSN_CTRL_FR_B		0x80
+#define CDSN_CTRL_FR_B 		0x80
 #define CDSN_CTRL_FR_B0		0x40
 #define CDSN_CTRL_FR_B1		0x80
 
-#define CDSN_CTRL_ECC_IO	0x20
-#define CDSN_CTRL_FLASH_IO	0x10
-#define CDSN_CTRL_WP		0x08
-#define CDSN_CTRL_ALE		0x04
-#define CDSN_CTRL_CLE		0x02
-#define CDSN_CTRL_CE		0x01
+#define CDSN_CTRL_ECC_IO 	0x20
+#define CDSN_CTRL_FLASH_IO 	0x10
+#define CDSN_CTRL_WP 		0x08
+#define CDSN_CTRL_ALE 		0x04
+#define CDSN_CTRL_CLE 		0x02
+#define CDSN_CTRL_CE 		0x01
 
-#define DOC_ECC_RESET		0
-#define DOC_ECC_ERROR		0x80
-#define DOC_ECC_RW		0x20
-#define DOC_ECC__EN		0x08
-#define DOC_TOGGLE_BIT		0x04
-#define DOC_ECC_RESV		0x02
+#define DOC_ECC_RESET 		0
+#define DOC_ECC_ERROR 		0x80
+#define DOC_ECC_RW 		0x20
+#define DOC_ECC__EN 		0x08
+#define DOC_TOGGLE_BIT 		0x04
+#define DOC_ECC_RESV 		0x02
 #define DOC_ECC_IGNORE		0x01
 
 #define DOC_FLASH_CE		0x80
@@ -187,21 +198,9 @@ struct DiskOnChip {
 	int numchips;
 	struct Nand *chips;
 	struct mtd_info *nextdoc;
-/* XXX U-BOOT XXX */
-#if 0
 	struct mutex lock;
-#endif
 };
 
 int doc_decode_ecc(unsigned char sector[512], unsigned char ecc1[6]);
-
-/* XXX U-BOOT XXX */
-#if 1
-/*
- * NAND Flash Manufacturer ID Codes
- */
-#define NAND_MFR_TOSHIBA   0x98
-#define NAND_MFR_SAMSUNG   0xec
-#endif
 
 #endif /* __MTD_DOC2000_H__ */

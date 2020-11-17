@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/div64.S
  *
@@ -11,9 +11,7 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
-#ifdef __UBOOT__
-#define UNWIND(x...)
-#endif
+#include <asm/unwind.h>
 
 #ifdef __ARMEB__
 #define xh r0
@@ -44,7 +42,6 @@
  * Clobbered regs: xl, ip
  */
 
-.pushsection .text.__do_div64, "ax"
 ENTRY(__do_div64)
 UNWIND(.fnstart)
 
@@ -210,4 +207,3 @@ Ldiv0_64:
 
 UNWIND(.fnend)
 ENDPROC(__do_div64)
-.popsection

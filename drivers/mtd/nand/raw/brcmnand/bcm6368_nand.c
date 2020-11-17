@@ -1,13 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright 2015 Simon Arlott
+ *
+ * Derived from bcm63138_nand.c:
+ * Copyright © 2015 Broadcom Corporation
+ *
+ * Derived from bcm963xx_4.12L.06B_consumer/shared/opensource/include/bcm963xx/63268_map_part.h:
+ * Copyright 2000-2010 Broadcom Corporation
+ *
+ * Derived from bcm963xx_4.12L.06B_consumer/shared/opensource/flash/nandflash.c:
+ * Copyright 2000-2010 Broadcom Corporation
+ */
 
-#include <common.h>
-#include <asm/io.h>
-#include <memalign.h>
-#include <nand.h>
-#include <linux/errno.h>
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
-#include <dm.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include "brcmnand.h"
 
@@ -16,13 +28,13 @@ struct bcm6368_nand_soc {
 	void __iomem *base;
 };
 
-#define soc_to_priv(_soc) container_of(_soc, struct bcm6368_nand_soc, soc)
-
 #define BCM6368_NAND_INT		0x00
 #define  BCM6368_NAND_STATUS_SHIFT	0
 #define  BCM6368_NAND_STATUS_MASK	(0xfff << BCM6368_NAND_STATUS_SHIFT)
 #define  BCM6368_NAND_ENABLE_SHIFT	16
 #define  BCM6368_NAND_ENABLE_MASK	(0xffff << BCM6368_NAND_ENABLE_SHIFT)
+#define BCM6368_NAND_BASE_ADDR0	0x04
+#define BCM6368_NAND_BASE_ADDR1	0x0c
 
 enum {
 	BCM6368_NP_READ		= BIT(0),
@@ -37,7 +49,8 @@ enum {
 
 static bool bcm6368_nand_intc_ack(struct brcmnand_soc *soc)
 {
-	struct bcm6368_nand_soc *priv = soc_to_priv(soc);
+	struct bcm6368_nand_soc *priv =
+			container_of(soc, struct bcm6368_nand_soc, soc);
 	void __iomem *mmio = priv->base + BCM6368_NAND_INT;
 	u32 val = brcmnand_readl(mmio);
 
@@ -54,7 +67,8 @@ static bool bcm6368_nand_intc_ack(struct brcmnand_soc *soc)
 
 static void bcm6368_nand_intc_set(struct brcmnand_soc *soc, bool en)
 {
-	struct bcm6368_nand_soc *priv = soc_to_priv(soc);
+	struct bcm6368_nand_soc *priv =
+			container_of(soc, struct bcm6368_nand_soc, soc);
 	void __iomem *mmio = priv->base + BCM6368_NAND_INT;
 	u32 val = brcmnand_readl(mmio);
 
@@ -69,14 +83,23 @@ static void bcm6368_nand_intc_set(struct brcmnand_soc *soc, bool en)
 	brcmnand_writel(val, mmio);
 }
 
-static int bcm6368_nand_probe(struct udevice *dev)
+static int bcm6368_nand_probe(struct platform_device *pdev)
 {
-	struct bcm6368_nand_soc *priv = dev_get_priv(dev);
-	struct brcmnand_soc *soc = &priv->soc;
+	struct device *dev = &pdev->dev;
+	struct bcm6368_nand_soc *priv;
+	struct brcmnand_soc *soc;
+	struct resource *res;
 
-	priv->base = dev_remap_addr_name(dev, "nand-int-base");
-	if (!priv->base)
-		return -EINVAL;
+	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+	soc = &priv->soc;
+
+	res = platform_get_resource_byname(pdev,
+		IORESOURCE_MEM, "nand-int-base");
+	priv->base = devm_ioremap_resource(dev, res);
+	if (IS_ERR(priv->base))
+		return PTR_ERR(priv->base);
 
 	soc->ctlrdy_ack = bcm6368_nand_intc_ack;
 	soc->ctlrdy_set_enabled = bcm6368_nand_intc_set;
@@ -86,32 +109,26 @@ static int bcm6368_nand_probe(struct udevice *dev)
 	brcmnand_writel(BCM6368_NAND_STATUS_MASK,
 			priv->base + BCM6368_NAND_INT);
 
-	return brcmnand_probe(dev, soc);
+	return brcmnand_probe(pdev, soc);
 }
 
-static const struct udevice_id bcm6368_nand_dt_ids[] = {
-	{
-		.compatible = "brcm,nand-bcm6368",
-	},
-	{ /* sentinel */ }
+static const struct of_device_id bcm6368_nand_of_match[] = {
+	{ .compatible = "brcm,nand-bcm6368" },
+	{},
 };
+MODULE_DEVICE_TABLE(of, bcm6368_nand_of_match);
 
-U_BOOT_DRIVER(bcm6368_nand) = {
-	.name = "bcm6368-nand",
-	.id = UCLASS_MTD,
-	.of_match = bcm6368_nand_dt_ids,
-	.probe = bcm6368_nand_probe,
-	.priv_auto_alloc_size = sizeof(struct bcm6368_nand_soc),
+static struct platform_driver bcm6368_nand_driver = {
+	.probe			= bcm6368_nand_probe,
+	.remove			= brcmnand_remove,
+	.driver = {
+		.name		= "bcm6368_nand",
+		.pm		= &brcmnand_pm_ops,
+		.of_match_table	= bcm6368_nand_of_match,
+	}
 };
+module_platform_driver(bcm6368_nand_driver);
 
-void board_nand_init(void)
-{
-	struct udevice *dev;
-	int ret;
-
-	ret = uclass_get_device_by_driver(UCLASS_MTD,
-					  DM_GET_DRIVER(bcm6368_nand), &dev);
-	if (ret && ret != -ENODEV)
-		pr_err("Failed to initialize %s. (error %d)\n", dev->name,
-		       ret);
-}
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Simon Arlott");
+MODULE_DESCRIPTION("NAND driver for BCM6368");

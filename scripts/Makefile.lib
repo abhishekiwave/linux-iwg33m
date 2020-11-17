@@ -5,70 +5,65 @@ ccflags-y  += $(EXTRA_CFLAGS)
 cppflags-y += $(EXTRA_CPPFLAGS)
 ldflags-y  += $(EXTRA_LDFLAGS)
 
-#
-# flags that take effect in sub directories
-export KBUILD_SUBDIR_ASFLAGS := $(KBUILD_SUBDIR_ASFLAGS) $(subdir-asflags-y)
-export KBUILD_SUBDIR_CCFLAGS := $(KBUILD_SUBDIR_CCFLAGS) $(subdir-ccflags-y)
+# flags that take effect in current and sub directories
+KBUILD_AFLAGS += $(subdir-asflags-y)
+KBUILD_CFLAGS += $(subdir-ccflags-y)
 
 # Figure out what we need to build from the various variables
 # ===========================================================================
 
 # When an object is listed to be built compiled-in and modular,
 # only build the compiled-in version
-
 obj-m := $(filter-out $(obj-y),$(obj-m))
 
 # Libraries are always collected in one lib file.
 # Filter out objects already built-in
-
 lib-y := $(filter-out $(obj-y), $(sort $(lib-y) $(lib-m)))
-
-
-# Handle objects in subdirs
-# ---------------------------------------------------------------------------
-# o if we encounter foo/ in $(obj-y), replace it by foo/built-in.o
-#   and add the directory to the list of dirs to descend into: $(subdir-y)
-# o if we encounter foo/ in $(obj-m), remove it from $(obj-m)
-#   and add the directory to the list of dirs to descend into: $(subdir-m)
 
 # Determine modorder.
 # Unfortunately, we don't have information about ordering between -y
 # and -m subdirs.  Just put -y's first.
 modorder	:= $(patsubst %/,%/modules.order, $(filter %/, $(obj-y)) $(obj-m:.o=.ko))
 
+# Handle objects in subdirs
+# ---------------------------------------------------------------------------
+# o if we encounter foo/ in $(obj-y), replace it by foo/built-in.a
+#   and add the directory to the list of dirs to descend into: $(subdir-y)
+# o if we encounter foo/ in $(obj-m), remove it from $(obj-m)
+#   and add the directory to the list of dirs to descend into: $(subdir-m)
 __subdir-y	:= $(patsubst %/,%,$(filter %/, $(obj-y)))
 subdir-y	+= $(__subdir-y)
 __subdir-m	:= $(patsubst %/,%,$(filter %/, $(obj-m)))
 subdir-m	+= $(__subdir-m)
-obj-y		:= $(patsubst %/, %/built-in.o, $(obj-y))
+obj-y		:= $(patsubst %/, %/built-in.a, $(obj-y))
 obj-m		:= $(filter-out %/, $(obj-m))
 
 # Subdirectories we need to descend into
-
 subdir-ym	:= $(sort $(subdir-y) $(subdir-m))
 
-# if $(foo-objs) exists, foo.o is a composite object
-multi-used-y := $(sort $(foreach m,$(obj-y), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y))), $(m))))
-multi-used-m := $(sort $(foreach m,$(obj-m), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y))), $(m))))
+# If $(foo-objs), $(foo-y), $(foo-m), or $(foo-) exists, foo.o is a composite object
+multi-used-y := $(sort $(foreach m,$(obj-y), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-))), $(m))))
+multi-used-m := $(sort $(foreach m,$(obj-m), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-m)) $($(m:.o=-))), $(m))))
 multi-used   := $(multi-used-y) $(multi-used-m)
-single-used-m := $(sort $(filter-out $(multi-used-m),$(obj-m)))
-
-# Build list of the parts of our composite objects, our composite
-# objects depend on those (obviously)
-multi-objs-y := $(foreach m, $(multi-used-y), $($(m:.o=-objs)) $($(m:.o=-y)))
-multi-objs-m := $(foreach m, $(multi-used-m), $($(m:.o=-objs)) $($(m:.o=-y)))
-multi-objs   := $(multi-objs-y) $(multi-objs-m)
 
 # $(subdir-obj-y) is the list of objects in $(obj-y) which uses dir/ to
 # tell kbuild to descend
-subdir-obj-y := $(filter %/built-in.o, $(obj-y))
+subdir-obj-y := $(filter %/built-in.a, $(obj-y))
 
-# $(obj-dirs) is a list of directories that contain object files
-obj-dirs := $(dir $(multi-objs) $(obj-y))
+# Replace multi-part objects by their individual parts,
+# including built-in.a from subdirectories
+real-obj-y := $(foreach m, $(obj-y), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-))),$($(m:.o=-objs)) $($(m:.o=-y)),$(m)))
+real-obj-m := $(foreach m, $(obj-m), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-m)) $($(m:.o=-))),$($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-m)),$(m)))
 
-# Replace multi-part objects by their individual parts, look at local dir only
-real-objs-y := $(foreach m, $(filter-out $(subdir-obj-y), $(obj-y)), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y))),$($(m:.o=-objs)) $($(m:.o=-y)),$(m))) $(extra-y)
-real-objs-m := $(foreach m, $(obj-m), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y))),$($(m:.o=-objs)) $($(m:.o=-y)),$(m)))
+# DTB
+# If CONFIG_OF_ALL_DTBS is enabled, all DT blobs are built
+extra-y				+= $(dtb-y)
+extra-$(CONFIG_OF_ALL_DTBS)	+= $(dtb-)
+
+ifneq ($(CHECK_DTBS),)
+extra-y += $(patsubst %.dtb,%.dt.yaml, $(dtb-y))
+extra-$(CONFIG_OF_ALL_DTBS) += $(patsubst %.dtb,%.dt.yaml, $(dtb-))
+endif
 
 # Add subdir path
 
@@ -76,39 +71,39 @@ extra-y		:= $(addprefix $(obj)/,$(extra-y))
 always		:= $(addprefix $(obj)/,$(always))
 targets		:= $(addprefix $(obj)/,$(targets))
 modorder	:= $(addprefix $(obj)/,$(modorder))
-obj-y		:= $(addprefix $(obj)/,$(obj-y))
 obj-m		:= $(addprefix $(obj)/,$(obj-m))
 lib-y		:= $(addprefix $(obj)/,$(lib-y))
 subdir-obj-y	:= $(addprefix $(obj)/,$(subdir-obj-y))
-real-objs-y	:= $(addprefix $(obj)/,$(real-objs-y))
-real-objs-m	:= $(addprefix $(obj)/,$(real-objs-m))
-single-used-m	:= $(addprefix $(obj)/,$(single-used-m))
-multi-used-y	:= $(addprefix $(obj)/,$(multi-used-y))
+real-obj-y	:= $(addprefix $(obj)/,$(real-obj-y))
+real-obj-m	:= $(addprefix $(obj)/,$(real-obj-m))
 multi-used-m	:= $(addprefix $(obj)/,$(multi-used-m))
-multi-objs-y	:= $(addprefix $(obj)/,$(multi-objs-y))
-multi-objs-m	:= $(addprefix $(obj)/,$(multi-objs-m))
 subdir-ym	:= $(addprefix $(obj)/,$(subdir-ym))
-obj-dirs	:= $(addprefix $(obj)/,$(obj-dirs))
+
+# Finds the multi-part object the current object will be linked into.
+# If the object belongs to two or more multi-part objects, all of them are
+# concatenated with a colon separator.
+modname-multi = $(subst $(space),:,$(sort $(foreach m,$(multi-used),\
+		$(if $(filter $*.o, $($(m:.o=-objs)) $($(m:.o=-y)) $($(m:.o=-m))),$(m:.o=)))))
+
+modname = $(if $(modname-multi),$(modname-multi),$(basetarget))
+
+# target with $(obj)/ and its suffix stripped
+target-stem = $(basename $(patsubst $(obj)/%,%,$@))
 
 # These flags are needed for modversions and compiling, so we define them here
-# already
-# $(modname_flags) #defines KBUILD_MODNAME as the name of the module it will
+# $(modname_flags) defines KBUILD_MODNAME as the name of the module it will
 # end up in (or would, if it gets compiled in)
-# Note: Files that end up in two or more modules are compiled without the
-#       KBUILD_MODNAME definition. The reason is that any made-up name would
-#       differ in different configs.
-name-fix = $(subst $(comma),_,$(subst -,_,$1))
-basename_flags = -D"KBUILD_BASENAME=KBUILD_STR($(call name-fix,$(basetarget)))"
-modname_flags  = $(if $(filter 1,$(words $(modname))),\
-                 -D"KBUILD_MODNAME=KBUILD_STR($(call name-fix,$(modname)))")
+name-fix = $(squote)$(quote)$(subst $(comma),_,$(subst -,_,$1))$(quote)$(squote)
+basename_flags = -DKBUILD_BASENAME=$(call name-fix,$(basetarget))
+modname_flags  = -DKBUILD_MODNAME=$(call name-fix,$(modname))
 
-orig_c_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) $(KBUILD_SUBDIR_CCFLAGS) \
-                 $(ccflags-y) $(CFLAGS_$(basetarget).o)
-_c_flags       = $(filter-out $(CFLAGS_REMOVE_$(basetarget).o), $(orig_c_flags))
-orig_a_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_AFLAGS) $(KBUILD_SUBDIR_ASFLAGS) \
-                 $(asflags-y) $(AFLAGS_$(basetarget).o)
-_a_flags       = $(filter-out $(AFLAGS_REMOVE_$(basetarget).o), $(orig_a_flags))
-_cpp_flags     = $(KBUILD_CPPFLAGS) $(cppflags-y) $(CPPFLAGS_$(@F))
+orig_c_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_CFLAGS) \
+                 $(ccflags-y) $(CFLAGS_$(target-stem).o)
+_c_flags       = $(filter-out $(CFLAGS_REMOVE_$(target-stem).o), $(orig_c_flags))
+orig_a_flags   = $(KBUILD_CPPFLAGS) $(KBUILD_AFLAGS) \
+                 $(asflags-y) $(AFLAGS_$(target-stem).o)
+_a_flags       = $(filter-out $(AFLAGS_REMOVE_$(target-stem).o), $(orig_a_flags))
+_cpp_flags     = $(KBUILD_CPPFLAGS) $(cppflags-y) $(CPPFLAGS_$(target-stem).lds)
 
 #
 # Enable gcov profiling flags for a file, directory or for all files depending
@@ -128,77 +123,61 @@ endif
 ifeq ($(CONFIG_KASAN),y)
 _c_flags += $(if $(patsubst n%,, \
 		$(KASAN_SANITIZE_$(basetarget).o)$(KASAN_SANITIZE)y), \
-		$(CFLAGS_KASAN))
+		$(CFLAGS_KASAN), $(CFLAGS_KASAN_NOSANITIZE))
 endif
 
-# If building the kernel in a separate objtree expand all occurrences
-# of -Idir to -I$(srctree)/dir except for absolute paths (starting with '/').
-
-ifeq ($(KBUILD_SRC),)
-__c_flags	= $(_c_flags)
-__a_flags	= $(_a_flags)
-__cpp_flags     = $(_cpp_flags)
-else
-
-# -I$(obj) locates generated .h files
-# $(call addtree,-I$(obj)) locates .h files in srctree, from generated .c files
-#   and locates generated .h files
-# FIXME: Replace both with specific CFLAGS* statements in the makefiles
-__c_flags	= $(call addtree,-I$(obj)) $(call flags,_c_flags)
-__a_flags	=                          $(call flags,_a_flags)
-__cpp_flags     =                          $(call flags,_cpp_flags)
+ifeq ($(CONFIG_UBSAN),y)
+_c_flags += $(if $(patsubst n%,, \
+		$(UBSAN_SANITIZE_$(basetarget).o)$(UBSAN_SANITIZE)$(CONFIG_UBSAN_SANITIZE_ALL)), \
+		$(CFLAGS_UBSAN))
 endif
 
-# Modified for U-Boot: LINUXINCLUDE -> UBOOTINCLUDE
-c_flags        = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(UBOOTINCLUDE)     \
-		 $(__c_flags) $(modkern_cflags)                           \
-		 -D"KBUILD_STR(s)=\#s" $(basename_flags) $(modname_flags)
+ifeq ($(CONFIG_KCOV),y)
+_c_flags += $(if $(patsubst n%,, \
+	$(KCOV_INSTRUMENT_$(basetarget).o)$(KCOV_INSTRUMENT)$(CONFIG_KCOV_INSTRUMENT_ALL)), \
+	$(CFLAGS_KCOV))
+endif
 
-a_flags        = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(UBOOTINCLUDE)     \
-		 $(__a_flags) $(modkern_aflags)
+# $(srctree)/$(src) for including checkin headers from generated source files
+# $(objtree)/$(obj) for including generated headers from checkin source files
+ifeq ($(KBUILD_EXTMOD),)
+ifdef building_out_of_srctree
+_c_flags   += -I $(srctree)/$(src) -I $(objtree)/$(obj)
+_a_flags   += -I $(srctree)/$(src) -I $(objtree)/$(obj)
+_cpp_flags += -I $(srctree)/$(src) -I $(objtree)/$(obj)
+endif
+endif
 
-cpp_flags      = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(UBOOTINCLUDE)     \
-		 $(__cpp_flags)
+part-of-module = $(if $(filter $(basename $@).o, $(real-obj-m)),y)
+quiet_modtag = $(if $(part-of-module),[M],   )
 
-ld_flags       = $(LDFLAGS) $(ldflags-y)
+modkern_cflags =                                          \
+	$(if $(part-of-module),                           \
+		$(KBUILD_CFLAGS_MODULE) $(CFLAGS_MODULE), \
+		$(KBUILD_CFLAGS_KERNEL) $(CFLAGS_KERNEL))
 
-# Try these files in order to find the U-Boot-specific .dtsi include file
-u_boot_dtsi_options = $(strip $(wildcard $(dir $<)$(basename $(notdir $<))-u-boot.dtsi) \
-	$(wildcard $(dir $<)$(subst $\",,$(CONFIG_SYS_SOC))-u-boot.dtsi) \
-	$(wildcard $(dir $<)$(subst $\",,$(CONFIG_SYS_CPU))-u-boot.dtsi) \
-	$(wildcard $(dir $<)$(subst $\",,$(CONFIG_SYS_VENDOR))-u-boot.dtsi) \
-	$(wildcard $(dir $<)u-boot.dtsi))
+modkern_aflags = $(if $(part-of-module),				\
+			$(KBUILD_AFLAGS_MODULE) $(AFLAGS_MODULE),	\
+			$(KBUILD_AFLAGS_KERNEL) $(AFLAGS_KERNEL))
 
-u_boot_dtsi_options_raw = $(warning Automatic .dtsi inclusion: options: \
-	$(dir $<)$(basename $(notdir $<))-u-boot.dtsi \
-	$(dir $<)$(subst $\",,$(CONFIG_SYS_SOC))-u-boot.dtsi \
-	$(dir $<)$(subst $\",,$(CONFIG_SYS_CPU))-u-boot.dtsi \
-	$(dir $<)$(subst $\",,$(CONFIG_SYS_VENDOR))-u-boot.dtsi \
-	$(dir $<)u-boot.dtsi ... \
-	found: $(if $(u_boot_dtsi_options),"$(u_boot_dtsi_options)",nothing!))
+c_flags        = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(LINUXINCLUDE)     \
+		 -include $(srctree)/include/linux/compiler_types.h       \
+		 $(_c_flags) $(modkern_cflags)                           \
+		 $(basename_flags) $(modname_flags)
 
-# Uncomment for debugging
-# This shows all the files that were considered and the one that we chose.
-# u_boot_dtsi_options_debug = $(u_boot_dtsi_options_raw)
+a_flags        = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(LINUXINCLUDE)     \
+		 $(_a_flags) $(modkern_aflags)
 
-# We use the first match
-u_boot_dtsi = $(strip $(u_boot_dtsi_options_debug) \
-	$(notdir $(firstword $(u_boot_dtsi_options))))
+cpp_flags      = -Wp,-MD,$(depfile) $(NOSTDINC_FLAGS) $(LINUXINCLUDE)     \
+		 $(_cpp_flags)
 
-# Modified for U-Boot
+ld_flags       = $(KBUILD_LDFLAGS) $(ldflags-y) $(LDFLAGS_$(@F))
+
+DTC_INCLUDE    := $(srctree)/scripts/dtc/include-prefixes
+
 dtc_cpp_flags  = -Wp,-MD,$(depfile).pre.tmp -nostdinc                    \
-		 -I$(srctree)/arch/$(ARCH)/dts                           \
-		 -I$(srctree)/arch/$(ARCH)/dts/include                   \
-		 -Iinclude                                               \
-		 -I$(srctree)/include                                    \
-		 -I$(srctree)/arch/$(ARCH)/include                       \
-		 -include $(srctree)/include/linux/kconfig.h             \
-		 -D__ASSEMBLY__                                          \
+		 $(addprefix -I,$(DTC_INCLUDE))                          \
 		 -undef -D__DTS__
-
-# Finds the multi-part object the current object will be linked into
-modname-multi = $(sort $(foreach m,$(multi-used),\
-		$(if $(filter $(subst $(obj)/,,$*.o), $($(m:.o=-objs)) $($(m:.o=-y))),$(m:.o=))))
 
 # Useful for describing the dependency of composite objects
 # Usage:
@@ -208,28 +187,6 @@ $(foreach m, $(notdir $1), \
 	$(eval $(obj)/$m: \
 	$(addprefix $(obj)/, $(foreach s, $3, $($(m:%$(strip $2)=%$(s)))))))
 endef
-
-# LEX
-# ---------------------------------------------------------------------------
-quiet_cmd_flex = LEX     $@
-      cmd_flex = $(LEX) -o$@ -L $<
-
-$(obj)/%.lex.c: $(src)/%.l FORCE
-	$(call if_changed,flex)
-
-# YACC
-# ---------------------------------------------------------------------------
-quiet_cmd_bison = YACC    $@
-      cmd_bison = $(YACC) -o$@ -t -l $<
-
-$(obj)/%.tab.c: $(src)/%.y FORCE
-	$(call if_changed,bison)
-
-quiet_cmd_bison_h = YACC    $@
-      cmd_bison_h = $(YACC) -o/dev/null --defines=$@ -t -l $<
-
-$(obj)/%.tab.h: $(src)/%.y FORCE
-	$(call if_changed,bison_h)
 
 # Shipped files
 # ===========================================================================
@@ -255,8 +212,13 @@ $(obj)/%: $(src)/%_shipped
 # ---------------------------------------------------------------------------
 
 quiet_cmd_ld = LD      $@
-cmd_ld = $(LD) $(LDFLAGS) $(ldflags-y) $(LDFLAGS_$(@F)) \
-	       $(filter-out FORCE,$^) -o $@
+      cmd_ld = $(LD) $(ld_flags) $(real-prereqs) -o $@
+
+# Archive
+# ---------------------------------------------------------------------------
+
+quiet_cmd_ar = AR      $@
+      cmd_ar = rm -f $@; $(AR) cDPrsT $@ $(real-prereqs)
 
 # Objcopy
 # ---------------------------------------------------------------------------
@@ -268,159 +230,76 @@ cmd_objcopy = $(OBJCOPY) $(OBJCOPYFLAGS) $(OBJCOPYFLAGS_$(@F)) $< $@
 # ---------------------------------------------------------------------------
 
 quiet_cmd_gzip = GZIP    $@
-cmd_gzip = (cat $(filter-out FORCE,$^) | gzip -n -f -9 > $@) || \
-	(rm -f $@ ; false)
+      cmd_gzip = cat $(real-prereqs) | gzip -n -f -9 > $@
 
 # DTC
 # ---------------------------------------------------------------------------
+DTC ?= $(objtree)/scripts/dtc/dtc
+
+# Disable noisy checks by default
+ifeq ($(findstring 1,$(KBUILD_EXTRA_WARN)),)
+DTC_FLAGS += -Wno-unit_address_vs_reg \
+	-Wno-unit_address_format \
+	-Wno-avoid_unnecessary_addr_size \
+	-Wno-alias_paths \
+	-Wno-graph_child_address \
+	-Wno-simple_bus_reg \
+	-Wno-unique_unit_address \
+	-Wno-pci_device_reg
+endif
+
+ifneq ($(findstring 2,$(KBUILD_EXTRA_WARN)),)
+DTC_FLAGS += -Wnode_name_chars_strict \
+	-Wproperty_name_chars_strict
+endif
+
+DTC_FLAGS += $(DTC_FLAGS_$(basetarget))
 
 # Generate an assembly file to wrap the output of the device tree compiler
 quiet_cmd_dt_S_dtb= DTB     $@
-# Modified for U-Boot
 cmd_dt_S_dtb=						\
-(							\
+{							\
+	echo '\#include <asm-generic/vmlinux.lds.h>'; 	\
 	echo '.section .dtb.init.rodata,"a"';		\
-	echo '.balign 16';				\
+	echo '.balign STRUCT_ALIGNMENT';		\
 	echo '.global __dtb_$(subst -,_,$(*F))_begin';	\
 	echo '__dtb_$(subst -,_,$(*F))_begin:';		\
 	echo '.incbin "$<" ';				\
 	echo '__dtb_$(subst -,_,$(*F))_end:';		\
 	echo '.global __dtb_$(subst -,_,$(*F))_end';	\
-	echo '.balign 16';				\
-) > $@
+	echo '.balign STRUCT_ALIGNMENT'; 		\
+} > $@
 
-$(obj)/%.dtb.S: $(obj)/%.dtb
-	$(call cmd,dt_S_dtb)
-
-ifeq ($(CONFIG_SPL_LOAD_FIT_APPLY_OVERLAY),y)
-DTC_FLAGS += -@
-endif
+$(obj)/%.dtb.S: $(obj)/%.dtb FORCE
+	$(call if_changed,dt_S_dtb)
 
 quiet_cmd_dtc = DTC     $@
-# Modified for U-Boot
-# Bring in any U-Boot-specific include at the end of the file
 cmd_dtc = mkdir -p $(dir ${dtc-tmp}) ; \
-	(cat $<; $(if $(u_boot_dtsi),echo '$(pound)include "$(u_boot_dtsi)"')) > $(pre-tmp); \
-	$(CPP) $(dtc_cpp_flags) -x assembler-with-cpp -o $(dtc-tmp) $(pre-tmp) ; \
-	$(DTC) -O dtb -o $@ -b 0 \
-		-i $(dir $<) $(DTC_FLAGS) \
-		-d $(depfile).dtc.tmp $(dtc-tmp) || \
-		(echo "Check $(shell pwd)/$(pre-tmp) for errors" && false) \
-		; \
-	cat $(depfile).pre.tmp $(depfile).dtc.tmp > $(depfile) ; \
-	sed -i "s:$(pre-tmp):$(<):" $(depfile)
-
-$(obj)/%.dtb: $(src)/%.dts FORCE
-	$(call if_changed_dep,dtc)
-
-pre-tmp = $(subst $(comma),_,$(dot-target).pre.tmp)
-dtc-tmp = $(subst $(comma),_,$(dot-target).dts.tmp)
-
-# DTCO
-# ---------------------------------------------------------------------------
-
-quiet_cmd_dtco = DTCO    $@
-# Rule for objects only; does not put specific u-boot include at the end
-# No generation of assembly file either
-# Modified for U-Boot
-cmd_dtco = mkdir -p $(dir ${dtc-tmp}) ; \
-	$(CPP) $(dtc_cpp_flags) -x assembler-with-cpp -o $(dtc-tmp) $< ; \
-	$(DTC) -@ -O dtb -o $@ -b 0 \
-		-i $(dir $<) $(DTC_FLAGS) \
+	$(HOSTCC) -E $(dtc_cpp_flags) -x assembler-with-cpp -o $(dtc-tmp) $< ; \
+	$(DTC) -O $(2) -o $@ -b 0 \
+		$(addprefix -i,$(dir $<) $(DTC_INCLUDE)) $(DTC_FLAGS) \
 		-d $(depfile).dtc.tmp $(dtc-tmp) ; \
 	cat $(depfile).pre.tmp $(depfile).dtc.tmp > $(depfile)
 
-$(obj)/%.dtbo: $(src)/%.dts FORCE
-	$(call if_changed_dep,dtco)
+$(obj)/%.dtb: $(src)/%.dts $(DTC) FORCE
+	$(call if_changed_dep,dtc,dtb)
 
-# Fonts
-# ---------------------------------------------------------------------------
+DT_CHECKER ?= dt-validate
+DT_BINDING_DIR := Documentation/devicetree/bindings
+DT_TMP_SCHEMA := $(objtree)/$(DT_BINDING_DIR)/processed-schema.yaml
 
-# Generate an assembly file to wrap the font data
-quiet_cmd_S_ttf= TTF     $@
-# Modified for U-Boot
-cmd_S_ttf=						\
-(							\
-	echo '.section .rodata.ttf.init,"a"';		\
-	echo '.balign 16';				\
-	echo '.global __ttf_$(*F)_begin';		\
-	echo '__ttf_$(*F)_begin:';			\
-	echo '.incbin "$<" ';				\
-	echo '__ttf_$(*F)_end:';			\
-	echo '.global __ttf_$(*F)_end';			\
-	echo '.balign 16';				\
-) > $@
+quiet_cmd_dtb_check =	CHECK   $@
+      cmd_dtb_check =	$(DT_CHECKER) -u $(srctree)/$(DT_BINDING_DIR) -p $(DT_TMP_SCHEMA) $@ ;
 
-$(obj)/%.S: $(src)/%.ttf
-	$(call cmd,S_ttf)
+define rule_dtc
+	$(call cmd_and_fixdep,dtc,yaml)
+	$(call cmd,dtb_check)
+endef
 
-# EFI applications
-# A Makefile target *.efi is built as EFI application.
-# A Makefile target *_efi.S wraps *.efi as built-in EFI application.
-# ---------------------------------------------------------------------------
+$(obj)/%.dt.yaml: $(src)/%.dts $(DTC) $(DT_TMP_SCHEMA) FORCE
+	$(call if_changed_rule,dtc)
 
-# Generate an assembly file to wrap the EFI app
-cmd_S_efi=					\
-(						\
-	echo '.section .rodata.$*.init,"a"';	\
-	echo '.balign 16';			\
-	echo '.global __efi_$*_begin';		\
-	echo '__efi_$*_begin:';			\
-	echo '.incbin "$<" ';			\
-	echo '__efi_$*_end:';			\
-	echo '.global __efi_$*_end';		\
-	echo '.balign 16';			\
-) > $@
-
-$(obj)/%_efi.S: $(obj)/%.efi
-	$(call cmd,S_efi)
-
-quiet_cmd_efi_objcopy = OBJCOPY $@
-cmd_efi_objcopy = $(OBJCOPY) -j .header -j .text -j .sdata -j .data -j \
-		.dynamic -j .dynsym  -j .rel* -j .rela* -j .reloc \
-		$(if $(EFI_TARGET),$(EFI_TARGET),-O binary) $^ $@
-
-$(obj)/%.efi: $(obj)/%_efi.so
-	$(call cmd,efi_objcopy)
-
-quiet_cmd_efi_ld = LD      $@
-cmd_efi_ld = $(LD) -nostdlib -znocombreloc -T $(EFI_LDS_PATH) -shared \
-		-Bsymbolic -s $^ -o $@
-
-EFI_LDS_PATH = $(srctree)/arch/$(ARCH)/lib/$(EFI_LDS)
-
-$(obj)/efi_crt0.o: $(srctree)/arch/$(ARCH)/lib/$(EFI_CRT0:.o=.S) FORCE
-	$(call if_changed_dep,as_o_S)
-
-$(obj)/efi_reloc.o: $(srctree)/arch/$(ARCH)/lib/$(EFI_RELOC:.o=.c) $(recordmcount_source) FORCE
-	$(call cmd,force_checksrc)
-	$(call if_changed_rule,cc_o_c)
-
-$(obj)/%_efi.so: $(obj)/%.o $(obj)/efi_crt0.o $(obj)/efi_reloc.o $(obj)/efi_freestanding.o
-	$(call cmd,efi_ld)
-
-# ACPI
-# ---------------------------------------------------------------------------
-#
-# This first sends the file (typically dsdt.asl) through the preprocessor
-# resolve includes and any CONFIG options used. This produces dsdt.asl.tmp
-# which is pure ASL code. The Intel ASL (ACPI (Advanced Configuration and Power
-# Interface) Source Language compiler (iasl) then converts this ASL code into a
-# C file containing the hex data to build into U-Boot. This file is called
-# dsdt.hex (despite us setting the prefix to .../dsdt.asl.tmp) so must be
-# renamed to dsdt.c for consumption by the build system.
-ASL_TMP = $(patsubst %.c,%.asl.tmp,$@)
-
-quiet_cmd_acpi_c_asl= ASL     $<
-cmd_acpi_c_asl=         \
-	$(CPP) -x assembler-with-cpp -D__ASSEMBLY__ -P $(UBOOTINCLUDE) \
-		-o $(ASL_TMP) $< && \
-	iasl -p $@ -tc $(ASL_TMP) $(if $(KBUILD_VERBOSE:1=), >/dev/null) && \
-	mv $(patsubst %.c,%.hex,$@) $@
-
-$(obj)/dsdt.c:    $(src)/dsdt.asl
-	$(call cmd,acpi_c_asl)
-	$(Q)sed -i -e "s,dsdt_aml_code,AmlCode," $@
+dtc-tmp = $(subst $(comma),_,$(dot-target).dts.tmp)
 
 # Bzip2
 # ---------------------------------------------------------------------------
@@ -429,8 +308,8 @@ $(obj)/dsdt.c:    $(src)/dsdt.asl
 # append the size as a 32-bit littleendian number as gzip does.
 size_append = printf $(shell						\
 dec_size=0;								\
-for F in $1; do								\
-	fsize=$$(stat -c "%s" $$F);					\
+for F in $(real-prereqs); do					\
+	fsize=$$($(CONFIG_SHELL) $(srctree)/scripts/file-size.sh $$F);	\
 	dec_size=$$(expr $$dec_size + $$fsize);				\
 done;									\
 printf "%08x\n" $$dec_size |						\
@@ -443,27 +322,20 @@ printf "%08x\n" $$dec_size |						\
 )
 
 quiet_cmd_bzip2 = BZIP2   $@
-cmd_bzip2 = (cat $(filter-out FORCE,$^) | \
-	bzip2 -9 && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
-	(rm -f $@ ; false)
+      cmd_bzip2 = { cat $(real-prereqs) | bzip2 -9; $(size_append); } > $@
 
 # Lzma
 # ---------------------------------------------------------------------------
 
 quiet_cmd_lzma = LZMA    $@
-cmd_lzma = (cat $(filter-out FORCE,$^) | \
-	lzma -9 && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
-	(rm -f $@ ; false)
+      cmd_lzma = { cat $(real-prereqs) | lzma -9; $(size_append); } > $@
 
 quiet_cmd_lzo = LZO     $@
-cmd_lzo = (cat $(filter-out FORCE,$^) | \
-	lzop -9 && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
-	(rm -f $@ ; false)
+      cmd_lzo = { cat $(real-prereqs) | lzop -9; $(size_append); } > $@
 
 quiet_cmd_lz4 = LZ4     $@
-cmd_lz4 = (cat $(filter-out FORCE,$^) | \
-	lz4c -l -c1 stdin stdout && $(call size_append, $(filter-out FORCE,$^))) > $@ || \
-	(rm -f $@ ; false)
+      cmd_lz4 = { cat $(real-prereqs) | lz4c -l -c1 stdin stdout; \
+                  $(size_append); } > $@
 
 # U-Boot mkimage
 # ---------------------------------------------------------------------------
@@ -479,15 +351,13 @@ UIMAGE_TYPE ?= kernel
 UIMAGE_LOADADDR ?= arch_must_set_this
 UIMAGE_ENTRYADDR ?= $(UIMAGE_LOADADDR)
 UIMAGE_NAME ?= 'Linux-$(KERNELRELEASE)'
-UIMAGE_IN ?= $<
-UIMAGE_OUT ?= $@
 
-quiet_cmd_uimage = UIMAGE  $(UIMAGE_OUT)
-      cmd_uimage = $(CONFIG_SHELL) $(MKIMAGE) -A $(UIMAGE_ARCH) -O linux \
+quiet_cmd_uimage = UIMAGE  $@
+      cmd_uimage = $(BASH) $(MKIMAGE) -A $(UIMAGE_ARCH) -O linux \
 			-C $(UIMAGE_COMPRESSION) $(UIMAGE_OPTS-y) \
 			-T $(UIMAGE_TYPE) \
 			-a $(UIMAGE_LOADADDR) -e $(UIMAGE_ENTRYADDR) \
-			-n $(UIMAGE_NAME) -d $(UIMAGE_IN) $(UIMAGE_OUT)
+			-n $(UIMAGE_NAME) -d $< $@
 
 # XZ
 # ---------------------------------------------------------------------------
@@ -507,48 +377,38 @@ quiet_cmd_uimage = UIMAGE  $(UIMAGE_OUT)
 # big dictionary would increase the memory usage too much in the multi-call
 # decompression mode. A BCJ filter isn't used either.
 quiet_cmd_xzkern = XZKERN  $@
-cmd_xzkern = (cat $(filter-out FORCE,$^) | \
-	sh $(srctree)/scripts/xz_wrap.sh && \
-	$(call size_append, $(filter-out FORCE,$^))) > $@ || \
-	(rm -f $@ ; false)
+      cmd_xzkern = { cat $(real-prereqs) | sh $(srctree)/scripts/xz_wrap.sh; \
+                     $(size_append); } > $@
 
 quiet_cmd_xzmisc = XZMISC  $@
-cmd_xzmisc = (cat $(filter-out FORCE,$^) | \
-	xz --check=crc32 --lzma2=dict=1MiB) > $@ || \
-	(rm -f $@ ; false)
+      cmd_xzmisc = cat $(real-prereqs) | xz --check=crc32 --lzma2=dict=1MiB > $@
 
-# Additional commands for U-Boot
+# ASM offsets
+# ---------------------------------------------------------------------------
+
+# Default sed regexp - multiline due to syntax constraints
 #
-# mkimage
-# ---------------------------------------------------------------------------
-MKIMAGEOUTPUT ?= /dev/null
-quiet_cmd_mkimage = MKIMAGE $@
-cmd_mkimage = $(objtree)/tools/mkimage $(MKIMAGEFLAGS_$(@F)) -d $< $@ \
-	>$(MKIMAGEOUTPUT) $(if $(KBUILD_VERBOSE:0=), && cat $(MKIMAGEOUTPUT))
+# Use [:space:] because LLVM's integrated assembler inserts <tab> around
+# the .ascii directive whereas GCC keeps the <space> as-is.
+define sed-offsets
+	's:^[[:space:]]*\.ascii[[:space:]]*"\(.*\)".*:\1:; \
+	/^->/{s:->#\(.*\):/* \1 */:; \
+	s:^->\([^ ]*\) [\$$#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:; \
+	s:->::; p;}'
+endef
 
-# fdtgrep
-# ---------------------------------------------------------------------------
-# Pass the original device tree file through fdtgrep twice. The first pass
-# removes any unwanted nodes (i.e. those which don't have the
-# 'u-boot,dm-pre-reloc' property and thus are not needed by SPL. The second
-# pass removes various unused properties from the remaining nodes.
-# The output is typically a much smaller device tree file.
-ifeq ($(CONFIG_TPL_BUILD),y)
-fdtgrep_props := -b u-boot,dm-pre-reloc -b u-boot,dm-tpl
-else
-fdtgrep_props := -b u-boot,dm-pre-reloc -b u-boot,dm-spl
-endif
-quiet_cmd_fdtgrep = FDTGREP $@
-      cmd_fdtgrep = $(objtree)/tools/fdtgrep $(fdtgrep_props) -RT $< \
-		-n /chosen -n /config -O dtb | \
-	$(objtree)/tools/fdtgrep -r -O dtb - -o $@ \
-		-P u-boot,dm-pre-reloc -P u-boot,dm-spl -P u-boot,dm-tpl \
-		$(addprefix -P ,$(subst $\",,$(CONFIG_OF_SPL_REMOVE_PROPS)))
-
-# fdt_rm_props
-# ---------------------------------------------------------------------------
-# Pass the original device tree file through fdtgrep. This removes various
-# unused properties. The output is typically a smaller device tree file.
-quiet_cmd_fdt_rm_props = FDTGREP $@
-	cmd_fdt_rm_props = cat $< | $(objtree)/tools/fdtgrep -r -O dtb - -o $@ \
-			$(addprefix -P ,$(subst $\",,$(CONFIG_OF_REMOVE_PROPS)))
+# Use filechk to avoid rebuilds when a header changes, but the resulting file
+# does not
+define filechk_offsets
+	 echo "#ifndef $2"; \
+	 echo "#define $2"; \
+	 echo "/*"; \
+	 echo " * DO NOT MODIFY."; \
+	 echo " *"; \
+	 echo " * This file was generated by Kbuild"; \
+	 echo " */"; \
+	 echo ""; \
+	 sed -ne $(sed-offsets) < $<; \
+	 echo ""; \
+	 echo "#endif"
+endef

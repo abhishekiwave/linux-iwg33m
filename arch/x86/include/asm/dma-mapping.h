@@ -1,28 +1,26 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_X86_DMA_MAPPING_H
+#define _ASM_X86_DMA_MAPPING_H
+
 /*
- * (C) Copyright 2007
- * Stelian Pop <stelian@popies.net>
- * Lead Tech Design <www.leadtechdesign.com>
+ * IOMMU interface. See Documentation/DMA-API-HOWTO.txt and
+ * Documentation/DMA-API.txt for documentation.
  */
-#ifndef __ASM_X86_DMA_MAPPING_H
-#define __ASM_X86_DMA_MAPPING_H
 
-#include <common.h>
-#include <asm/cache.h>
-#include <cpu_func.h>
-#include <linux/dma-direction.h>
-#include <linux/types.h>
-#include <malloc.h>
+#include <linux/scatterlist.h>
+#include <linux/dma-debug.h>
+#include <asm/io.h>
+#include <asm/swiotlb.h>
+#include <linux/dma-contiguous.h>
 
-static inline void *dma_alloc_coherent(size_t len, unsigned long *handle)
+extern int iommu_merge;
+extern int panic_on_overflow;
+
+extern const struct dma_map_ops *dma_ops;
+
+static inline const struct dma_map_ops *get_arch_dma_ops(struct bus_type *bus)
 {
-	*handle = (unsigned long)memalign(ARCH_DMA_MINALIGN, len);
-	return (void *)*handle;
+	return dma_ops;
 }
 
-static inline void dma_free_coherent(void *addr)
-{
-	free(addr);
-}
-
-#endif /* __ASM_X86_DMA_MAPPING_H */
+#endif

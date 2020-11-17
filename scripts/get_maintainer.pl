@@ -1,4 +1,6 @@
 #!/usr/bin/env perl
+# SPDX-License-Identifier: GPL-2.0
+#
 # (c) 2007, Joe Perches <joe@perches.com>
 #           created from checkpatch.pl
 #
@@ -7,8 +9,6 @@
 #
 # usage: perl scripts/get_maintainer.pl [OPTIONS] <patch>
 #        perl scripts/get_maintainer.pl [OPTIONS] -f <file>
-#
-# Licensed under the terms of the GNU GPL License version 2
 
 use warnings;
 use strict;
@@ -27,6 +27,7 @@ my $email_usename = 1;
 my $email_maintainer = 1;
 my $email_reviewer = 1;
 my $email_list = 1;
+my $email_moderated_list = 1;
 my $email_subscriber_list = 0;
 my $email_git_penguin_chiefs = 0;
 my $email_git = 0;
@@ -48,6 +49,7 @@ my $output_roles = 0;
 my $output_rolestats = 1;
 my $output_section_maxlen = 50;
 my $scm = 0;
+my $tree = 1;
 my $web = 0;
 my $subsystem = 0;
 my $status = 0;
@@ -60,8 +62,8 @@ my $pattern_depth = 0;
 my $self_test = undef;
 my $version = 0;
 my $help = 0;
-my $find_maintainer_files = 1;
-
+my $find_maintainer_files = 0;
+my $maintainer_path;
 my $vcs_used = 0;
 
 my $exit = 0;
@@ -70,7 +72,9 @@ my %commit_author_hash;
 my %commit_signer_hash;
 
 my @penguin_chief = ();
-push(@penguin_chief, "Tom Rini:trini\@konsulko.com");
+push(@penguin_chief, "Linus Torvalds:torvalds\@linux-foundation.org");
+#Andrew wants in on most everything - 2009/01/14
+#push(@penguin_chief, "Andrew Morton:akpm\@linux-foundation.org");
 
 my @penguin_chief_names = ();
 foreach my $chief (@penguin_chief) {
@@ -245,6 +249,7 @@ if (!GetOptions(
 		'r!' => \$email_reviewer,
 		'n!' => \$email_usename,
 		'l!' => \$email_list,
+		'moderated!' => \$email_moderated_list,
 		's!' => \$email_subscriber_list,
 		'multiline!' => \$output_multiline,
 		'roles!' => \$output_roles,
@@ -253,6 +258,7 @@ if (!GetOptions(
 		'subsystem!' => \$subsystem,
 		'status!' => \$status,
 		'scm!' => \$scm,
+		'tree!' => \$tree,
 		'web!' => \$web,
 		'letters=s' => \$letters,
 		'pattern-depth=i' => \$pattern_depth,
@@ -261,6 +267,7 @@ if (!GetOptions(
 		'fe|file-emails!' => \$file_emails,
 		'f|file' => \$from_filename,
 		'find-maintainer-files' => \$find_maintainer_files,
+		'mpath|maintainer-path=s' => \$maintainer_path,
 		'self-test:s' => \$self_test,
 		'v|version' => \$version,
 		'h|help|usage' => \$help,
@@ -317,9 +324,9 @@ if ($email &&
     die "$P: Please select at least 1 email option\n";
 }
 
-if (!top_of_kernel_tree($lk_path)) {
+if ($tree && !top_of_kernel_tree($lk_path)) {
     die "$P: The current directory does not appear to be "
-	. "a U-Boot source tree.\n";
+	. "a linux kernel source tree.\n";
 }
 
 ## Read MAINTAINERS for type/value pairs
@@ -382,26 +389,36 @@ sub find_ignore_git {
 read_all_maintainer_files();
 
 sub read_all_maintainer_files {
-    if (-d "${lk_path}MAINTAINERS") {
-        opendir(DIR, "${lk_path}MAINTAINERS") or die $!;
-        my @files = readdir(DIR);
-        closedir(DIR);
-        foreach my $file (@files) {
-            push(@mfiles, "${lk_path}MAINTAINERS/$file") if ($file !~ /^\./);
-        }
+    my $path = "${lk_path}MAINTAINERS";
+    if (defined $maintainer_path) {
+	$path = $maintainer_path;
+	# Perl Cookbook tilde expansion if necessary
+	$path =~ s@^~([^/]*)@ $1 ? (getpwnam($1))[7] : ( $ENV{HOME} || $ENV{LOGDIR} || (getpwuid($<))[7])@ex;
     }
 
-    if ($find_maintainer_files) {
-        find( { wanted => \&find_is_maintainer_file,
-                preprocess => \&find_ignore_git,
-                no_chdir => 1,
-        }, "${lk_path}");
+    if (-d $path) {
+	$path .= '/' if ($path !~ m@/$@);
+	if ($find_maintainer_files) {
+	    find( { wanted => \&find_is_maintainer_file,
+		    preprocess => \&find_ignore_git,
+		    no_chdir => 1,
+		}, "$path");
+	} else {
+	    opendir(DIR, "$path") or die $!;
+	    my @files = readdir(DIR);
+	    closedir(DIR);
+	    foreach my $file (@files) {
+		push(@mfiles, "$path$file") if ($file !~ /^\./);
+	    }
+	}
+    } elsif (-f "$path") {
+	push(@mfiles, "$path");
     } else {
-        push(@mfiles, "${lk_path}MAINTAINERS") if -f "${lk_path}MAINTAINERS";
+	die "$P: MAINTAINER file not found '$path'\n";
     }
-
+    die "$P: No MAINTAINER files found in '$path'\n" if (scalar(@mfiles) == 0);
     foreach my $file (@mfiles) {
-        read_maintainer_file("$file");
+	read_maintainer_file("$file");
     }
 }
 
@@ -540,7 +557,18 @@ foreach my $file (@ARGV) {
 
 	while (<$patch>) {
 	    my $patch_line = $_;
-	    if (m/^\+\+\+\s+(\S+)/ or m/^---\s+(\S+)/) {
+	    if (m/^ mode change [0-7]+ => [0-7]+ (\S+)\s*$/) {
+		my $filename = $1;
+		push(@files, $filename);
+	    } elsif (m/^rename (?:from|to) (\S+)\s*$/) {
+		my $filename = $1;
+		push(@files, $filename);
+	    } elsif (m/^diff --git a\/(\S+) b\/(\S+)\s*$/) {
+		my $filename1 = $1;
+		my $filename2 = $2;
+		push(@files, $filename1);
+		push(@files, $filename2);
+	    } elsif (m/^\+\+\+\s+(\S+)/ or m/^---\s+(\S+)/) {
 		my $filename = $1;
 		$filename =~ s@^[^/]*/@@;
 		$filename =~ s@\n@@;
@@ -997,7 +1025,8 @@ MAINTAINER field selection options:
     --r => include reviewer(s) if any
     --n => include name 'Full Name <addr\@domain.tld>'
     --l => include list(s) if any
-    --s => include subscriber only list(s) if any
+    --moderated => include moderated lists(s) if any (default: true)
+    --s => include subscriber only list(s) if any (default: false)
     --remove-duplicates => minimize duplicate email names/addresses
     --roles => show roles (status:subsystem, git-signer, list, etc...)
     --rolestats => show roles and statistics (commits/total_commits, %)
@@ -1018,13 +1047,14 @@ Other options:
   --sections => print all of the subsystem sections with pattern matches
   --letters => print all matching 'letter' types from all matching sections
   --mailmap => use .mailmap file (default: $email_use_mailmap)
+  --no-tree => run without a kernel tree
   --self-test => show potential issues with MAINTAINERS file content
   --version => show version
   --help => show this help information
 
 Default options:
-  [--email --nogit --git-fallback --m --r --n --l --multiline --pattern-depth=0
-   --remove-duplicates --rolestats]
+  [--email --tree --nogit --git-fallback --m --r --n --l --multiline
+   --pattern-depth=0 --remove-duplicates --rolestats]
 
 Notes:
   Using "-f directory" may give unexpected results:
@@ -1067,24 +1097,22 @@ sub top_of_kernel_tree {
     if ($lk_path ne "" && substr($lk_path,length($lk_path)-1,1) ne "/") {
 	$lk_path .= "/";
     }
-    if (   (-f "${lk_path}Kbuild")
+    if (   (-f "${lk_path}COPYING")
+	&& (-f "${lk_path}CREDITS")
+	&& (-f "${lk_path}Kbuild")
 	&& (-e "${lk_path}MAINTAINERS")
 	&& (-f "${lk_path}Makefile")
 	&& (-f "${lk_path}README")
+	&& (-d "${lk_path}Documentation")
 	&& (-d "${lk_path}arch")
-	&& (-d "${lk_path}board")
-	&& (-d "${lk_path}common")
-	&& (-d "${lk_path}doc")
-	&& (-d "${lk_path}drivers")
-	&& (-d "${lk_path}dts")
-	&& (-d "${lk_path}fs")
-	&& (-d "${lk_path}lib")
 	&& (-d "${lk_path}include")
-	&& (-d "${lk_path}net")
-	&& (-d "${lk_path}post")
-	&& (-d "${lk_path}scripts")
-	&& (-d "${lk_path}test")
-	&& (-d "${lk_path}tools")) {
+	&& (-d "${lk_path}drivers")
+	&& (-d "${lk_path}fs")
+	&& (-d "${lk_path}init")
+	&& (-d "${lk_path}ipc")
+	&& (-d "${lk_path}kernel")
+	&& (-d "${lk_path}lib")
+	&& (-d "${lk_path}scripts")) {
 	return 1;
     }
     return 0;
@@ -1288,11 +1316,14 @@ sub add_categories {
 		} else {
 		    if ($email_list) {
 			if (!$hash_list_to{lc($list_address)}) {
-			    $hash_list_to{lc($list_address)} = 1;
 			    if ($list_additional =~ m/moderated/) {
-				push(@list_to, [$list_address,
-						"moderated list${list_role}"]);
+				if ($email_moderated_list) {
+				    $hash_list_to{lc($list_address)} = 1;
+				    push(@list_to, [$list_address,
+						    "moderated list${list_role}"]);
+				}
 			    } else {
+				$hash_list_to{lc($list_address)} = 1;
 				push(@list_to, [$list_address,
 						"open list${list_role}"]);
 			    }

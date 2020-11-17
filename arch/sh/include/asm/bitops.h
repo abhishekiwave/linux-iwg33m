@@ -1,108 +1,32 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_BITOPS_H
 #define __ASM_SH_BITOPS_H
 
-#include <asm-generic/bitops/fls.h>
-#include <asm-generic/bitops/__fls.h>
-#include <asm-generic/bitops/fls64.h>
-#include <asm-generic/bitops/__ffs.h>
-
 #ifdef __KERNEL__
-#include <asm/irqflags.h>
+
+#ifndef _LINUX_BITOPS_H
+#error only <linux/bitops.h> can be included directly
+#endif
+
 /* For __swab32 */
 #include <asm/byteorder.h>
+#include <asm/barrier.h>
 
-static inline void set_bit(int nr, volatile void * addr)
-{
-	int	mask;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
+#ifdef CONFIG_GUSA_RB
+#include <asm/bitops-grb.h>
+#elif defined(CONFIG_CPU_SH2A)
+#include <asm-generic/bitops/atomic.h>
+#include <asm/bitops-op32.h>
+#elif defined(CONFIG_CPU_SH4A)
+#include <asm/bitops-llsc.h>
+#elif defined(CONFIG_CPU_J2) && defined(CONFIG_SMP)
+#include <asm/bitops-cas.h>
+#else
+#include <asm-generic/bitops/atomic.h>
+#include <asm-generic/bitops/non-atomic.h>
+#endif
 
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	*a |= mask;
-	local_irq_restore(flags);
-}
-
-/*
- * clear_bit() doesn't provide any barrier for the compiler.
- */
-#define smp_mb__before_clear_bit()	barrier()
-#define smp_mb__after_clear_bit()	barrier()
-static inline void clear_bit(int nr, volatile void * addr)
-{
-	int	mask;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	*a &= ~mask;
-	local_irq_restore(flags);
-}
-
-static inline void change_bit(int nr, volatile void * addr)
-{
-	int	mask;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	*a ^= mask;
-	local_irq_restore(flags);
-}
-
-static inline int test_and_set_bit(int nr, volatile void * addr)
-{
-	int	mask, retval;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	retval = (mask & *a) != 0;
-	*a |= mask;
-	local_irq_restore(flags);
-
-	return retval;
-}
-
-static inline int test_and_clear_bit(int nr, volatile void * addr)
-{
-	int	mask, retval;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	retval = (mask & *a) != 0;
-	*a &= ~mask;
-	local_irq_restore(flags);
-
-	return retval;
-}
-
-static inline int test_and_change_bit(int nr, volatile void * addr)
-{
-	int	mask, retval;
-	volatile unsigned int *a = addr;
-	unsigned long flags;
-
-	a += nr >> 5;
-	mask = 1 << (nr & 0x1f);
-	local_irq_save(flags);
-	retval = (mask & *a) != 0;
-	*a ^= mask;
-	local_irq_restore(flags);
-
-	return retval;
-}
-
+#ifdef CONFIG_SUPERH32
 static inline unsigned long ffz(unsigned long word)
 {
 	unsigned long result;
@@ -118,44 +42,60 @@ static inline unsigned long ffz(unsigned long word)
 }
 
 /**
- * ffs - find first bit in word.
+ * __ffs - find first bit in word.
  * @word: The word to search
  *
  * Undefined if no bit exists, so code should check against 0 first.
  */
-static inline int ffs (int x)
+static inline unsigned long __ffs(unsigned long word)
 {
-	int r = 1;
+	unsigned long result;
 
-	if (!x)
-		return 0;
-	if (!(x & 0xffff)) {
-		x >>= 16;
-		r += 16;
-	}
-	if (!(x & 0xff)) {
-		x >>= 8;
-		r += 8;
-	}
-	if (!(x & 0xf)) {
-		x >>= 4;
-		r += 4;
-	}
-	if (!(x & 3)) {
-		x >>= 2;
-		r += 2;
-	}
-	if (!(x & 1)) {
-		x >>= 1;
-		r += 1;
-	}
-	return r;
+	__asm__("1:\n\t"
+		"shlr	%1\n\t"
+		"bf/s	1b\n\t"
+		" add	#1, %0"
+		: "=r" (result), "=r" (word)
+		: "0" (~0L), "1" (word)
+		: "t");
+	return result;
 }
-#define PLATFORM_FFS
+#else
+static inline unsigned long ffz(unsigned long word)
+{
+	unsigned long result, __d2, __d3;
 
-#define hweight32(x) generic_hweight32(x)
-#define hweight16(x) generic_hweight16(x)
-#define hweight8(x) generic_hweight8(x)
+        __asm__("gettr  tr0, %2\n\t"
+                "pta    $+32, tr0\n\t"
+                "andi   %1, 1, %3\n\t"
+                "beq    %3, r63, tr0\n\t"
+                "pta    $+4, tr0\n"
+                "0:\n\t"
+                "shlri.l        %1, 1, %1\n\t"
+                "addi   %0, 1, %0\n\t"
+                "andi   %1, 1, %3\n\t"
+                "beqi   %3, 1, tr0\n"
+                "1:\n\t"
+                "ptabs  %2, tr0\n\t"
+                : "=r" (result), "=r" (word), "=r" (__d2), "=r" (__d3)
+                : "0" (0L), "1" (word));
+
+	return result;
+}
+
+#include <asm-generic/bitops/__ffs.h>
+#endif
+
+#include <asm-generic/bitops/find.h>
+#include <asm-generic/bitops/ffs.h>
+#include <asm-generic/bitops/hweight.h>
+#include <asm-generic/bitops/lock.h>
+#include <asm-generic/bitops/sched.h>
+#include <asm-generic/bitops/le.h>
+#include <asm-generic/bitops/ext2-atomic.h>
+#include <asm-generic/bitops/fls.h>
+#include <asm-generic/bitops/__fls.h>
+#include <asm-generic/bitops/fls64.h>
 
 #endif /* __KERNEL__ */
 

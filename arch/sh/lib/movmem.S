@@ -1,8 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/* Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
+/* SPDX-License-Identifier: GPL-2.0+ WITH GCC-exception-2.0
+
+   Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
    2004, 2005, 2006
    Free Software Foundation, Inc.
- */
+*/
 
 !! libgcc routines for the Renesas / SuperH SH CPUs.
 !! Contributed by Steve Chamberlain.
@@ -20,7 +21,7 @@
 	.balign	4
 	.global	__movmem
 	.global __movstr
-	.set __movstr, __movmem
+	.set __movstr, __movmem	
 	/* This would be a lot simpler if r6 contained the byte count
 	   minus 64, and we wouldn't be called here for a byte count of 64.  */
 __movmem:

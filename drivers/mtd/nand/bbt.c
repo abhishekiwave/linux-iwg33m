@@ -9,12 +9,8 @@
 
 #define pr_fmt(fmt)	"nand-bbt: " fmt
 
-#include <common.h>
-#include <dm/devres.h>
 #include <linux/mtd/nand.h>
-#ifndef __UBOOT__
 #include <linux/slab.h>
-#endif
 
 /**
  * nanddev_bbt_init() - Initialize the BBT (Bad Block Table)
@@ -31,7 +27,8 @@ int nanddev_bbt_init(struct nand_device *nand)
 	unsigned int nwords = DIV_ROUND_UP(nblocks * bits_per_block,
 					   BITS_PER_LONG);
 
-	nand->bbt.cache = kzalloc(nwords, GFP_KERNEL);
+	nand->bbt.cache = kcalloc(nwords, sizeof(*nand->bbt.cache),
+				  GFP_KERNEL);
 	if (!nand->bbt.cache)
 		return -ENOMEM;
 

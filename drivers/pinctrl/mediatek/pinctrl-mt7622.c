@@ -1,22 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- * Author: Sam Shih <sam.shih@mediatek.com>
+ * Copyright (C) 2017-2018 MediaTek Inc.
+ *
+ * Author: Sean Wang <sean.wang@mediatek.com>
+ *
  */
 
-#include <dm.h>
+#include "pinctrl-moore.h"
 
-#include "pinctrl-mtk-common.h"
-
-#define MT7622_PIN(_number, _name)	MTK_PIN(_number, _name, DRV_GRP1)
-
-#define PIN_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)	\
-	PIN_FIELD_CALC(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit,	\
-		       _x_bits, 32, 0)
-
-#define PINS_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)	\
-	PIN_FIELD_CALC(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit,	\
-		       _x_bits, 32, 1)
+#define MT7622_PIN(_number, _name)					\
+	MTK_PIN(_number, _name, 1, _number, DRV_GRP0)
 
 static const struct mtk_pin_field_calc mt7622_pin_mode_range[] = {
 	PIN_FIELD(0, 0, 0x320, 0x10, 16, 4),
@@ -57,6 +50,16 @@ static const struct mtk_pin_field_calc mt7622_pin_di_range[] = {
 
 static const struct mtk_pin_field_calc mt7622_pin_do_range[] = {
 	PIN_FIELD(0, 102, 0x100, 0x10, 0, 1),
+};
+
+static const struct mtk_pin_field_calc mt7622_pin_sr_range[] = {
+	PIN_FIELD(0, 31, 0x910, 0x10, 0, 1),
+	PIN_FIELD(32, 50, 0xa10, 0x10, 0, 1),
+	PIN_FIELD(51, 70, 0x810, 0x10, 0, 1),
+	PIN_FIELD(71, 72, 0xb10, 0x10, 0, 1),
+	PIN_FIELD(73, 86, 0xb10, 0x10, 4, 1),
+	PIN_FIELD(87, 90, 0xc10, 0x10, 0, 1),
+	PIN_FIELD(91, 102, 0xb10, 0x10, 18, 1),
 };
 
 static const struct mtk_pin_field_calc mt7622_pin_smt_range[] = {
@@ -109,16 +112,44 @@ static const struct mtk_pin_field_calc mt7622_pin_e8_range[] = {
 	PIN_FIELD(91, 102, 0xb70, 0x10, 18, 1),
 };
 
+static const struct mtk_pin_field_calc mt7622_pin_tdsel_range[] = {
+	PIN_FIELD(0, 31, 0x980, 0x4, 0, 4),
+	PIN_FIELD(32, 50, 0xa80, 0x4, 0, 4),
+	PIN_FIELD(51, 70, 0x880, 0x4, 0, 4),
+	PIN_FIELD(71, 72, 0xb80, 0x4, 0, 4),
+	PIN_FIELD(73, 86, 0xb80, 0x4, 16, 4),
+	PIN_FIELD(87, 90, 0xc80, 0x4, 0, 4),
+	PIN_FIELD(91, 102, 0xb88, 0x4, 8, 4),
+};
+
+static const struct mtk_pin_field_calc mt7622_pin_rdsel_range[] = {
+	PIN_FIELD(0, 31, 0x990, 0x4, 0, 6),
+	PIN_FIELD(32, 50, 0xa90, 0x4, 0, 6),
+	PIN_FIELD(51, 58, 0x890, 0x4, 0, 6),
+	PIN_FIELD(59, 60, 0x894, 0x4, 28, 6),
+	PIN_FIELD(61, 62, 0x894, 0x4, 16, 6),
+	PIN_FIELD(63, 66, 0x898, 0x4, 8, 6),
+	PIN_FIELD(67, 68, 0x89c, 0x4, 12, 6),
+	PIN_FIELD(69, 70, 0x89c, 0x4, 0, 6),
+	PIN_FIELD(71, 72, 0xb90, 0x4, 0, 6),
+	PIN_FIELD(73, 86, 0xb90, 0x4, 24, 6),
+	PIN_FIELD(87, 90, 0xc90, 0x4, 0, 6),
+	PIN_FIELD(91, 102, 0xb9c, 0x4, 12, 6),
+};
+
 static const struct mtk_pin_reg_calc mt7622_reg_cals[PINCTRL_PIN_REG_MAX] = {
 	[PINCTRL_PIN_REG_MODE] = MTK_RANGE(mt7622_pin_mode_range),
 	[PINCTRL_PIN_REG_DIR] = MTK_RANGE(mt7622_pin_dir_range),
 	[PINCTRL_PIN_REG_DI] = MTK_RANGE(mt7622_pin_di_range),
 	[PINCTRL_PIN_REG_DO] = MTK_RANGE(mt7622_pin_do_range),
+	[PINCTRL_PIN_REG_SR] = MTK_RANGE(mt7622_pin_sr_range),
 	[PINCTRL_PIN_REG_SMT] = MTK_RANGE(mt7622_pin_smt_range),
 	[PINCTRL_PIN_REG_PU] = MTK_RANGE(mt7622_pin_pu_range),
 	[PINCTRL_PIN_REG_PD] = MTK_RANGE(mt7622_pin_pd_range),
 	[PINCTRL_PIN_REG_E4] = MTK_RANGE(mt7622_pin_e4_range),
 	[PINCTRL_PIN_REG_E8] = MTK_RANGE(mt7622_pin_e8_range),
+	[PINCTRL_PIN_REG_TDSEL] = MTK_RANGE(mt7622_pin_tdsel_range),
+	[PINCTRL_PIN_REG_RDSEL] = MTK_RANGE(mt7622_pin_rdsel_range),
 };
 
 static const struct mtk_pin_desc mt7622_pins[] = {
@@ -511,7 +542,7 @@ static int mt7622_watchdog_funcs[] = { 0, };
 static int mt7622_wled_pins[] = { 85, };
 static int mt7622_wled_funcs[] = { 0, };
 
-static const struct mtk_group_desc mt7622_groups[] = {
+static const struct group_desc mt7622_groups[] = {
 	PINCTRL_PIN_GROUP("emmc", mt7622_emmc),
 	PINCTRL_PIN_GROUP("emmc_rst", mt7622_emmc_rst),
 	PINCTRL_PIN_GROUP("ephy_leds", mt7622_ephy_leds),
@@ -632,36 +663,35 @@ static const struct mtk_group_desc mt7622_groups[] = {
 /* Joint those groups owning the same capability in user point of view which
  * allows that people tend to use through the device tree.
  */
-static const char *const mt7622_emmc_groups[] = { "emmc", "emmc_rst", };
-static const char *const mt7622_ethernet_groups[] = { "esw", "esw_p0_p1",
+static const char *mt7622_emmc_groups[] = { "emmc", "emmc_rst", };
+static const char *mt7622_ethernet_groups[] = { "esw", "esw_p0_p1",
 						"esw_p2_p3_p4", "mdc_mdio",
 						"rgmii_via_gmac1",
 						"rgmii_via_gmac2",
 						"rgmii_via_esw", };
-static const char *const mt7622_i2c_groups[] = { "i2c0", "i2c1_0", "i2c1_1",
+static const char *mt7622_i2c_groups[] = { "i2c0", "i2c1_0", "i2c1_1",
 					   "i2c1_2", "i2c2_0", "i2c2_1",
 					   "i2c2_2", };
-static const char *const mt7622_i2s_groups[] = { "i2s_out_mclk_bclk_ws",
+static const char *mt7622_i2s_groups[] = { "i2s_out_mclk_bclk_ws",
 					   "i2s_in_mclk_bclk_ws",
 					   "i2s1_in_data", "i2s2_in_data",
 					   "i2s3_in_data", "i2s4_in_data",
 					   "i2s1_out_data", "i2s2_out_data",
 					   "i2s3_out_data", "i2s4_out_data", };
-static const char *const mt7622_ir_groups[] = { "ir_0_tx", "ir_1_tx", "ir_2_tx",
+static const char *mt7622_ir_groups[] = { "ir_0_tx", "ir_1_tx", "ir_2_tx",
 					  "ir_0_rx", "ir_1_rx", "ir_2_rx"};
-static const char *const mt7622_led_groups[] = { "ephy_leds", "ephy0_led",
+static const char *mt7622_led_groups[] = { "ephy_leds", "ephy0_led",
 					   "ephy1_led", "ephy2_led",
 					   "ephy3_led", "ephy4_led",
 					   "wled", };
-static const char *const mt7622_flash_groups[] = { "par_nand", "snfi",
-					     "spi_nor"};
-static const char *const mt7622_pcie_groups[] = { "pcie0_0_waken",
-					    "pcie0_0_clkreq", "pcie0_1_waken",
-					    "pcie0_1_clkreq", "pcie1_0_waken",
-					    "pcie1_0_clkreq", "pcie0_pad_perst",
+static const char *mt7622_flash_groups[] = { "par_nand", "snfi", "spi_nor"};
+static const char *mt7622_pcie_groups[] = { "pcie0_0_waken", "pcie0_0_clkreq",
+					    "pcie0_1_waken", "pcie0_1_clkreq",
+					    "pcie1_0_waken", "pcie1_0_clkreq",
+					    "pcie0_pad_perst",
 					    "pcie1_pad_perst", };
-static const char *const mt7622_pmic_bus_groups[] = { "pmic_bus", };
-static const char *const mt7622_pwm_groups[] = { "pwm_ch1_0", "pwm_ch1_1",
+static const char *mt7622_pmic_bus_groups[] = { "pmic_bus", };
+static const char *mt7622_pwm_groups[] = { "pwm_ch1_0", "pwm_ch1_1",
 					   "pwm_ch1_2", "pwm_ch2_0",
 					   "pwm_ch2_1", "pwm_ch2_2",
 					   "pwm_ch3_0", "pwm_ch3_1",
@@ -673,11 +703,11 @@ static const char *const mt7622_pwm_groups[] = { "pwm_ch1_0", "pwm_ch1_1",
 					   "pwm_ch6_2", "pwm_ch6_3",
 					   "pwm_ch7_0", "pwm_ch7_1",
 					   "pwm_ch7_2", };
-static const char *const mt7622_sd_groups[] = { "sd_0", "sd_1", };
-static const char *const mt7622_spic_groups[] = { "spic0_0", "spic0_1",
-					    "spic1_0", "spic1_1", "spic2_0",
+static const char *mt7622_sd_groups[] = { "sd_0", "sd_1", };
+static const char *mt7622_spic_groups[] = { "spic0_0", "spic0_1", "spic1_0",
+					    "spic1_1", "spic2_0",
 					    "spic2_0_wp_hold", };
-static const char *const mt7622_tdm_groups[] = { "tdm_0_out_mclk_bclk_ws",
+static const char *mt7622_tdm_groups[] = { "tdm_0_out_mclk_bclk_ws",
 					   "tdm_0_in_mclk_bclk_ws",
 					   "tdm_0_out_data",
 					   "tdm_0_in_data",
@@ -686,7 +716,7 @@ static const char *const mt7622_tdm_groups[] = { "tdm_0_out_mclk_bclk_ws",
 					   "tdm_1_out_data",
 					   "tdm_1_in_data", };
 
-static const char *const mt7622_uart_groups[] = { "uart0_0_tx_rx",
+static const char *mt7622_uart_groups[] = { "uart0_0_tx_rx",
 					    "uart1_0_tx_rx", "uart1_0_rts_cts",
 					    "uart1_1_tx_rx", "uart1_1_rts_cts",
 					    "uart2_0_tx_rx", "uart2_0_rts_cts",
@@ -699,9 +729,9 @@ static const char *const mt7622_uart_groups[] = { "uart0_0_tx_rx",
 					    "uart4_1_tx_rx", "uart4_1_rts_cts",
 					    "uart4_2_tx_rx",
 					    "uart4_2_rts_cts",};
-static const char *const mt7622_wdt_groups[] = { "watchdog", };
+static const char *mt7622_wdt_groups[] = { "watchdog", };
 
-static const struct mtk_function_desc mt7622_functions[] = {
+static const struct function_desc mt7622_functions[] = {
 	{"emmc", mt7622_emmc_groups, ARRAY_SIZE(mt7622_emmc_groups)},
 	{"eth",	mt7622_ethernet_groups, ARRAY_SIZE(mt7622_ethernet_groups)},
 	{"i2c", mt7622_i2c_groups, ARRAY_SIZE(mt7622_i2c_groups)},
@@ -719,8 +749,14 @@ static const struct mtk_function_desc mt7622_functions[] = {
 	{"watchdog", mt7622_wdt_groups, ARRAY_SIZE(mt7622_wdt_groups)},
 };
 
-static struct mtk_pinctrl_soc mt7622_data = {
-	.name = "mt7622_pinctrl",
+static const struct mtk_eint_hw mt7622_eint_hw = {
+	.port_mask = 7,
+	.ports     = 7,
+	.ap_num    = ARRAY_SIZE(mt7622_pins),
+	.db_cnt    = 20,
+};
+
+static const struct mtk_pin_soc mt7622_data = {
 	.reg_cal = mt7622_reg_cals,
 	.pins = mt7622_pins,
 	.npins = ARRAY_SIZE(mt7622_pins),
@@ -728,27 +764,39 @@ static struct mtk_pinctrl_soc mt7622_data = {
 	.ngrps = ARRAY_SIZE(mt7622_groups),
 	.funcs = mt7622_functions,
 	.nfuncs = ARRAY_SIZE(mt7622_functions),
-	.gpio_mode = 1,
-	.rev = MTK_PINCTRL_V0,
+	.eint_hw = &mt7622_eint_hw,
+	.gpio_m	= 1,
+	.ies_present = false,
+	.base_names = mtk_default_register_base_names,
+	.nbase_names = ARRAY_SIZE(mtk_default_register_base_names),
+	.bias_disable_set = mtk_pinconf_bias_disable_set,
+	.bias_disable_get = mtk_pinconf_bias_disable_get,
+	.bias_set = mtk_pinconf_bias_set,
+	.bias_get = mtk_pinconf_bias_get,
+	.drive_set = mtk_pinconf_drive_set,
+	.drive_get = mtk_pinconf_drive_get,
 };
 
-static int mtk_pinctrl_mt7622_probe(struct udevice *dev)
+static const struct of_device_id mt7622_pinctrl_of_match[] = {
+	{ .compatible = "mediatek,mt7622-pinctrl", },
+	{ }
+};
+
+static int mt7622_pinctrl_probe(struct platform_device *pdev)
 {
-	return mtk_pinctrl_common_probe(dev, &mt7622_data);
+	return mtk_moore_pinctrl_probe(pdev, &mt7622_data);
 }
 
-static const struct udevice_id mt7622_pctrl_match[] = {
-	{ .compatible = "mediatek,mt7622-pinctrl" },
-	{ /* sentinel */ }
+static struct platform_driver mt7622_pinctrl_driver = {
+	.driver = {
+		.name = "mt7622-pinctrl",
+		.of_match_table = mt7622_pinctrl_of_match,
+	},
+	.probe = mt7622_pinctrl_probe,
 };
 
-U_BOOT_DRIVER(mt7622_pinctrl) = {
-	.name = "mt7622_pinctrl",
-	.id = UCLASS_PINCTRL,
-	.of_match = mt7622_pctrl_match,
-	.ops = &mtk_pinctrl_ops,
-	.probe = mtk_pinctrl_mt7622_probe,
-	.priv_auto_alloc_size = sizeof(struct mtk_pinctrl_priv),
-};
-
-
+static int __init mt7622_pinctrl_init(void)
+{
+	return platform_driver_register(&mt7622_pinctrl_driver);
+}
+arch_initcall(mt7622_pinctrl_init);

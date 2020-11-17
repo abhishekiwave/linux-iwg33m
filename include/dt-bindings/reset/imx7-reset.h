@@ -50,3 +50,4 @@
 #define IMX7_RESET_NUM			26
 
 #endif
+

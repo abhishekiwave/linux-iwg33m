@@ -1,8 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/* Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
+/* SPDX-License-Identifier: GPL-2.0+ WITH GCC-exception-2.0
+
+   Copyright (C) 1994, 1995, 1997, 1998, 1999, 2000, 2001, 2002, 2003,
    2004, 2005, 2006
    Free Software Foundation, Inc.
- */
+*/
 
 !! libgcc routines for the Renesas / SuperH SH CPUs.
 !! Contributed by Steve Chamberlain.
@@ -32,22 +33,37 @@
 !
 ! (none)
 !
+! __ashrsi3_r0
+!
+! Entry:
+!
+! r4: Value to shift
+! r0: Shifts
+!
+! Exit:
+!
+! r0: Result
+!
+! Destroys:
+!
+! (none)
 
 	.global	__ashrsi3
-
+	.global	__ashrsi3_r0
+	
 	.align	2
 __ashrsi3:
-	mov	#31,r0
-	and	r0,r5
+	mov	r5,r0
+	.align	2
+__ashrsi3_r0:
+	and	#31,r0
+	mov.l	r4,@-r15
+	mov	r0,r4
 	mova	ashrsi3_table,r0
-	mov.b	@(r0,r5),r5
-#ifdef __sh1__
-	add	r5,r0
+	mov.b	@(r0,r4),r4
+	add	r4,r0
 	jmp	@r0
-#else
-	braf	r5
-#endif
-	mov	r4,r0
+	mov.l	@r15+,r0
 
 	.align	2
 ashrsi3_table:

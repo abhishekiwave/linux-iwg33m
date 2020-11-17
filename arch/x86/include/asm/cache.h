@@ -1,35 +1,24 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/*
- * Copyright (c) 2011 The Chromium OS Authors.
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_X86_CACHE_H
+#define _ASM_X86_CACHE_H
 
-#ifndef __X86_CACHE_H__
-#define __X86_CACHE_H__
+#include <linux/linkage.h>
 
-/*
- * If CONFIG_SYS_CACHELINE_SIZE is defined use it for DMA alignment.  Otherwise
- * use 64-bytes, a safe default for x86.
- */
-#ifndef CONFIG_SYS_CACHELINE_SIZE
-#define CONFIG_SYS_CACHELINE_SIZE	64
+/* L1 cache line size */
+#define L1_CACHE_SHIFT	(CONFIG_X86_L1_CACHE_SHIFT)
+#define L1_CACHE_BYTES	(1 << L1_CACHE_SHIFT)
+
+#define __read_mostly __attribute__((__section__(".data..read_mostly")))
+
+#define INTERNODE_CACHE_SHIFT CONFIG_X86_INTERNODE_CACHE_SHIFT
+#define INTERNODE_CACHE_BYTES (1 << INTERNODE_CACHE_SHIFT)
+
+#ifdef CONFIG_X86_VSMP
+#ifdef CONFIG_SMP
+#define __cacheline_aligned_in_smp					\
+	__attribute__((__aligned__(INTERNODE_CACHE_BYTES)))		\
+	__page_aligned_data
+#endif
 #endif
 
-#define ARCH_DMA_MINALIGN		CONFIG_SYS_CACHELINE_SIZE
-
-static inline void wbinvd(void)
-{
-	asm volatile ("wbinvd" : : : "memory");
-}
-
-static inline void invd(void)
-{
-	asm volatile("invd" : : : "memory");
-}
-
-/* Enable caches and write buffer */
-void enable_caches(void);
-
-/* Disable caches and write buffer */
-void disable_caches(void);
-
-#endif /* __X86_CACHE_H__ */
+#endif /* _ASM_X86_CACHE_H */

@@ -1,0 +1,31 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target = <&usb_dwc3_0>;
+		__overlay__ {
+			dr_mode = "otg";
+			snps,dis-u1-entry-quirk;
+			snps,dis-u2-entry-quirk;
+			usb-role-switch;
+			hnp-disable;
+			srp-disable;
+			adp-disable;
+		};
+	};
+	fragment@1 {
+		target = <&usb3_phy0>;
+		__overlay__ {
+			vbus-supply = <&reg_5v>;
+		};
+	};
+	fragment@2 {
+		target = <&fusb302>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+};
+

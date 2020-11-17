@@ -1,1003 +1,1242 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2011 The Chromium OS Authors.
- * (C) Copyright 2011 NVIDIA Corporation <www.nvidia.com>
- * (C) Copyright 2006 Detlev Zundel, dzu@denx.de
- * (C) Copyright 2006 DENX Software Engineering
+ * Copyright (C) 2018 Stefan Agner <stefan@agner.ch>
+ * Copyright (C) 2014-2015 Lucas Stach <dev@lynxeye.de>
+ * Copyright (C) 2012 Avionic Design GmbH
  */
 
-#include <common.h>
-#include <asm/io.h>
-#include <memalign.h>
-#include <nand.h>
-#include <asm/arch/clock.h>
-#include <asm/arch/funcmux.h>
-#include <asm/arch-tegra/clk_rst.h>
-#include <dm/device_compat.h>
-#include <linux/errno.h>
-#include <asm/gpio.h>
-#include <fdtdec.h>
-#include <bouncebuf.h>
-#include <dm.h>
-#include "tegra_nand.h"
+#include <linux/clk.h>
+#include <linux/completion.h>
+#include <linux/dma-mapping.h>
+#include <linux/err.h>
+#include <linux/gpio/consumer.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/module.h>
+#include <linux/mtd/partitions.h>
+#include <linux/mtd/rawnand.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/reset.h>
 
-DECLARE_GLOBAL_DATA_PTR;
+#define COMMAND					0x00
+#define   COMMAND_GO				BIT(31)
+#define   COMMAND_CLE				BIT(30)
+#define   COMMAND_ALE				BIT(29)
+#define   COMMAND_PIO				BIT(28)
+#define   COMMAND_TX				BIT(27)
+#define   COMMAND_RX				BIT(26)
+#define   COMMAND_SEC_CMD			BIT(25)
+#define   COMMAND_AFT_DAT			BIT(24)
+#define   COMMAND_TRANS_SIZE(size)		((((size) - 1) & 0xf) << 20)
+#define   COMMAND_A_VALID			BIT(19)
+#define   COMMAND_B_VALID			BIT(18)
+#define   COMMAND_RD_STATUS_CHK			BIT(17)
+#define   COMMAND_RBSY_CHK			BIT(16)
+#define   COMMAND_CE(x)				BIT(8 + ((x) & 0x7))
+#define   COMMAND_CLE_SIZE(size)		((((size) - 1) & 0x3) << 4)
+#define   COMMAND_ALE_SIZE(size)		((((size) - 1) & 0xf) << 0)
 
-#define NAND_CMD_TIMEOUT_MS		10
+#define STATUS					0x04
 
-#define SKIPPED_SPARE_BYTES		4
+#define ISR					0x08
+#define   ISR_CORRFAIL_ERR			BIT(24)
+#define   ISR_UND				BIT(7)
+#define   ISR_OVR				BIT(6)
+#define   ISR_CMD_DONE				BIT(5)
+#define   ISR_ECC_ERR				BIT(4)
 
-/* ECC bytes to be generated for tag data */
-#define TAG_ECC_BYTES			4
+#define IER					0x0c
+#define   IER_ERR_TRIG_VAL(x)			(((x) & 0xf) << 16)
+#define   IER_UND				BIT(7)
+#define   IER_OVR				BIT(6)
+#define   IER_CMD_DONE				BIT(5)
+#define   IER_ECC_ERR				BIT(4)
+#define   IER_GIE				BIT(0)
 
-static const struct udevice_id tegra_nand_dt_ids[] = {
-	{
-		.compatible = "nvidia,tegra20-nand",
-	},
-	{ /* sentinel */ }
+#define CONFIG					0x10
+#define   CONFIG_HW_ECC				BIT(31)
+#define   CONFIG_ECC_SEL			BIT(30)
+#define   CONFIG_ERR_COR			BIT(29)
+#define   CONFIG_PIPE_EN			BIT(28)
+#define   CONFIG_TVAL_4				(0 << 24)
+#define   CONFIG_TVAL_6				(1 << 24)
+#define   CONFIG_TVAL_8				(2 << 24)
+#define   CONFIG_SKIP_SPARE			BIT(23)
+#define   CONFIG_BUS_WIDTH_16			BIT(21)
+#define   CONFIG_COM_BSY			BIT(20)
+#define   CONFIG_PS_256				(0 << 16)
+#define   CONFIG_PS_512				(1 << 16)
+#define   CONFIG_PS_1024			(2 << 16)
+#define   CONFIG_PS_2048			(3 << 16)
+#define   CONFIG_PS_4096			(4 << 16)
+#define   CONFIG_SKIP_SPARE_SIZE_4		(0 << 14)
+#define   CONFIG_SKIP_SPARE_SIZE_8		(1 << 14)
+#define   CONFIG_SKIP_SPARE_SIZE_12		(2 << 14)
+#define   CONFIG_SKIP_SPARE_SIZE_16		(3 << 14)
+#define   CONFIG_TAG_BYTE_SIZE(x)			((x) & 0xff)
+
+#define TIMING_1				0x14
+#define   TIMING_TRP_RESP(x)			(((x) & 0xf) << 28)
+#define   TIMING_TWB(x)				(((x) & 0xf) << 24)
+#define   TIMING_TCR_TAR_TRR(x)			(((x) & 0xf) << 20)
+#define   TIMING_TWHR(x)			(((x) & 0xf) << 16)
+#define   TIMING_TCS(x)				(((x) & 0x3) << 14)
+#define   TIMING_TWH(x)				(((x) & 0x3) << 12)
+#define   TIMING_TWP(x)				(((x) & 0xf) <<  8)
+#define   TIMING_TRH(x)				(((x) & 0x3) <<  4)
+#define   TIMING_TRP(x)				(((x) & 0xf) <<  0)
+
+#define RESP					0x18
+
+#define TIMING_2				0x1c
+#define   TIMING_TADL(x)			((x) & 0xf)
+
+#define CMD_REG1				0x20
+#define CMD_REG2				0x24
+#define ADDR_REG1				0x28
+#define ADDR_REG2				0x2c
+
+#define DMA_MST_CTRL				0x30
+#define   DMA_MST_CTRL_GO			BIT(31)
+#define   DMA_MST_CTRL_IN			(0 << 30)
+#define   DMA_MST_CTRL_OUT			BIT(30)
+#define   DMA_MST_CTRL_PERF_EN			BIT(29)
+#define   DMA_MST_CTRL_IE_DONE			BIT(28)
+#define   DMA_MST_CTRL_REUSE			BIT(27)
+#define   DMA_MST_CTRL_BURST_1			(2 << 24)
+#define   DMA_MST_CTRL_BURST_4			(3 << 24)
+#define   DMA_MST_CTRL_BURST_8			(4 << 24)
+#define   DMA_MST_CTRL_BURST_16			(5 << 24)
+#define   DMA_MST_CTRL_IS_DONE			BIT(20)
+#define   DMA_MST_CTRL_EN_A			BIT(2)
+#define   DMA_MST_CTRL_EN_B			BIT(1)
+
+#define DMA_CFG_A				0x34
+#define DMA_CFG_B				0x38
+
+#define FIFO_CTRL				0x3c
+#define   FIFO_CTRL_CLR_ALL			BIT(3)
+
+#define DATA_PTR				0x40
+#define TAG_PTR					0x44
+#define ECC_PTR					0x48
+
+#define DEC_STATUS				0x4c
+#define   DEC_STATUS_A_ECC_FAIL			BIT(1)
+#define   DEC_STATUS_ERR_COUNT_MASK		0x00ff0000
+#define   DEC_STATUS_ERR_COUNT_SHIFT		16
+
+#define HWSTATUS_CMD				0x50
+#define HWSTATUS_MASK				0x54
+#define   HWSTATUS_RDSTATUS_MASK(x)		(((x) & 0xff) << 24)
+#define   HWSTATUS_RDSTATUS_VALUE(x)		(((x) & 0xff) << 16)
+#define   HWSTATUS_RBSY_MASK(x)			(((x) & 0xff) << 8)
+#define   HWSTATUS_RBSY_VALUE(x)		(((x) & 0xff) << 0)
+
+#define BCH_CONFIG				0xcc
+#define   BCH_ENABLE				BIT(0)
+#define   BCH_TVAL_4				(0 << 4)
+#define   BCH_TVAL_8				(1 << 4)
+#define   BCH_TVAL_14				(2 << 4)
+#define   BCH_TVAL_16				(3 << 4)
+
+#define DEC_STAT_RESULT				0xd0
+#define DEC_STAT_BUF				0xd4
+#define   DEC_STAT_BUF_FAIL_SEC_FLAG_MASK	0xff000000
+#define   DEC_STAT_BUF_FAIL_SEC_FLAG_SHIFT	24
+#define   DEC_STAT_BUF_CORR_SEC_FLAG_MASK	0x00ff0000
+#define   DEC_STAT_BUF_CORR_SEC_FLAG_SHIFT	16
+#define   DEC_STAT_BUF_MAX_CORR_CNT_MASK	0x00001f00
+#define   DEC_STAT_BUF_MAX_CORR_CNT_SHIFT	8
+
+#define OFFSET(val, off)	((val) < (off) ? 0 : (val) - (off))
+
+#define SKIP_SPARE_BYTES	4
+#define BITS_PER_STEP_RS	18
+#define BITS_PER_STEP_BCH	13
+
+#define INT_MASK		(IER_UND | IER_OVR | IER_CMD_DONE | IER_GIE)
+#define HWSTATUS_CMD_DEFAULT	NAND_STATUS_READY
+#define HWSTATUS_MASK_DEFAULT	(HWSTATUS_RDSTATUS_MASK(1) | \
+				HWSTATUS_RDSTATUS_VALUE(0) | \
+				HWSTATUS_RBSY_MASK(NAND_STATUS_READY) | \
+				HWSTATUS_RBSY_VALUE(NAND_STATUS_READY))
+
+struct tegra_nand_controller {
+	struct nand_controller controller;
+	struct device *dev;
+	void __iomem *regs;
+	int irq;
+	struct clk *clk;
+	struct completion command_complete;
+	struct completion dma_complete;
+	bool last_read_error;
+	int cur_cs;
+	struct nand_chip *chip;
 };
 
-/* 64 byte oob block info for large page (== 2KB) device
- *
- * OOB flash layout for Tegra with Reed-Solomon 4 symbol correct ECC:
- *      Skipped bytes(4)
- *      Main area Ecc(36)
- *      Tag data(20)
- *      Tag data Ecc(4)
- *
- * Yaffs2 will use 16 tag bytes.
- */
-static struct nand_ecclayout eccoob = {
-	.eccbytes = 36,
-	.eccpos = {
-		4,  5,  6,  7,  8,  9,  10, 11, 12,
-		13, 14, 15, 16, 17, 18, 19, 20, 21,
-		22, 23, 24, 25, 26, 27, 28, 29, 30,
-		31, 32, 33, 34, 35, 36, 37, 38, 39,
-	},
-	.oobavail = 20,
-	.oobfree = {
-			{
-			.offset = 40,
-			.length = 20,
-			},
-	}
+struct tegra_nand_chip {
+	struct nand_chip chip;
+	struct gpio_desc *wp_gpio;
+	struct mtd_oob_region ecc;
+	u32 config;
+	u32 config_ecc;
+	u32 bch_config;
+	int cs[1];
 };
 
-enum {
-	ECC_OK,
-	ECC_TAG_ERROR = 1 << 0,
-	ECC_DATA_ERROR = 1 << 1
-};
-
-/* Timing parameters */
-enum {
-	FDT_NAND_MAX_TRP_TREA,
-	FDT_NAND_TWB,
-	FDT_NAND_MAX_TCR_TAR_TRR,
-	FDT_NAND_TWHR,
-	FDT_NAND_MAX_TCS_TCH_TALS_TALH,
-	FDT_NAND_TWH,
-	FDT_NAND_TWP,
-	FDT_NAND_TRH,
-	FDT_NAND_TADL,
-
-	FDT_NAND_TIMING_COUNT
-};
-
-/* Information about an attached NAND chip */
-struct fdt_nand {
-	struct nand_ctlr *reg;
-	int enabled;		/* 1 to enable, 0 to disable */
-	struct gpio_desc wp_gpio;	/* write-protect GPIO */
-	s32 width;		/* bit width, normally 8 */
-	u32 timing[FDT_NAND_TIMING_COUNT];
-};
-
-struct nand_drv {
-	struct nand_ctlr *reg;
-	struct fdt_nand config;
-};
-
-struct tegra_nand_info {
-	struct udevice *dev;
-	struct nand_drv nand_ctrl;
-	struct nand_chip nand_chip;
-};
-
-/**
- * Wait for command completion
- *
- * @param reg	nand_ctlr structure
- * @return
- *	1 - Command completed
- *	0 - Timeout
- */
-static int nand_waitfor_cmd_completion(struct nand_ctlr *reg)
+static inline struct tegra_nand_controller *
+			to_tegra_ctrl(struct nand_controller *hw_ctrl)
 {
-	u32 reg_val;
-	int running;
+	return container_of(hw_ctrl, struct tegra_nand_controller, controller);
+}
+
+static inline struct tegra_nand_chip *to_tegra_chip(struct nand_chip *chip)
+{
+	return container_of(chip, struct tegra_nand_chip, chip);
+}
+
+static int tegra_nand_ooblayout_rs_ecc(struct mtd_info *mtd, int section,
+				       struct mtd_oob_region *oobregion)
+{
+	struct nand_chip *chip = mtd_to_nand(mtd);
+	int bytes_per_step = DIV_ROUND_UP(BITS_PER_STEP_RS * chip->ecc.strength,
+					  BITS_PER_BYTE);
+
+	if (section > 0)
+		return -ERANGE;
+
+	oobregion->offset = SKIP_SPARE_BYTES;
+	oobregion->length = round_up(bytes_per_step * chip->ecc.steps, 4);
+
+	return 0;
+}
+
+static int tegra_nand_ooblayout_no_free(struct mtd_info *mtd, int section,
+					struct mtd_oob_region *oobregion)
+{
+	return -ERANGE;
+}
+
+static const struct mtd_ooblayout_ops tegra_nand_oob_rs_ops = {
+	.ecc = tegra_nand_ooblayout_rs_ecc,
+	.free = tegra_nand_ooblayout_no_free,
+};
+
+static int tegra_nand_ooblayout_bch_ecc(struct mtd_info *mtd, int section,
+					struct mtd_oob_region *oobregion)
+{
+	struct nand_chip *chip = mtd_to_nand(mtd);
+	int bytes_per_step = DIV_ROUND_UP(BITS_PER_STEP_BCH * chip->ecc.strength,
+					  BITS_PER_BYTE);
+
+	if (section > 0)
+		return -ERANGE;
+
+	oobregion->offset = SKIP_SPARE_BYTES;
+	oobregion->length = round_up(bytes_per_step * chip->ecc.steps, 4);
+
+	return 0;
+}
+
+static const struct mtd_ooblayout_ops tegra_nand_oob_bch_ops = {
+	.ecc = tegra_nand_ooblayout_bch_ecc,
+	.free = tegra_nand_ooblayout_no_free,
+};
+
+static irqreturn_t tegra_nand_irq(int irq, void *data)
+{
+	struct tegra_nand_controller *ctrl = data;
+	u32 isr, dma;
+
+	isr = readl_relaxed(ctrl->regs + ISR);
+	dma = readl_relaxed(ctrl->regs + DMA_MST_CTRL);
+	dev_dbg(ctrl->dev, "isr %08x\n", isr);
+
+	if (!isr && !(dma & DMA_MST_CTRL_IS_DONE))
+		return IRQ_NONE;
+
+	/*
+	 * The bit name is somewhat missleading: This is also set when
+	 * HW ECC was successful. The data sheet states:
+	 * Correctable OR Un-correctable errors occurred in the DMA transfer...
+	 */
+	if (isr & ISR_CORRFAIL_ERR)
+		ctrl->last_read_error = true;
+
+	if (isr & ISR_CMD_DONE)
+		complete(&ctrl->command_complete);
+
+	if (isr & ISR_UND)
+		dev_err(ctrl->dev, "FIFO underrun\n");
+
+	if (isr & ISR_OVR)
+		dev_err(ctrl->dev, "FIFO overrun\n");
+
+	/* handle DMA interrupts */
+	if (dma & DMA_MST_CTRL_IS_DONE) {
+		writel_relaxed(dma, ctrl->regs + DMA_MST_CTRL);
+		complete(&ctrl->dma_complete);
+	}
+
+	/* clear interrupts */
+	writel_relaxed(isr, ctrl->regs + ISR);
+
+	return IRQ_HANDLED;
+}
+
+static const char * const tegra_nand_reg_names[] = {
+	"COMMAND",
+	"STATUS",
+	"ISR",
+	"IER",
+	"CONFIG",
+	"TIMING",
+	NULL,
+	"TIMING2",
+	"CMD_REG1",
+	"CMD_REG2",
+	"ADDR_REG1",
+	"ADDR_REG2",
+	"DMA_MST_CTRL",
+	"DMA_CFG_A",
+	"DMA_CFG_B",
+	"FIFO_CTRL",
+};
+
+static void tegra_nand_dump_reg(struct tegra_nand_controller *ctrl)
+{
+	u32 reg;
 	int i;
 
-	for (i = 0; i < NAND_CMD_TIMEOUT_MS * 1000; i++) {
-		if ((readl(&reg->command) & CMD_GO) ||
-				!(readl(&reg->status) & STATUS_RBSY0) ||
-				!(readl(&reg->isr) & ISR_IS_CMD_DONE)) {
-			udelay(1);
+	dev_err(ctrl->dev, "Tegra NAND controller register dump\n");
+	for (i = 0; i < ARRAY_SIZE(tegra_nand_reg_names); i++) {
+		const char *reg_name = tegra_nand_reg_names[i];
+
+		if (!reg_name)
 			continue;
-		}
-		reg_val = readl(&reg->dma_mst_ctrl);
-		/*
-		 * If DMA_MST_CTRL_EN_A_ENABLE or DMA_MST_CTRL_EN_B_ENABLE
-		 * is set, that means DMA engine is running.
-		 *
-		 * Then we have to wait until DMA_MST_CTRL_IS_DMA_DONE
-		 * is cleared, indicating DMA transfer completion.
-		 */
-		running = reg_val & (DMA_MST_CTRL_EN_A_ENABLE |
-				DMA_MST_CTRL_EN_B_ENABLE);
-		if (!running || (reg_val & DMA_MST_CTRL_IS_DMA_DONE))
-			return 1;
-		udelay(1);
+
+		reg = readl_relaxed(ctrl->regs + (i * 4));
+		dev_err(ctrl->dev, "%s: 0x%08x\n", reg_name, reg);
 	}
+}
+
+static void tegra_nand_controller_abort(struct tegra_nand_controller *ctrl)
+{
+	u32 isr, dma;
+
+	disable_irq(ctrl->irq);
+
+	/* Abort current command/DMA operation */
+	writel_relaxed(0, ctrl->regs + DMA_MST_CTRL);
+	writel_relaxed(0, ctrl->regs + COMMAND);
+
+	/* clear interrupts */
+	isr = readl_relaxed(ctrl->regs + ISR);
+	writel_relaxed(isr, ctrl->regs + ISR);
+	dma = readl_relaxed(ctrl->regs + DMA_MST_CTRL);
+	writel_relaxed(dma, ctrl->regs + DMA_MST_CTRL);
+
+	reinit_completion(&ctrl->command_complete);
+	reinit_completion(&ctrl->dma_complete);
+
+	enable_irq(ctrl->irq);
+}
+
+static int tegra_nand_cmd(struct nand_chip *chip,
+			  const struct nand_subop *subop)
+{
+	const struct nand_op_instr *instr;
+	const struct nand_op_instr *instr_data_in = NULL;
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	unsigned int op_id, size = 0, offset = 0;
+	bool first_cmd = true;
+	u32 reg, cmd = 0;
+	int ret;
+
+	for (op_id = 0; op_id < subop->ninstrs; op_id++) {
+		unsigned int naddrs, i;
+		const u8 *addrs;
+		u32 addr1 = 0, addr2 = 0;
+
+		instr = &subop->instrs[op_id];
+
+		switch (instr->type) {
+		case NAND_OP_CMD_INSTR:
+			if (first_cmd) {
+				cmd |= COMMAND_CLE;
+				writel_relaxed(instr->ctx.cmd.opcode,
+					       ctrl->regs + CMD_REG1);
+			} else {
+				cmd |= COMMAND_SEC_CMD;
+				writel_relaxed(instr->ctx.cmd.opcode,
+					       ctrl->regs + CMD_REG2);
+			}
+			first_cmd = false;
+			break;
+
+		case NAND_OP_ADDR_INSTR:
+			offset = nand_subop_get_addr_start_off(subop, op_id);
+			naddrs = nand_subop_get_num_addr_cyc(subop, op_id);
+			addrs = &instr->ctx.addr.addrs[offset];
+
+			cmd |= COMMAND_ALE | COMMAND_ALE_SIZE(naddrs);
+			for (i = 0; i < min_t(unsigned int, 4, naddrs); i++)
+				addr1 |= *addrs++ << (BITS_PER_BYTE * i);
+			naddrs -= i;
+			for (i = 0; i < min_t(unsigned int, 4, naddrs); i++)
+				addr2 |= *addrs++ << (BITS_PER_BYTE * i);
+
+			writel_relaxed(addr1, ctrl->regs + ADDR_REG1);
+			writel_relaxed(addr2, ctrl->regs + ADDR_REG2);
+			break;
+
+		case NAND_OP_DATA_IN_INSTR:
+			size = nand_subop_get_data_len(subop, op_id);
+			offset = nand_subop_get_data_start_off(subop, op_id);
+
+			cmd |= COMMAND_TRANS_SIZE(size) | COMMAND_PIO |
+				COMMAND_RX | COMMAND_A_VALID;
+
+			instr_data_in = instr;
+			break;
+
+		case NAND_OP_DATA_OUT_INSTR:
+			size = nand_subop_get_data_len(subop, op_id);
+			offset = nand_subop_get_data_start_off(subop, op_id);
+
+			cmd |= COMMAND_TRANS_SIZE(size) | COMMAND_PIO |
+				COMMAND_TX | COMMAND_A_VALID;
+			memcpy(&reg, instr->ctx.data.buf.out + offset, size);
+
+			writel_relaxed(reg, ctrl->regs + RESP);
+			break;
+
+		case NAND_OP_WAITRDY_INSTR:
+			cmd |= COMMAND_RBSY_CHK;
+			break;
+		}
+	}
+
+	cmd |= COMMAND_GO | COMMAND_CE(ctrl->cur_cs);
+	writel_relaxed(cmd, ctrl->regs + COMMAND);
+	ret = wait_for_completion_timeout(&ctrl->command_complete,
+					  msecs_to_jiffies(500));
+	if (!ret) {
+		dev_err(ctrl->dev, "COMMAND timeout\n");
+		tegra_nand_dump_reg(ctrl);
+		tegra_nand_controller_abort(ctrl);
+		return -ETIMEDOUT;
+	}
+
+	if (instr_data_in) {
+		reg = readl_relaxed(ctrl->regs + RESP);
+		memcpy(instr_data_in->ctx.data.buf.in + offset, &reg, size);
+	}
+
 	return 0;
 }
 
-/**
- * Read one byte from the chip
- *
- * @param mtd	MTD device structure
- * @return	data byte
- *
- * Read function for 8bit bus-width
- */
-static uint8_t read_byte(struct mtd_info *mtd)
+static const struct nand_op_parser tegra_nand_op_parser = NAND_OP_PARSER(
+	NAND_OP_PARSER_PATTERN(tegra_nand_cmd,
+		NAND_OP_PARSER_PAT_CMD_ELEM(true),
+		NAND_OP_PARSER_PAT_ADDR_ELEM(true, 8),
+		NAND_OP_PARSER_PAT_CMD_ELEM(true),
+		NAND_OP_PARSER_PAT_WAITRDY_ELEM(true)),
+	NAND_OP_PARSER_PATTERN(tegra_nand_cmd,
+		NAND_OP_PARSER_PAT_DATA_OUT_ELEM(false, 4)),
+	NAND_OP_PARSER_PATTERN(tegra_nand_cmd,
+		NAND_OP_PARSER_PAT_CMD_ELEM(true),
+		NAND_OP_PARSER_PAT_ADDR_ELEM(true, 8),
+		NAND_OP_PARSER_PAT_CMD_ELEM(true),
+		NAND_OP_PARSER_PAT_WAITRDY_ELEM(true),
+		NAND_OP_PARSER_PAT_DATA_IN_ELEM(true, 4)),
+	);
+
+static void tegra_nand_select_target(struct nand_chip *chip,
+				     unsigned int die_nr)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
-	struct nand_drv *info;
+	struct tegra_nand_chip *nand = to_tegra_chip(chip);
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
 
-	info = (struct nand_drv *)nand_get_controller_data(chip);
-
-	writel(CMD_GO | CMD_PIO | CMD_RX | CMD_CE0 | CMD_A_VALID,
-	       &info->reg->command);
-	if (!nand_waitfor_cmd_completion(info->reg))
-		printf("Command timeout\n");
-
-	return (uint8_t)readl(&info->reg->resp);
+	ctrl->cur_cs = nand->cs[die_nr];
 }
 
-/**
- * Read len bytes from the chip into a buffer
- *
- * @param mtd	MTD device structure
- * @param buf	buffer to store data to
- * @param len	number of bytes to read
- *
- * Read function for 8bit bus-width
- */
-static void read_buf(struct mtd_info *mtd, uint8_t *buf, int len)
+static int tegra_nand_exec_op(struct nand_chip *chip,
+			      const struct nand_operation *op,
+			      bool check_only)
 {
-	int i, s;
-	unsigned int reg;
-	struct nand_chip *chip = mtd_to_nand(mtd);
-	struct nand_drv *info = (struct nand_drv *)nand_get_controller_data(chip);
-
-	for (i = 0; i < len; i += 4) {
-		s = (len - i) > 4 ? 4 : len - i;
-		writel(CMD_PIO | CMD_RX | CMD_A_VALID | CMD_CE0 |
-			((s - 1) << CMD_TRANS_SIZE_SHIFT) | CMD_GO,
-			&info->reg->command);
-		if (!nand_waitfor_cmd_completion(info->reg))
-			puts("Command timeout during read_buf\n");
-		reg = readl(&info->reg->resp);
-		memcpy(buf + i, &reg, s);
-	}
+	tegra_nand_select_target(chip, op->cs);
+	return nand_op_parser_exec_op(chip, &tegra_nand_op_parser, op,
+				      check_only);
 }
 
-/**
- * Check NAND status to see if it is ready or not
- *
- * @param mtd	MTD device structure
- * @return
- *	1 - ready
- *	0 - not ready
- */
-static int nand_dev_ready(struct mtd_info *mtd)
+static void tegra_nand_hw_ecc(struct tegra_nand_controller *ctrl,
+			      struct nand_chip *chip, bool enable)
 {
-	struct nand_chip *chip = mtd_to_nand(mtd);
-	int reg_val;
-	struct nand_drv *info;
+	struct tegra_nand_chip *nand = to_tegra_chip(chip);
 
-	info = (struct nand_drv *)nand_get_controller_data(chip);
-
-	reg_val = readl(&info->reg->status);
-	if (reg_val & STATUS_RBSY0)
-		return 1;
+	if (chip->ecc.algo == NAND_ECC_BCH && enable)
+		writel_relaxed(nand->bch_config, ctrl->regs + BCH_CONFIG);
 	else
+		writel_relaxed(0, ctrl->regs + BCH_CONFIG);
+
+	if (enable)
+		writel_relaxed(nand->config_ecc, ctrl->regs + CONFIG);
+	else
+		writel_relaxed(nand->config, ctrl->regs + CONFIG);
+}
+
+static int tegra_nand_page_xfer(struct mtd_info *mtd, struct nand_chip *chip,
+				void *buf, void *oob_buf, int oob_len, int page,
+				bool read)
+{
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	enum dma_data_direction dir = read ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
+	dma_addr_t dma_addr = 0, dma_addr_oob = 0;
+	u32 addr1, cmd, dma_ctrl;
+	int ret;
+
+	tegra_nand_select_target(chip, chip->cur_cs);
+
+	if (read) {
+		writel_relaxed(NAND_CMD_READ0, ctrl->regs + CMD_REG1);
+		writel_relaxed(NAND_CMD_READSTART, ctrl->regs + CMD_REG2);
+	} else {
+		writel_relaxed(NAND_CMD_SEQIN, ctrl->regs + CMD_REG1);
+		writel_relaxed(NAND_CMD_PAGEPROG, ctrl->regs + CMD_REG2);
+	}
+	cmd = COMMAND_CLE | COMMAND_SEC_CMD;
+
+	/* Lower 16-bits are column, by default 0 */
+	addr1 = page << 16;
+
+	if (!buf)
+		addr1 |= mtd->writesize;
+	writel_relaxed(addr1, ctrl->regs + ADDR_REG1);
+
+	if (chip->options & NAND_ROW_ADDR_3) {
+		writel_relaxed(page >> 16, ctrl->regs + ADDR_REG2);
+		cmd |= COMMAND_ALE | COMMAND_ALE_SIZE(5);
+	} else {
+		cmd |= COMMAND_ALE | COMMAND_ALE_SIZE(4);
+	}
+
+	if (buf) {
+		dma_addr = dma_map_single(ctrl->dev, buf, mtd->writesize, dir);
+		ret = dma_mapping_error(ctrl->dev, dma_addr);
+		if (ret) {
+			dev_err(ctrl->dev, "dma mapping error\n");
+			return -EINVAL;
+		}
+
+		writel_relaxed(mtd->writesize - 1, ctrl->regs + DMA_CFG_A);
+		writel_relaxed(dma_addr, ctrl->regs + DATA_PTR);
+	}
+
+	if (oob_buf) {
+		dma_addr_oob = dma_map_single(ctrl->dev, oob_buf, mtd->oobsize,
+					      dir);
+		ret = dma_mapping_error(ctrl->dev, dma_addr_oob);
+		if (ret) {
+			dev_err(ctrl->dev, "dma mapping error\n");
+			ret = -EINVAL;
+			goto err_unmap_dma_page;
+		}
+
+		writel_relaxed(oob_len - 1, ctrl->regs + DMA_CFG_B);
+		writel_relaxed(dma_addr_oob, ctrl->regs + TAG_PTR);
+	}
+
+	dma_ctrl = DMA_MST_CTRL_GO | DMA_MST_CTRL_PERF_EN |
+		   DMA_MST_CTRL_IE_DONE | DMA_MST_CTRL_IS_DONE |
+		   DMA_MST_CTRL_BURST_16;
+
+	if (buf)
+		dma_ctrl |= DMA_MST_CTRL_EN_A;
+	if (oob_buf)
+		dma_ctrl |= DMA_MST_CTRL_EN_B;
+
+	if (read)
+		dma_ctrl |= DMA_MST_CTRL_IN | DMA_MST_CTRL_REUSE;
+	else
+		dma_ctrl |= DMA_MST_CTRL_OUT;
+
+	writel_relaxed(dma_ctrl, ctrl->regs + DMA_MST_CTRL);
+
+	cmd |= COMMAND_GO | COMMAND_RBSY_CHK | COMMAND_TRANS_SIZE(9) |
+	       COMMAND_CE(ctrl->cur_cs);
+
+	if (buf)
+		cmd |= COMMAND_A_VALID;
+	if (oob_buf)
+		cmd |= COMMAND_B_VALID;
+
+	if (read)
+		cmd |= COMMAND_RX;
+	else
+		cmd |= COMMAND_TX | COMMAND_AFT_DAT;
+
+	writel_relaxed(cmd, ctrl->regs + COMMAND);
+
+	ret = wait_for_completion_timeout(&ctrl->command_complete,
+					  msecs_to_jiffies(500));
+	if (!ret) {
+		dev_err(ctrl->dev, "COMMAND timeout\n");
+		tegra_nand_dump_reg(ctrl);
+		tegra_nand_controller_abort(ctrl);
+		ret = -ETIMEDOUT;
+		goto err_unmap_dma;
+	}
+
+	ret = wait_for_completion_timeout(&ctrl->dma_complete,
+					  msecs_to_jiffies(500));
+	if (!ret) {
+		dev_err(ctrl->dev, "DMA timeout\n");
+		tegra_nand_dump_reg(ctrl);
+		tegra_nand_controller_abort(ctrl);
+		ret = -ETIMEDOUT;
+		goto err_unmap_dma;
+	}
+	ret = 0;
+
+err_unmap_dma:
+	if (oob_buf)
+		dma_unmap_single(ctrl->dev, dma_addr_oob, mtd->oobsize, dir);
+err_unmap_dma_page:
+	if (buf)
+		dma_unmap_single(ctrl->dev, dma_addr, mtd->writesize, dir);
+
+	return ret;
+}
+
+static int tegra_nand_read_page_raw(struct nand_chip *chip, u8 *buf,
+				    int oob_required, int page)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	void *oob_buf = oob_required ? chip->oob_poi : NULL;
+
+	return tegra_nand_page_xfer(mtd, chip, buf, oob_buf,
+				    mtd->oobsize, page, true);
+}
+
+static int tegra_nand_write_page_raw(struct nand_chip *chip, const u8 *buf,
+				     int oob_required, int page)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	void *oob_buf = oob_required ? chip->oob_poi : NULL;
+
+	return tegra_nand_page_xfer(mtd, chip, (void *)buf, oob_buf,
+				     mtd->oobsize, page, false);
+}
+
+static int tegra_nand_read_oob(struct nand_chip *chip, int page)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+
+	return tegra_nand_page_xfer(mtd, chip, NULL, chip->oob_poi,
+				    mtd->oobsize, page, true);
+}
+
+static int tegra_nand_write_oob(struct nand_chip *chip, int page)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+
+	return tegra_nand_page_xfer(mtd, chip, NULL, chip->oob_poi,
+				    mtd->oobsize, page, false);
+}
+
+static int tegra_nand_read_page_hwecc(struct nand_chip *chip, u8 *buf,
+				      int oob_required, int page)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	struct tegra_nand_chip *nand = to_tegra_chip(chip);
+	void *oob_buf = oob_required ? chip->oob_poi : NULL;
+	u32 dec_stat, max_corr_cnt;
+	unsigned long fail_sec_flag;
+	int ret;
+
+	tegra_nand_hw_ecc(ctrl, chip, true);
+	ret = tegra_nand_page_xfer(mtd, chip, buf, oob_buf, 0, page, true);
+	tegra_nand_hw_ecc(ctrl, chip, false);
+	if (ret)
+		return ret;
+
+	/* No correctable or un-correctable errors, page must have 0 bitflips */
+	if (!ctrl->last_read_error)
 		return 0;
-}
-
-/* Dummy implementation: we don't support multiple chips */
-static void nand_select_chip(struct mtd_info *mtd, int chipnr)
-{
-	switch (chipnr) {
-	case -1:
-	case 0:
-		break;
-
-	default:
-		BUG();
-	}
-}
-
-/**
- * Clear all interrupt status bits
- *
- * @param reg	nand_ctlr structure
- */
-static void nand_clear_interrupt_status(struct nand_ctlr *reg)
-{
-	u32 reg_val;
-
-	/* Clear interrupt status */
-	reg_val = readl(&reg->isr);
-	writel(reg_val, &reg->isr);
-}
-
-/**
- * Send command to NAND device
- *
- * @param mtd		MTD device structure
- * @param command	the command to be sent
- * @param column	the column address for this command, -1 if none
- * @param page_addr	the page address for this command, -1 if none
- */
-static void nand_command(struct mtd_info *mtd, unsigned int command,
-	int column, int page_addr)
-{
-	struct nand_chip *chip = mtd_to_nand(mtd);
-	struct nand_drv *info;
-
-	info = (struct nand_drv *)nand_get_controller_data(chip);
 
 	/*
-	 * Write out the command to the device.
+	 * Correctable or un-correctable errors occurred. Use DEC_STAT_BUF
+	 * which contains information for all ECC selections.
 	 *
-	 * Only command NAND_CMD_RESET or NAND_CMD_READID will come
-	 * here before mtd->writesize is initialized.
+	 * Note that since we do not use Command Queues DEC_RESULT does not
+	 * state the number of pages we can read from the DEC_STAT_BUF. But
+	 * since CORRFAIL_ERR did occur during page read we do have a valid
+	 * result in DEC_STAT_BUF.
 	 */
+	ctrl->last_read_error = false;
+	dec_stat = readl_relaxed(ctrl->regs + DEC_STAT_BUF);
 
-	/* Emulate NAND_CMD_READOOB */
-	if (command == NAND_CMD_READOOB) {
-		assert(mtd->writesize != 0);
-		column += mtd->writesize;
-		command = NAND_CMD_READ0;
+	fail_sec_flag = (dec_stat & DEC_STAT_BUF_FAIL_SEC_FLAG_MASK) >>
+			DEC_STAT_BUF_FAIL_SEC_FLAG_SHIFT;
+
+	max_corr_cnt = (dec_stat & DEC_STAT_BUF_MAX_CORR_CNT_MASK) >>
+		       DEC_STAT_BUF_MAX_CORR_CNT_SHIFT;
+
+	if (fail_sec_flag) {
+		int bit, max_bitflips = 0;
+
+		/*
+		 * Since we do not support subpage writes, a complete page
+		 * is either written or not. We can take a shortcut here by
+		 * checking wheather any of the sector has been successful
+		 * read. If at least one sectors has been read successfully,
+		 * the page must have been a written previously. It cannot
+		 * be an erased page.
+		 *
+		 * E.g. controller might return fail_sec_flag with 0x4, which
+		 * would mean only the third sector failed to correct. The
+		 * page must have been written and the third sector is really
+		 * not correctable anymore.
+		 */
+		if (fail_sec_flag ^ GENMASK(chip->ecc.steps - 1, 0)) {
+			mtd->ecc_stats.failed += hweight8(fail_sec_flag);
+			return max_corr_cnt;
+		}
+
+		/*
+		 * All sectors failed to correct, but the ECC isn't smart
+		 * enough to figure out if a page is really just erased.
+		 * Read OOB data and check whether data/OOB is completely
+		 * erased or if error correction just failed for all sub-
+		 * pages.
+		 */
+		ret = tegra_nand_read_oob(chip, page);
+		if (ret < 0)
+			return ret;
+
+		for_each_set_bit(bit, &fail_sec_flag, chip->ecc.steps) {
+			u8 *data = buf + (chip->ecc.size * bit);
+			u8 *oob = chip->oob_poi + nand->ecc.offset +
+				  (chip->ecc.bytes * bit);
+
+			ret = nand_check_erased_ecc_chunk(data, chip->ecc.size,
+							  oob, chip->ecc.bytes,
+							  NULL, 0,
+							  chip->ecc.strength);
+			if (ret < 0) {
+				mtd->ecc_stats.failed++;
+			} else {
+				mtd->ecc_stats.corrected += ret;
+				max_bitflips = max(ret, max_bitflips);
+			}
+		}
+
+		return max_t(unsigned int, max_corr_cnt, max_bitflips);
+	} else {
+		int corr_sec_flag;
+
+		corr_sec_flag = (dec_stat & DEC_STAT_BUF_CORR_SEC_FLAG_MASK) >>
+				DEC_STAT_BUF_CORR_SEC_FLAG_SHIFT;
+
+		/*
+		 * The value returned in the register is the maximum of
+		 * bitflips encountered in any of the ECC regions. As there is
+		 * no way to get the number of bitflips in a specific regions
+		 * we are not able to deliver correct stats but instead
+		 * overestimate the number of corrected bitflips by assuming
+		 * that all regions where errors have been corrected
+		 * encountered the maximum number of bitflips.
+		 */
+		mtd->ecc_stats.corrected += max_corr_cnt * hweight8(corr_sec_flag);
+
+		return max_corr_cnt;
 	}
-
-	/* Adjust columns for 16 bit bus-width */
-	if (column != -1 && (chip->options & NAND_BUSWIDTH_16))
-		column >>= 1;
-
-	nand_clear_interrupt_status(info->reg);
-
-	/* Stop DMA engine, clear DMA completion status */
-	writel(DMA_MST_CTRL_EN_A_DISABLE
-		| DMA_MST_CTRL_EN_B_DISABLE
-		| DMA_MST_CTRL_IS_DMA_DONE,
-		&info->reg->dma_mst_ctrl);
-
-	/*
-	 * Program and erase have their own busy handlers
-	 * status and sequential in needs no delay
-	 */
-	switch (command) {
-	case NAND_CMD_READID:
-		writel(NAND_CMD_READID, &info->reg->cmd_reg1);
-		writel(column & 0xFF, &info->reg->addr_reg1);
-		writel(CMD_GO | CMD_CLE | CMD_ALE | CMD_CE0,
-		       &info->reg->command);
-		break;
-	case NAND_CMD_PARAM:
-		writel(NAND_CMD_PARAM, &info->reg->cmd_reg1);
-		writel(column & 0xFF, &info->reg->addr_reg1);
-		writel(CMD_GO | CMD_CLE | CMD_ALE | CMD_CE0,
-			&info->reg->command);
-		break;
-	case NAND_CMD_READ0:
-		writel(NAND_CMD_READ0, &info->reg->cmd_reg1);
-		writel(NAND_CMD_READSTART, &info->reg->cmd_reg2);
-		writel((page_addr << 16) | (column & 0xFFFF),
-			&info->reg->addr_reg1);
-		writel(page_addr >> 16, &info->reg->addr_reg2);
-		return;
-	case NAND_CMD_SEQIN:
-		writel(NAND_CMD_SEQIN, &info->reg->cmd_reg1);
-		writel(NAND_CMD_PAGEPROG, &info->reg->cmd_reg2);
-		writel((page_addr << 16) | (column & 0xFFFF),
-			&info->reg->addr_reg1);
-		writel(page_addr >> 16,
-			&info->reg->addr_reg2);
-		return;
-	case NAND_CMD_PAGEPROG:
-		return;
-	case NAND_CMD_ERASE1:
-		writel(NAND_CMD_ERASE1, &info->reg->cmd_reg1);
-		writel(NAND_CMD_ERASE2, &info->reg->cmd_reg2);
-		writel(page_addr, &info->reg->addr_reg1);
-		writel(CMD_GO | CMD_CLE | CMD_ALE |
-			CMD_SEC_CMD | CMD_CE0 | CMD_ALE_BYTES3,
-			&info->reg->command);
-		break;
-	case NAND_CMD_ERASE2:
-		return;
-	case NAND_CMD_STATUS:
-		writel(NAND_CMD_STATUS, &info->reg->cmd_reg1);
-		writel(CMD_GO | CMD_CLE | CMD_PIO | CMD_RX
-			| ((1 - 0) << CMD_TRANS_SIZE_SHIFT)
-			| CMD_CE0,
-			&info->reg->command);
-		break;
-	case NAND_CMD_RESET:
-		writel(NAND_CMD_RESET, &info->reg->cmd_reg1);
-		writel(CMD_GO | CMD_CLE | CMD_CE0,
-			&info->reg->command);
-		break;
-	case NAND_CMD_RNDOUT:
-	default:
-		printf("%s: Unsupported command %d\n", __func__, command);
-		return;
-	}
-	if (!nand_waitfor_cmd_completion(info->reg))
-		printf("Command 0x%02X timeout\n", command);
 }
 
-/**
- * Check whether the pointed buffer are all 0xff (blank).
- *
- * @param buf	data buffer for blank check
- * @param len	length of the buffer in byte
- * @return
- *	1 - blank
- *	0 - non-blank
- */
-static int blank_check(u8 *buf, int len)
+static int tegra_nand_write_page_hwecc(struct nand_chip *chip, const u8 *buf,
+				       int oob_required, int page)
 {
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	void *oob_buf = oob_required ? chip->oob_poi : NULL;
+	int ret;
+
+	tegra_nand_hw_ecc(ctrl, chip, true);
+	ret = tegra_nand_page_xfer(mtd, chip, (void *)buf, oob_buf,
+				   0, page, false);
+	tegra_nand_hw_ecc(ctrl, chip, false);
+
+	return ret;
+}
+
+static void tegra_nand_setup_timing(struct tegra_nand_controller *ctrl,
+				    const struct nand_sdr_timings *timings)
+{
+	/*
+	 * The period (and all other timings in this function) is in ps,
+	 * so need to take care here to avoid integer overflows.
+	 */
+	unsigned int rate = clk_get_rate(ctrl->clk) / 1000000;
+	unsigned int period = DIV_ROUND_UP(1000000, rate);
+	u32 val, reg = 0;
+
+	val = DIV_ROUND_UP(max3(timings->tAR_min, timings->tRR_min,
+				timings->tRC_min), period);
+	reg |= TIMING_TCR_TAR_TRR(OFFSET(val, 3));
+
+	val = DIV_ROUND_UP(max(max(timings->tCS_min, timings->tCH_min),
+			       max(timings->tALS_min, timings->tALH_min)),
+			   period);
+	reg |= TIMING_TCS(OFFSET(val, 2));
+
+	val = DIV_ROUND_UP(max(timings->tRP_min, timings->tREA_max) + 6000,
+			   period);
+	reg |= TIMING_TRP(OFFSET(val, 1)) | TIMING_TRP_RESP(OFFSET(val, 1));
+
+	reg |= TIMING_TWB(OFFSET(DIV_ROUND_UP(timings->tWB_max, period), 1));
+	reg |= TIMING_TWHR(OFFSET(DIV_ROUND_UP(timings->tWHR_min, period), 1));
+	reg |= TIMING_TWH(OFFSET(DIV_ROUND_UP(timings->tWH_min, period), 1));
+	reg |= TIMING_TWP(OFFSET(DIV_ROUND_UP(timings->tWP_min, period), 1));
+	reg |= TIMING_TRH(OFFSET(DIV_ROUND_UP(timings->tREH_min, period), 1));
+
+	writel_relaxed(reg, ctrl->regs + TIMING_1);
+
+	val = DIV_ROUND_UP(timings->tADL_min, period);
+	reg = TIMING_TADL(OFFSET(val, 3));
+
+	writel_relaxed(reg, ctrl->regs + TIMING_2);
+}
+
+static int tegra_nand_setup_data_interface(struct nand_chip *chip, int csline,
+					const struct nand_data_interface *conf)
+{
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	const struct nand_sdr_timings *timings;
+
+	timings = nand_get_sdr_timings(conf);
+	if (IS_ERR(timings))
+		return PTR_ERR(timings);
+
+	if (csline == NAND_DATA_IFACE_CHECK_ONLY)
+		return 0;
+
+	tegra_nand_setup_timing(ctrl, timings);
+
+	return 0;
+}
+
+static const int rs_strength_bootable[] = { 4 };
+static const int rs_strength[] = { 4, 6, 8 };
+static const int bch_strength_bootable[] = { 8, 16 };
+static const int bch_strength[] = { 4, 8, 14, 16 };
+
+static int tegra_nand_get_strength(struct nand_chip *chip, const int *strength,
+				   int strength_len, int bits_per_step,
+				   int oobsize)
+{
+	bool maximize = chip->ecc.options & NAND_ECC_MAXIMIZE;
 	int i;
 
-	for (i = 0; i < len; i++)
-		if (buf[i] != 0xFF)
-			return 0;
-	return 1;
-}
-
-/**
- * After a DMA transfer for read, we call this function to see whether there
- * is any uncorrectable error on the pointed data buffer or oob buffer.
- *
- * @param reg		nand_ctlr structure
- * @param databuf	data buffer
- * @param a_len		data buffer length
- * @param oobbuf	oob buffer
- * @param b_len		oob buffer length
- * @return
- *	ECC_OK - no ECC error or correctable ECC error
- *	ECC_TAG_ERROR - uncorrectable tag ECC error
- *	ECC_DATA_ERROR - uncorrectable data ECC error
- *	ECC_DATA_ERROR + ECC_TAG_ERROR - uncorrectable data+tag ECC error
- */
-static int check_ecc_error(struct nand_ctlr *reg, u8 *databuf,
-	int a_len, u8 *oobbuf, int b_len)
-{
-	int return_val = ECC_OK;
-	u32 reg_val;
-
-	if (!(readl(&reg->isr) & ISR_IS_ECC_ERR))
-		return ECC_OK;
-
 	/*
-	 * Area A is used for the data block (databuf). Area B is used for
-	 * the spare block (oobbuf)
+	 * Loop through available strengths. Backwards in case we try to
+	 * maximize the BCH strength.
 	 */
-	reg_val = readl(&reg->dec_status);
-	if ((reg_val & DEC_STATUS_A_ECC_FAIL) && databuf) {
-		reg_val = readl(&reg->bch_dec_status_buf);
-		/*
-		 * If uncorrectable error occurs on data area, then see whether
-		 * they are all FF. If all are FF, it's a blank page.
-		 * Not error.
-		 */
-		if ((reg_val & BCH_DEC_STATUS_FAIL_SEC_FLAG_MASK) &&
-				!blank_check(databuf, a_len))
-			return_val |= ECC_DATA_ERROR;
+	for (i = 0; i < strength_len; i++) {
+		int strength_sel, bytes_per_step, bytes_per_page;
+
+		if (maximize) {
+			strength_sel = strength[strength_len - i - 1];
+		} else {
+			strength_sel = strength[i];
+
+			if (strength_sel < chip->base.eccreq.strength)
+				continue;
+		}
+
+		bytes_per_step = DIV_ROUND_UP(bits_per_step * strength_sel,
+					      BITS_PER_BYTE);
+		bytes_per_page = round_up(bytes_per_step * chip->ecc.steps, 4);
+
+		/* Check whether strength fits OOB */
+		if (bytes_per_page < (oobsize - SKIP_SPARE_BYTES))
+			return strength_sel;
 	}
 
-	if ((reg_val & DEC_STATUS_B_ECC_FAIL) && oobbuf) {
-		reg_val = readl(&reg->bch_dec_status_buf);
-		/*
-		 * If uncorrectable error occurs on tag area, then see whether
-		 * they are all FF. If all are FF, it's a blank page.
-		 * Not error.
-		 */
-		if ((reg_val & BCH_DEC_STATUS_FAIL_TAG_MASK) &&
-				!blank_check(oobbuf, b_len))
-			return_val |= ECC_TAG_ERROR;
-	}
-
-	return return_val;
+	return -EINVAL;
 }
 
-/**
- * Set GO bit to send command to device
- *
- * @param reg	nand_ctlr structure
- */
-static void start_command(struct nand_ctlr *reg)
+static int tegra_nand_select_strength(struct nand_chip *chip, int oobsize)
 {
-	u32 reg_val;
+	const int *strength;
+	int strength_len, bits_per_step;
 
-	reg_val = readl(&reg->command);
-	reg_val |= CMD_GO;
-	writel(reg_val, &reg->command);
-}
-
-/**
- * Clear command GO bit, DMA GO bit, and DMA completion status
- *
- * @param reg	nand_ctlr structure
- */
-static void stop_command(struct nand_ctlr *reg)
-{
-	/* Stop command */
-	writel(0, &reg->command);
-
-	/* Stop DMA engine and clear DMA completion status */
-	writel(DMA_MST_CTRL_GO_DISABLE
-		| DMA_MST_CTRL_IS_DMA_DONE,
-		&reg->dma_mst_ctrl);
-}
-
-/**
- * Set up NAND bus width and page size
- *
- * @param info		nand_info structure
- * @param *reg_val	address of reg_val
- * @return 0 if ok, -1 on error
- */
-static int set_bus_width_page_size(struct mtd_info *our_mtd,
-				   struct fdt_nand *config, u32 *reg_val)
-{
-	if (config->width == 8)
-		*reg_val = CFG_BUS_WIDTH_8BIT;
-	else if (config->width == 16)
-		*reg_val = CFG_BUS_WIDTH_16BIT;
-	else {
-		debug("%s: Unsupported bus width %d\n", __func__,
-		      config->width);
-		return -1;
-	}
-
-	if (our_mtd->writesize == 512)
-		*reg_val |= CFG_PAGE_SIZE_512;
-	else if (our_mtd->writesize == 2048)
-		*reg_val |= CFG_PAGE_SIZE_2048;
-	else if (our_mtd->writesize == 4096)
-		*reg_val |= CFG_PAGE_SIZE_4096;
-	else {
-		debug("%s: Unsupported page size %d\n", __func__,
-		      our_mtd->writesize);
-		return -1;
-	}
-
-	return 0;
-}
-
-/**
- * Page read/write function
- *
- * @param mtd		mtd info structure
- * @param chip		nand chip info structure
- * @param buf		data buffer
- * @param page		page number
- * @param with_ecc	1 to enable ECC, 0 to disable ECC
- * @param is_writing	0 for read, 1 for write
- * @return	0 when successfully completed
- *		-EIO when command timeout
- */
-static int nand_rw_page(struct mtd_info *mtd, struct nand_chip *chip,
-	uint8_t *buf, int page, int with_ecc, int is_writing)
-{
-	u32 reg_val;
-	int tag_size;
-	struct nand_oobfree *free = chip->ecc.layout->oobfree;
-	/* 4*128=512 (byte) is the value that our HW can support. */
-	ALLOC_CACHE_ALIGN_BUFFER(u32, tag_buf, 128);
-	char *tag_ptr;
-	struct nand_drv *info;
-	struct fdt_nand *config;
-	unsigned int bbflags;
-	struct bounce_buffer bbstate, bbstate_oob;
-
-	if ((uintptr_t)buf & 0x03) {
-		printf("buf %p has to be 4-byte aligned\n", buf);
+	switch (chip->ecc.algo) {
+	case NAND_ECC_RS:
+		bits_per_step = BITS_PER_STEP_RS;
+		if (chip->options & NAND_IS_BOOT_MEDIUM) {
+			strength = rs_strength_bootable;
+			strength_len = ARRAY_SIZE(rs_strength_bootable);
+		} else {
+			strength = rs_strength;
+			strength_len = ARRAY_SIZE(rs_strength);
+		}
+		break;
+	case NAND_ECC_BCH:
+		bits_per_step = BITS_PER_STEP_BCH;
+		if (chip->options & NAND_IS_BOOT_MEDIUM) {
+			strength = bch_strength_bootable;
+			strength_len = ARRAY_SIZE(bch_strength_bootable);
+		} else {
+			strength = bch_strength;
+			strength_len = ARRAY_SIZE(bch_strength);
+		}
+		break;
+	default:
 		return -EINVAL;
 	}
 
-	info = (struct nand_drv *)nand_get_controller_data(chip);
-	config = &info->config;
-	if (set_bus_width_page_size(mtd, config, &reg_val))
+	return tegra_nand_get_strength(chip, strength, strength_len,
+				       bits_per_step, oobsize);
+}
+
+static int tegra_nand_attach_chip(struct nand_chip *chip)
+{
+	struct tegra_nand_controller *ctrl = to_tegra_ctrl(chip->controller);
+	struct tegra_nand_chip *nand = to_tegra_chip(chip);
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	int bits_per_step;
+	int ret;
+
+	if (chip->bbt_options & NAND_BBT_USE_FLASH)
+		chip->bbt_options |= NAND_BBT_NO_OOB;
+
+	chip->ecc.mode = NAND_ECC_HW;
+	chip->ecc.size = 512;
+	chip->ecc.steps = mtd->writesize / chip->ecc.size;
+	if (chip->base.eccreq.step_size != 512) {
+		dev_err(ctrl->dev, "Unsupported step size %d\n",
+			chip->base.eccreq.step_size);
 		return -EINVAL;
-
-	/* Need to be 4-byte aligned */
-	tag_ptr = (char *)tag_buf;
-
-	stop_command(info->reg);
-
-	if (is_writing)
-		bbflags = GEN_BB_READ;
-	else
-		bbflags = GEN_BB_WRITE;
-
-	bounce_buffer_start(&bbstate, (void *)buf, 1 << chip->page_shift,
-			    bbflags);
-	writel((1 << chip->page_shift) - 1, &info->reg->dma_cfg_a);
-	writel(virt_to_phys(bbstate.bounce_buffer), &info->reg->data_block_ptr);
-
-	/* Set ECC selection, configure ECC settings */
-	if (with_ecc) {
-		if (is_writing)
-			memcpy(tag_ptr, chip->oob_poi + free->offset,
-			       chip->ecc.layout->oobavail + TAG_ECC_BYTES);
-		tag_size = chip->ecc.layout->oobavail + TAG_ECC_BYTES;
-		reg_val |= (CFG_SKIP_SPARE_SEL_4
-			| CFG_SKIP_SPARE_ENABLE
-			| CFG_HW_ECC_CORRECTION_ENABLE
-			| CFG_ECC_EN_TAG_DISABLE
-			| CFG_HW_ECC_SEL_RS
-			| CFG_HW_ECC_ENABLE
-			| CFG_TVAL4
-			| (tag_size - 1));
-
-		if (!is_writing)
-			tag_size += SKIPPED_SPARE_BYTES;
-		bounce_buffer_start(&bbstate_oob, (void *)tag_ptr, tag_size,
-				    bbflags);
-	} else {
-		tag_size = mtd->oobsize;
-		reg_val |= (CFG_SKIP_SPARE_DISABLE
-			| CFG_HW_ECC_CORRECTION_DISABLE
-			| CFG_ECC_EN_TAG_DISABLE
-			| CFG_HW_ECC_DISABLE
-			| (tag_size - 1));
-		bounce_buffer_start(&bbstate_oob, (void *)chip->oob_poi,
-				    tag_size, bbflags);
 	}
-	writel(reg_val, &info->reg->config);
-	writel(virt_to_phys(bbstate_oob.bounce_buffer), &info->reg->tag_ptr);
-	writel(BCH_CONFIG_BCH_ECC_DISABLE, &info->reg->bch_config);
-	writel(tag_size - 1, &info->reg->dma_cfg_b);
 
-	nand_clear_interrupt_status(info->reg);
+	chip->ecc.read_page = tegra_nand_read_page_hwecc;
+	chip->ecc.write_page = tegra_nand_write_page_hwecc;
+	chip->ecc.read_page_raw = tegra_nand_read_page_raw;
+	chip->ecc.write_page_raw = tegra_nand_write_page_raw;
+	chip->ecc.read_oob = tegra_nand_read_oob;
+	chip->ecc.write_oob = tegra_nand_write_oob;
 
-	reg_val = CMD_CLE | CMD_ALE
-		| CMD_SEC_CMD
-		| (CMD_ALE_BYTES5 << CMD_ALE_BYTE_SIZE_SHIFT)
-		| CMD_A_VALID
-		| CMD_B_VALID
-		| (CMD_TRANS_SIZE_PAGE << CMD_TRANS_SIZE_SHIFT)
-		| CMD_CE0;
-	if (!is_writing)
-		reg_val |= (CMD_AFT_DAT_DISABLE | CMD_RX);
-	else
-		reg_val |= (CMD_AFT_DAT_ENABLE | CMD_TX);
-	writel(reg_val, &info->reg->command);
+	if (chip->options & NAND_BUSWIDTH_16)
+		nand->config |= CONFIG_BUS_WIDTH_16;
 
-	/* Setup DMA engine */
-	reg_val = DMA_MST_CTRL_GO_ENABLE
-		| DMA_MST_CTRL_BURST_8WORDS
-		| DMA_MST_CTRL_EN_A_ENABLE
-		| DMA_MST_CTRL_EN_B_ENABLE;
-
-	if (!is_writing)
-		reg_val |= DMA_MST_CTRL_DIR_READ;
-	else
-		reg_val |= DMA_MST_CTRL_DIR_WRITE;
-
-	writel(reg_val, &info->reg->dma_mst_ctrl);
-
-	start_command(info->reg);
-
-	if (!nand_waitfor_cmd_completion(info->reg)) {
-		if (!is_writing)
-			printf("Read Page 0x%X timeout ", page);
+	if (chip->ecc.algo == NAND_ECC_UNKNOWN) {
+		if (mtd->writesize < 2048)
+			chip->ecc.algo = NAND_ECC_RS;
 		else
-			printf("Write Page 0x%X timeout ", page);
-		if (with_ecc)
-			printf("with ECC");
-		else
-			printf("without ECC");
-		printf("\n");
-		return -EIO;
+			chip->ecc.algo = NAND_ECC_BCH;
 	}
 
-	bounce_buffer_stop(&bbstate_oob);
-	bounce_buffer_stop(&bbstate);
-
-	if (with_ecc && !is_writing) {
-		memcpy(chip->oob_poi, tag_ptr,
-			SKIPPED_SPARE_BYTES);
-		memcpy(chip->oob_poi + free->offset,
-			tag_ptr + SKIPPED_SPARE_BYTES,
-			chip->ecc.layout->oobavail);
-		reg_val = (u32)check_ecc_error(info->reg, (u8 *)buf,
-			1 << chip->page_shift,
-			(u8 *)(tag_ptr + SKIPPED_SPARE_BYTES),
-			chip->ecc.layout->oobavail);
-		if (reg_val & ECC_TAG_ERROR)
-			printf("Read Page 0x%X tag ECC error\n", page);
-		if (reg_val & ECC_DATA_ERROR)
-			printf("Read Page 0x%X data ECC error\n",
-				page);
-		if (reg_val & (ECC_DATA_ERROR | ECC_TAG_ERROR))
-			return -EIO;
-	}
-	return 0;
-}
-
-/**
- * Hardware ecc based page read function
- *
- * @param mtd	mtd info structure
- * @param chip	nand chip info structure
- * @param buf	buffer to store read data
- * @param page	page number to read
- * @return	0 when successfully completed
- *		-EIO when command timeout
- */
-static int nand_read_page_hwecc(struct mtd_info *mtd,
-	struct nand_chip *chip, uint8_t *buf, int oob_required, int page)
-{
-	return nand_rw_page(mtd, chip, buf, page, 1, 0);
-}
-
-/**
- * Hardware ecc based page write function
- *
- * @param mtd	mtd info structure
- * @param chip	nand chip info structure
- * @param buf	data buffer
- */
-static int nand_write_page_hwecc(struct mtd_info *mtd,
-	struct nand_chip *chip, const uint8_t *buf, int oob_required,
-	int page)
-{
-	nand_rw_page(mtd, chip, (uint8_t *)buf, page, 1, 1);
-	return 0;
-}
-
-
-/**
- * Read raw page data without ecc
- *
- * @param mtd	mtd info structure
- * @param chip	nand chip info structure
- * @param buf	buffer to store read data
- * @param page	page number to read
- * @return	0 when successfully completed
- *		-EINVAL when chip->oob_poi is not double-word aligned
- *		-EIO when command timeout
- */
-static int nand_read_page_raw(struct mtd_info *mtd,
-	struct nand_chip *chip, uint8_t *buf, int oob_required, int page)
-{
-	return nand_rw_page(mtd, chip, buf, page, 0, 0);
-}
-
-/**
- * Raw page write function
- *
- * @param mtd	mtd info structure
- * @param chip	nand chip info structure
- * @param buf	data buffer
- */
-static int nand_write_page_raw(struct mtd_info *mtd,
-		struct nand_chip *chip,	const uint8_t *buf,
-		int oob_required, int page)
-{
-	nand_rw_page(mtd, chip, (uint8_t *)buf, page, 0, 1);
-	return 0;
-}
-
-/**
- * OOB data read/write function
- *
- * @param mtd		mtd info structure
- * @param chip		nand chip info structure
- * @param page		page number to read
- * @param with_ecc	1 to enable ECC, 0 to disable ECC
- * @param is_writing	0 for read, 1 for write
- * @return	0 when successfully completed
- *		-EINVAL when chip->oob_poi is not double-word aligned
- *		-EIO when command timeout
- */
-static int nand_rw_oob(struct mtd_info *mtd, struct nand_chip *chip,
-	int page, int with_ecc, int is_writing)
-{
-	u32 reg_val;
-	int tag_size;
-	struct nand_oobfree *free = chip->ecc.layout->oobfree;
-	struct nand_drv *info;
-	unsigned int bbflags;
-	struct bounce_buffer bbstate_oob;
-
-	if (((int)chip->oob_poi) & 0x03)
+	if (chip->ecc.algo == NAND_ECC_BCH && mtd->writesize < 2048) {
+		dev_err(ctrl->dev, "BCH supports 2K or 4K page size only\n");
 		return -EINVAL;
-	info = (struct nand_drv *)nand_get_controller_data(chip);
-	if (set_bus_width_page_size(mtd, &info->config, &reg_val))
+	}
+
+	if (!chip->ecc.strength) {
+		ret = tegra_nand_select_strength(chip, mtd->oobsize);
+		if (ret < 0) {
+			dev_err(ctrl->dev,
+				"No valid strength found, minimum %d\n",
+				chip->base.eccreq.strength);
+			return ret;
+		}
+
+		chip->ecc.strength = ret;
+	}
+
+	nand->config_ecc = CONFIG_PIPE_EN | CONFIG_SKIP_SPARE |
+			   CONFIG_SKIP_SPARE_SIZE_4;
+
+	switch (chip->ecc.algo) {
+	case NAND_ECC_RS:
+		bits_per_step = BITS_PER_STEP_RS * chip->ecc.strength;
+		mtd_set_ooblayout(mtd, &tegra_nand_oob_rs_ops);
+		nand->config_ecc |= CONFIG_HW_ECC | CONFIG_ECC_SEL |
+				    CONFIG_ERR_COR;
+		switch (chip->ecc.strength) {
+		case 4:
+			nand->config_ecc |= CONFIG_TVAL_4;
+			break;
+		case 6:
+			nand->config_ecc |= CONFIG_TVAL_6;
+			break;
+		case 8:
+			nand->config_ecc |= CONFIG_TVAL_8;
+			break;
+		default:
+			dev_err(ctrl->dev, "ECC strength %d not supported\n",
+				chip->ecc.strength);
+			return -EINVAL;
+		}
+		break;
+	case NAND_ECC_BCH:
+		bits_per_step = BITS_PER_STEP_BCH * chip->ecc.strength;
+		mtd_set_ooblayout(mtd, &tegra_nand_oob_bch_ops);
+		nand->bch_config = BCH_ENABLE;
+		switch (chip->ecc.strength) {
+		case 4:
+			nand->bch_config |= BCH_TVAL_4;
+			break;
+		case 8:
+			nand->bch_config |= BCH_TVAL_8;
+			break;
+		case 14:
+			nand->bch_config |= BCH_TVAL_14;
+			break;
+		case 16:
+			nand->bch_config |= BCH_TVAL_16;
+			break;
+		default:
+			dev_err(ctrl->dev, "ECC strength %d not supported\n",
+				chip->ecc.strength);
+			return -EINVAL;
+		}
+		break;
+	default:
+		dev_err(ctrl->dev, "ECC algorithm not supported\n");
 		return -EINVAL;
-
-	stop_command(info->reg);
-
-	/* Set ECC selection */
-	tag_size = mtd->oobsize;
-	if (with_ecc)
-		reg_val |= CFG_ECC_EN_TAG_ENABLE;
-	else
-		reg_val |= (CFG_ECC_EN_TAG_DISABLE);
-
-	reg_val |= ((tag_size - 1) |
-		CFG_SKIP_SPARE_DISABLE |
-		CFG_HW_ECC_CORRECTION_DISABLE |
-		CFG_HW_ECC_DISABLE);
-	writel(reg_val, &info->reg->config);
-
-	if (is_writing && with_ecc)
-		tag_size -= TAG_ECC_BYTES;
-
-	if (is_writing)
-		bbflags = GEN_BB_READ;
-	else
-		bbflags = GEN_BB_WRITE;
-
-	bounce_buffer_start(&bbstate_oob, (void *)chip->oob_poi, tag_size,
-			    bbflags);
-	writel(virt_to_phys(bbstate_oob.bounce_buffer), &info->reg->tag_ptr);
-
-	writel(BCH_CONFIG_BCH_ECC_DISABLE, &info->reg->bch_config);
-
-	writel(tag_size - 1, &info->reg->dma_cfg_b);
-
-	nand_clear_interrupt_status(info->reg);
-
-	reg_val = CMD_CLE | CMD_ALE
-		| CMD_SEC_CMD
-		| (CMD_ALE_BYTES5 << CMD_ALE_BYTE_SIZE_SHIFT)
-		| CMD_B_VALID
-		| CMD_CE0;
-	if (!is_writing)
-		reg_val |= (CMD_AFT_DAT_DISABLE | CMD_RX);
-	else
-		reg_val |= (CMD_AFT_DAT_ENABLE | CMD_TX);
-	writel(reg_val, &info->reg->command);
-
-	/* Setup DMA engine */
-	reg_val = DMA_MST_CTRL_GO_ENABLE
-		| DMA_MST_CTRL_BURST_8WORDS
-		| DMA_MST_CTRL_EN_B_ENABLE;
-	if (!is_writing)
-		reg_val |= DMA_MST_CTRL_DIR_READ;
-	else
-		reg_val |= DMA_MST_CTRL_DIR_WRITE;
-
-	writel(reg_val, &info->reg->dma_mst_ctrl);
-
-	start_command(info->reg);
-
-	if (!nand_waitfor_cmd_completion(info->reg)) {
-		if (!is_writing)
-			printf("Read OOB of Page 0x%X timeout\n", page);
-		else
-			printf("Write OOB of Page 0x%X timeout\n", page);
-		return -EIO;
 	}
 
-	bounce_buffer_stop(&bbstate_oob);
+	dev_info(ctrl->dev, "Using %s with strength %d per 512 byte step\n",
+		 chip->ecc.algo == NAND_ECC_BCH ? "BCH" : "RS",
+		 chip->ecc.strength);
 
-	if (with_ecc && !is_writing) {
-		reg_val = (u32)check_ecc_error(info->reg, 0, 0,
-			(u8 *)(chip->oob_poi + free->offset),
-			chip->ecc.layout->oobavail);
-		if (reg_val & ECC_TAG_ERROR)
-			printf("Read OOB of Page 0x%X tag ECC error\n", page);
+	chip->ecc.bytes = DIV_ROUND_UP(bits_per_step, BITS_PER_BYTE);
+
+	switch (mtd->writesize) {
+	case 256:
+		nand->config |= CONFIG_PS_256;
+		break;
+	case 512:
+		nand->config |= CONFIG_PS_512;
+		break;
+	case 1024:
+		nand->config |= CONFIG_PS_1024;
+		break;
+	case 2048:
+		nand->config |= CONFIG_PS_2048;
+		break;
+	case 4096:
+		nand->config |= CONFIG_PS_4096;
+		break;
+	default:
+		dev_err(ctrl->dev, "Unsupported writesize %d\n",
+			mtd->writesize);
+		return -ENODEV;
 	}
+
+	/* Store complete configuration for HW ECC in config_ecc */
+	nand->config_ecc |= nand->config;
+
+	/* Non-HW ECC read/writes complete OOB */
+	nand->config |= CONFIG_TAG_BYTE_SIZE(mtd->oobsize - 1);
+	writel_relaxed(nand->config, ctrl->regs + CONFIG);
+
 	return 0;
 }
 
-/**
- * OOB data read function
- *
- * @param mtd		mtd info structure
- * @param chip		nand chip info structure
- * @param page		page number to read
- */
-static int nand_read_oob(struct mtd_info *mtd, struct nand_chip *chip,
-	int page)
+static const struct nand_controller_ops tegra_nand_controller_ops = {
+	.attach_chip = &tegra_nand_attach_chip,
+	.exec_op = tegra_nand_exec_op,
+	.setup_data_interface = tegra_nand_setup_data_interface,
+};
+
+static int tegra_nand_chips_init(struct device *dev,
+				 struct tegra_nand_controller *ctrl)
 {
-	chip->cmdfunc(mtd, NAND_CMD_READOOB, 0, page);
-	nand_rw_oob(mtd, chip, page, 0, 0);
+	struct device_node *np = dev->of_node;
+	struct device_node *np_nand;
+	int nsels, nchips = of_get_child_count(np);
+	struct tegra_nand_chip *nand;
+	struct mtd_info *mtd;
+	struct nand_chip *chip;
+	int ret;
+	u32 cs;
+
+	if (nchips != 1) {
+		dev_err(dev, "Currently only one NAND chip supported\n");
+		return -EINVAL;
+	}
+
+	np_nand = of_get_next_child(np, NULL);
+
+	nsels = of_property_count_elems_of_size(np_nand, "reg", sizeof(u32));
+	if (nsels != 1) {
+		dev_err(dev, "Missing/invalid reg property\n");
+		return -EINVAL;
+	}
+
+	/* Retrieve CS id, currently only single die NAND supported */
+	ret = of_property_read_u32(np_nand, "reg", &cs);
+	if (ret) {
+		dev_err(dev, "could not retrieve reg property: %d\n", ret);
+		return ret;
+	}
+
+	nand = devm_kzalloc(dev, sizeof(*nand), GFP_KERNEL);
+	if (!nand)
+		return -ENOMEM;
+
+	nand->cs[0] = cs;
+
+	nand->wp_gpio = devm_gpiod_get_optional(dev, "wp", GPIOD_OUT_LOW);
+
+	if (IS_ERR(nand->wp_gpio)) {
+		ret = PTR_ERR(nand->wp_gpio);
+		dev_err(dev, "Failed to request WP GPIO: %d\n", ret);
+		return ret;
+	}
+
+	chip = &nand->chip;
+	chip->controller = &ctrl->controller;
+
+	mtd = nand_to_mtd(chip);
+
+	mtd->dev.parent = dev;
+	mtd->owner = THIS_MODULE;
+
+	nand_set_flash_node(chip, np_nand);
+
+	if (!mtd->name)
+		mtd->name = "tegra_nand";
+
+	chip->options = NAND_NO_SUBPAGE_WRITE | NAND_USE_BOUNCE_BUFFER;
+
+	ret = nand_scan(chip, 1);
+	if (ret)
+		return ret;
+
+	mtd_ooblayout_ecc(mtd, 0, &nand->ecc);
+
+	ret = mtd_device_register(mtd, NULL, 0);
+	if (ret) {
+		dev_err(dev, "Failed to register mtd device: %d\n", ret);
+		nand_cleanup(chip);
+		return ret;
+	}
+
+	ctrl->chip = chip;
+
 	return 0;
 }
 
-/**
- * OOB data write function
- *
- * @param mtd	mtd info structure
- * @param chip	nand chip info structure
- * @param page	page number to write
- * @return	0 when successfully completed
- *		-EINVAL when chip->oob_poi is not double-word aligned
- *		-EIO when command timeout
- */
-static int nand_write_oob(struct mtd_info *mtd, struct nand_chip *chip,
-	int page)
+static int tegra_nand_probe(struct platform_device *pdev)
 {
-	chip->cmdfunc(mtd, NAND_CMD_SEQIN, mtd->writesize, page);
+	struct reset_control *rst;
+	struct tegra_nand_controller *ctrl;
+	struct resource *res;
+	int err = 0;
 
-	return nand_rw_oob(mtd, chip, page, 0, 1);
-}
+	ctrl = devm_kzalloc(&pdev->dev, sizeof(*ctrl), GFP_KERNEL);
+	if (!ctrl)
+		return -ENOMEM;
 
-/**
- * Set up NAND memory timings according to the provided parameters
- *
- * @param timing	Timing parameters
- * @param reg		NAND controller register address
- */
-static void setup_timing(unsigned timing[FDT_NAND_TIMING_COUNT],
-			 struct nand_ctlr *reg)
-{
-	u32 reg_val, clk_rate, clk_period, time_val;
+	ctrl->dev = &pdev->dev;
+	nand_controller_init(&ctrl->controller);
+	ctrl->controller.ops = &tegra_nand_controller_ops;
 
-	clk_rate = (u32)clock_get_periph_rate(PERIPH_ID_NDFLASH,
-		CLOCK_ID_PERIPH) / 1000000;
-	clk_period = 1000 / clk_rate;
-	reg_val = ((timing[FDT_NAND_MAX_TRP_TREA] / clk_period) <<
-		TIMING_TRP_RESP_CNT_SHIFT) & TIMING_TRP_RESP_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_TWB] / clk_period) <<
-		TIMING_TWB_CNT_SHIFT) & TIMING_TWB_CNT_MASK;
-	time_val = timing[FDT_NAND_MAX_TCR_TAR_TRR] / clk_period;
-	if (time_val > 2)
-		reg_val |= ((time_val - 2) << TIMING_TCR_TAR_TRR_CNT_SHIFT) &
-			TIMING_TCR_TAR_TRR_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_TWHR] / clk_period) <<
-		TIMING_TWHR_CNT_SHIFT) & TIMING_TWHR_CNT_MASK;
-	time_val = timing[FDT_NAND_MAX_TCS_TCH_TALS_TALH] / clk_period;
-	if (time_val > 1)
-		reg_val |= ((time_val - 1) << TIMING_TCS_CNT_SHIFT) &
-			TIMING_TCS_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_TWH] / clk_period) <<
-		TIMING_TWH_CNT_SHIFT) & TIMING_TWH_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_TWP] / clk_period) <<
-		TIMING_TWP_CNT_SHIFT) & TIMING_TWP_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_TRH] / clk_period) <<
-		TIMING_TRH_CNT_SHIFT) & TIMING_TRH_CNT_MASK;
-	reg_val |= ((timing[FDT_NAND_MAX_TRP_TREA] / clk_period) <<
-		TIMING_TRP_CNT_SHIFT) & TIMING_TRP_CNT_MASK;
-	writel(reg_val, &reg->timing);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ctrl->regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(ctrl->regs))
+		return PTR_ERR(ctrl->regs);
 
-	reg_val = 0;
-	time_val = timing[FDT_NAND_TADL] / clk_period;
-	if (time_val > 2)
-		reg_val = (time_val - 2) & TIMING2_TADL_CNT_MASK;
-	writel(reg_val, &reg->timing2);
-}
+	rst = devm_reset_control_get(&pdev->dev, "nand");
+	if (IS_ERR(rst))
+		return PTR_ERR(rst);
 
-/**
- * Decode NAND parameters from the device tree
- *
- * @param dev		Driver model device
- * @param config	Device tree NAND configuration
- * @return 0 if ok, -ve on error (FDT_ERR_...)
- */
-static int fdt_decode_nand(struct udevice *dev, struct fdt_nand *config)
-{
-	int err;
+	ctrl->clk = devm_clk_get(&pdev->dev, "nand");
+	if (IS_ERR(ctrl->clk))
+		return PTR_ERR(ctrl->clk);
 
-	config->reg = (struct nand_ctlr *)dev_read_addr(dev);
-	config->enabled = dev_read_enabled(dev);
-	config->width = dev_read_u32_default(dev, "nvidia,nand-width", 8);
-	err = gpio_request_by_name(dev, "nvidia,wp-gpios", 0, &config->wp_gpio,
-				   GPIOD_IS_OUT);
+	err = clk_prepare_enable(ctrl->clk);
 	if (err)
 		return err;
-	err = dev_read_u32_array(dev, "nvidia,timing", config->timing,
-				 FDT_NAND_TIMING_COUNT);
-	if (err < 0)
-		return err;
+
+	err = reset_control_reset(rst);
+	if (err) {
+		dev_err(ctrl->dev, "Failed to reset HW: %d\n", err);
+		goto err_disable_clk;
+	}
+
+	writel_relaxed(HWSTATUS_CMD_DEFAULT, ctrl->regs + HWSTATUS_CMD);
+	writel_relaxed(HWSTATUS_MASK_DEFAULT, ctrl->regs + HWSTATUS_MASK);
+	writel_relaxed(INT_MASK, ctrl->regs + IER);
+
+	init_completion(&ctrl->command_complete);
+	init_completion(&ctrl->dma_complete);
+
+	ctrl->irq = platform_get_irq(pdev, 0);
+	err = devm_request_irq(&pdev->dev, ctrl->irq, tegra_nand_irq, 0,
+			       dev_name(&pdev->dev), ctrl);
+	if (err) {
+		dev_err(ctrl->dev, "Failed to get IRQ: %d\n", err);
+		goto err_disable_clk;
+	}
+
+	writel_relaxed(DMA_MST_CTRL_IS_DONE, ctrl->regs + DMA_MST_CTRL);
+
+	err = tegra_nand_chips_init(ctrl->dev, ctrl);
+	if (err)
+		goto err_disable_clk;
+
+	platform_set_drvdata(pdev, ctrl);
 
 	return 0;
+
+err_disable_clk:
+	clk_disable_unprepare(ctrl->clk);
+	return err;
 }
 
-static int tegra_probe(struct udevice *dev)
+static int tegra_nand_remove(struct platform_device *pdev)
 {
-	struct tegra_nand_info *tegra = dev_get_priv(dev);
-	struct nand_chip *nand = &tegra->nand_chip;
-	struct nand_drv *info = &tegra->nand_ctrl;
-	struct fdt_nand *config = &info->config;
-	struct mtd_info *our_mtd;
+	struct tegra_nand_controller *ctrl = platform_get_drvdata(pdev);
+	struct nand_chip *chip = ctrl->chip;
+	struct mtd_info *mtd = nand_to_mtd(chip);
 	int ret;
 
-	if (fdt_decode_nand(dev, config)) {
-		printf("Could not decode nand-flash in device tree\n");
-		return -1;
-	}
-	if (!config->enabled)
-		return -1;
-	info->reg = config->reg;
-	nand->ecc.mode = NAND_ECC_HW;
-	nand->ecc.layout = &eccoob;
-
-	nand->options = LP_OPTIONS;
-	nand->cmdfunc = nand_command;
-	nand->read_byte = read_byte;
-	nand->read_buf = read_buf;
-	nand->ecc.read_page = nand_read_page_hwecc;
-	nand->ecc.write_page = nand_write_page_hwecc;
-	nand->ecc.read_page_raw = nand_read_page_raw;
-	nand->ecc.write_page_raw = nand_write_page_raw;
-	nand->ecc.read_oob = nand_read_oob;
-	nand->ecc.write_oob = nand_write_oob;
-	nand->ecc.strength = 1;
-	nand->select_chip = nand_select_chip;
-	nand->dev_ready  = nand_dev_ready;
-	nand_set_controller_data(nand, &tegra->nand_ctrl);
-
-	/* Disable subpage writes as we do not provide ecc->hwctl */
-	nand->options |= NAND_NO_SUBPAGE_WRITE;
-
-	/* Adjust controller clock rate */
-	clock_start_periph_pll(PERIPH_ID_NDFLASH, CLOCK_ID_PERIPH, 52000000);
-
-	/* Adjust timing for NAND device */
-	setup_timing(config->timing, info->reg);
-
-	dm_gpio_set_value(&config->wp_gpio, 1);
-
-	our_mtd = nand_to_mtd(nand);
-	ret = nand_scan_ident(our_mtd, CONFIG_SYS_NAND_MAX_CHIPS, NULL);
+	ret = mtd_device_unregister(mtd);
 	if (ret)
 		return ret;
 
-	nand->ecc.size = our_mtd->writesize;
-	nand->ecc.bytes = our_mtd->oobsize;
+	nand_cleanup(chip);
 
-	ret = nand_scan_tail(our_mtd);
-	if (ret)
-		return ret;
-
-	ret = nand_register(0, our_mtd);
-	if (ret) {
-		dev_err(dev, "Failed to register MTD: %d\n", ret);
-		return ret;
-	}
+	clk_disable_unprepare(ctrl->clk);
 
 	return 0;
 }
 
-U_BOOT_DRIVER(tegra_nand) = {
-	.name = "tegra-nand",
-	.id = UCLASS_MTD,
-	.of_match = tegra_nand_dt_ids,
-	.probe = tegra_probe,
-	.priv_auto_alloc_size = sizeof(struct tegra_nand_info),
+static const struct of_device_id tegra_nand_of_match[] = {
+	{ .compatible = "nvidia,tegra20-nand" },
+	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, tegra_nand_of_match);
 
-void board_nand_init(void)
-{
-	struct udevice *dev;
-	int ret;
+static struct platform_driver tegra_nand_driver = {
+	.driver = {
+		.name = "tegra-nand",
+		.of_match_table = tegra_nand_of_match,
+	},
+	.probe = tegra_nand_probe,
+	.remove = tegra_nand_remove,
+};
+module_platform_driver(tegra_nand_driver);
 
-	ret = uclass_get_device_by_driver(UCLASS_MTD,
-					  DM_GET_DRIVER(tegra_nand), &dev);
-	if (ret && ret != -ENODEV)
-		pr_err("Failed to initialize %s. (error %d)\n", dev->name,
-		       ret);
-}
+MODULE_DESCRIPTION("NVIDIA Tegra NAND driver");
+MODULE_AUTHOR("Thierry Reding <thierry.reding@nvidia.com>");
+MODULE_AUTHOR("Lucas Stach <dev@lynxeye.de>");
+MODULE_AUTHOR("Stefan Agner <stefan@agner.ch>");
+MODULE_LICENSE("GPL v2");

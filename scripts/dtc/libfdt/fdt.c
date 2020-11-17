@@ -15,19 +15,14 @@
  * that the given buffer contains what appears to be a flattened
  * device tree with sane information in its header.
  */
-int32_t fdt_ro_probe_(const void *fdt)
+int fdt_ro_probe_(const void *fdt)
 {
-	uint32_t totalsize = fdt_totalsize(fdt);
-
 	if (fdt_magic(fdt) == FDT_MAGIC) {
 		/* Complete tree */
-		if (fdt_chk_version()) {
-			if (fdt_version(fdt) < FDT_FIRST_SUPPORTED_VERSION)
-				return -FDT_ERR_BADVERSION;
-			if (fdt_last_comp_version(fdt) >
-					FDT_LAST_SUPPORTED_VERSION)
-				return -FDT_ERR_BADVERSION;
-		}
+		if (fdt_version(fdt) < FDT_FIRST_SUPPORTED_VERSION)
+			return -FDT_ERR_BADVERSION;
+		if (fdt_last_comp_version(fdt) > FDT_LAST_SUPPORTED_VERSION)
+			return -FDT_ERR_BADVERSION;
 	} else if (fdt_magic(fdt) == FDT_SW_MAGIC) {
 		/* Unfinished sequential-write blob */
 		if (fdt_size_dt_struct(fdt) == 0)
@@ -36,10 +31,7 @@ int32_t fdt_ro_probe_(const void *fdt)
 		return -FDT_ERR_BADMAGIC;
 	}
 
-	if (totalsize < INT32_MAX)
-		return totalsize;
-	else
-		return -FDT_ERR_TRUNCATED;
+	return 0;
 }
 
 static int check_off_(uint32_t hdrsize, uint32_t totalsize, uint32_t off)
@@ -73,58 +65,43 @@ size_t fdt_header_size_(uint32_t version)
 		return FDT_V17_SIZE;
 }
 
-size_t fdt_header_size(const void *fdt)
-{
-	return fdt_chk_version() ? fdt_header_size_(fdt_version(fdt)) :
-		FDT_V17_SIZE;
-}
-
 int fdt_check_header(const void *fdt)
 {
 	size_t hdrsize;
 
 	if (fdt_magic(fdt) != FDT_MAGIC)
 		return -FDT_ERR_BADMAGIC;
-	if (fdt_chk_version()) {
-		if ((fdt_version(fdt) < FDT_FIRST_SUPPORTED_VERSION)
-		    || (fdt_last_comp_version(fdt) >
-			FDT_LAST_SUPPORTED_VERSION))
-			return -FDT_ERR_BADVERSION;
-		if (fdt_version(fdt) < fdt_last_comp_version(fdt))
-			return -FDT_ERR_BADVERSION;
-	}
 	hdrsize = fdt_header_size(fdt);
-	if (fdt_chk_basic()) {
+	if ((fdt_version(fdt) < FDT_FIRST_SUPPORTED_VERSION)
+	    || (fdt_last_comp_version(fdt) > FDT_LAST_SUPPORTED_VERSION))
+		return -FDT_ERR_BADVERSION;
+	if (fdt_version(fdt) < fdt_last_comp_version(fdt))
+		return -FDT_ERR_BADVERSION;
 
-		if ((fdt_totalsize(fdt) < hdrsize)
-		    || (fdt_totalsize(fdt) > INT_MAX))
-			return -FDT_ERR_TRUNCATED;
+	if ((fdt_totalsize(fdt) < hdrsize)
+	    || (fdt_totalsize(fdt) > INT_MAX))
+		return -FDT_ERR_TRUNCATED;
 
-		/* Bounds check memrsv block */
+	/* Bounds check memrsv block */
+	if (!check_off_(hdrsize, fdt_totalsize(fdt), fdt_off_mem_rsvmap(fdt)))
+		return -FDT_ERR_TRUNCATED;
+
+	/* Bounds check structure block */
+	if (fdt_version(fdt) < 17) {
 		if (!check_off_(hdrsize, fdt_totalsize(fdt),
-				fdt_off_mem_rsvmap(fdt)))
+				fdt_off_dt_struct(fdt)))
 			return -FDT_ERR_TRUNCATED;
-	}
-
-	if (fdt_chk_extra()) {
-		/* Bounds check structure block */
-		if (fdt_chk_version() && fdt_version(fdt) < 17) {
-			if (!check_off_(hdrsize, fdt_totalsize(fdt),
-					fdt_off_dt_struct(fdt)))
-				return -FDT_ERR_TRUNCATED;
-		} else {
-			if (!check_block_(hdrsize, fdt_totalsize(fdt),
-					  fdt_off_dt_struct(fdt),
-					  fdt_size_dt_struct(fdt)))
-				return -FDT_ERR_TRUNCATED;
-		}
-
-		/* Bounds check strings block */
+	} else {
 		if (!check_block_(hdrsize, fdt_totalsize(fdt),
-				  fdt_off_dt_strings(fdt),
-				  fdt_size_dt_strings(fdt)))
+				  fdt_off_dt_struct(fdt),
+				  fdt_size_dt_struct(fdt)))
 			return -FDT_ERR_TRUNCATED;
 	}
+
+	/* Bounds check strings block */
+	if (!check_block_(hdrsize, fdt_totalsize(fdt),
+			  fdt_off_dt_strings(fdt), fdt_size_dt_strings(fdt)))
+		return -FDT_ERR_TRUNCATED;
 
 	return 0;
 }
@@ -133,13 +110,12 @@ const void *fdt_offset_ptr(const void *fdt, int offset, unsigned int len)
 {
 	unsigned absoffset = offset + fdt_off_dt_struct(fdt);
 
-	if (fdt_chk_basic())
-		if ((absoffset < offset)
-		    || ((absoffset + len) < absoffset)
-		    || (absoffset + len) > fdt_totalsize(fdt))
-			return NULL;
+	if ((absoffset < offset)
+	    || ((absoffset + len) < absoffset)
+	    || (absoffset + len) > fdt_totalsize(fdt))
+		return NULL;
 
-	if (!fdt_chk_version() || fdt_version(fdt) >= 0x11)
+	if (fdt_version(fdt) >= 0x11)
 		if (((offset + len) < offset)
 		    || ((offset + len) > fdt_size_dt_struct(fdt)))
 			return NULL;
@@ -156,7 +132,7 @@ uint32_t fdt_next_tag(const void *fdt, int startoffset, int *nextoffset)
 
 	*nextoffset = -FDT_ERR_TRUNCATED;
 	tagp = fdt_offset_ptr(fdt, offset, FDT_TAGSIZE);
-	if (fdt_chk_basic() && !tagp)
+	if (!tagp)
 		return FDT_END; /* premature end */
 	tag = fdt32_to_cpu(*tagp);
 	offset += FDT_TAGSIZE;
@@ -168,19 +144,18 @@ uint32_t fdt_next_tag(const void *fdt, int startoffset, int *nextoffset)
 		do {
 			p = fdt_offset_ptr(fdt, offset++, 1);
 		} while (p && (*p != '\0'));
-		if (fdt_chk_basic() && !p)
+		if (!p)
 			return FDT_END; /* premature end */
 		break;
 
 	case FDT_PROP:
 		lenp = fdt_offset_ptr(fdt, offset, sizeof(*lenp));
-		if (fdt_chk_basic() && !lenp)
+		if (!lenp)
 			return FDT_END; /* premature end */
 		/* skip-name offset, length and value */
 		offset += sizeof(struct fdt_property) - FDT_TAGSIZE
 			+ fdt32_to_cpu(*lenp);
-		if (fdt_chk_version() &&
-		    fdt_version(fdt) < 0x10 && fdt32_to_cpu(*lenp) >= 8 &&
+		if (fdt_version(fdt) < 0x10 && fdt32_to_cpu(*lenp) >= 8 &&
 		    ((offset - fdt32_to_cpu(*lenp)) % 8) != 0)
 			offset += 4;
 		break;
@@ -194,8 +169,7 @@ uint32_t fdt_next_tag(const void *fdt, int startoffset, int *nextoffset)
 		return FDT_END;
 	}
 
-	if (fdt_chk_basic() &&
-	    !fdt_offset_ptr(fdt, startoffset, offset - startoffset))
+	if (!fdt_offset_ptr(fdt, startoffset, offset - startoffset))
 		return FDT_END; /* premature end */
 
 	*nextoffset = FDT_TAGALIGN(offset);

@@ -1,7 +1,29 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_KCONFIG_H
 #define __LINUX_KCONFIG_H
 
 #include <generated/autoconf.h>
+
+#ifdef CONFIG_CPU_BIG_ENDIAN
+#define __BIG_ENDIAN 4321
+#else
+#define __LITTLE_ENDIAN 1234
+#endif
+
+#define __ARG_PLACEHOLDER_1 0,
+#define __take_second_arg(__ignored, val, ...) val
+
+/*
+ * The use of "&&" / "||" is limited in certain expressions.
+ * The following enable to calculate "and" / "or" with macro expansion only.
+ */
+#define __and(x, y)			___and(x, y)
+#define ___and(x, y)			____and(__ARG_PLACEHOLDER_##x, y)
+#define ____and(arg1_or_junk, y)	__take_second_arg(arg1_or_junk y, 0)
+
+#define __or(x, y)			___or(x, y)
+#define ___or(x, y)			____or(__ARG_PLACEHOLDER_##x, y)
+#define ____or(arg1_or_junk, y)		__take_second_arg(arg1_or_junk 1, y)
 
 /*
  * Helper macros to use CONFIG_ options in C/CPP expressions. Note that
@@ -16,94 +38,36 @@
  * When CONFIG_BOOGER is not defined, we generate a (... 1, 0) pair, and when
  * the last step cherry picks the 2nd arg, we get a zero.
  */
-#define __ARG_PLACEHOLDER_1 0,
-#define config_enabled(cfg) _config_enabled(cfg)
-#define _config_enabled(value) __config_enabled(__ARG_PLACEHOLDER_##value)
-#define __config_enabled(arg1_or_junk) ___config_enabled(arg1_or_junk 1, 0)
-#define ___config_enabled(__ignored, val, ...) val
-
-/*
- * IS_ENABLED(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'y' or 'm',
- * 0 otherwise.
- *
- */
-#define IS_ENABLED(option) \
-	(config_enabled(option) || config_enabled(option##_MODULE))
+#define __is_defined(x)			___is_defined(x)
+#define ___is_defined(val)		____is_defined(__ARG_PLACEHOLDER_##val)
+#define ____is_defined(arg1_or_junk)	__take_second_arg(arg1_or_junk 1, 0)
 
 /*
  * IS_BUILTIN(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'y', 0
  * otherwise. For boolean options, this is equivalent to
  * IS_ENABLED(CONFIG_FOO).
  */
-#define IS_BUILTIN(option) config_enabled(option)
+#define IS_BUILTIN(option) __is_defined(option)
 
 /*
  * IS_MODULE(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'm', 0
  * otherwise.
  */
-#define IS_MODULE(option) config_enabled(option##_MODULE)
+#define IS_MODULE(option) __is_defined(option##_MODULE)
 
 /*
- * U-Boot add-on: Helper macros to reference to different macros
- * (CONFIG_ or CONFIG_SPL_ prefixed), depending on the build context.
+ * IS_REACHABLE(CONFIG_FOO) evaluates to 1 if the currently compiled
+ * code can call a function defined in code compiled based on CONFIG_FOO.
+ * This is similar to IS_ENABLED(), but returns false when invoked from
+ * built-in code when CONFIG_FOO is set to 'm'.
  */
-#ifdef CONFIG_SPL_BUILD
-#define _IS_SPL 1
-#endif
-
-#ifdef CONFIG_TPL_BUILD
-#define _IS_TPL 1
-#endif
-
-#if defined(CONFIG_TPL_BUILD)
-#define config_val(cfg) _config_val(_IS_TPL, cfg)
-#define _config_val(x, cfg) __config_val(x, cfg)
-#define __config_val(x, cfg) ___config_val(__ARG_PLACEHOLDER_##x, cfg)
-#define ___config_val(arg1_or_junk, cfg)  \
-	____config_val(arg1_or_junk CONFIG_TPL_##cfg, CONFIG_##cfg)
-#define ____config_val(__ignored, val, ...) val
-#else
-#define config_val(cfg) _config_val(_IS_SPL, cfg)
-#define _config_val(x, cfg) __config_val(x, cfg)
-#define __config_val(x, cfg) ___config_val(__ARG_PLACEHOLDER_##x, cfg)
-#define ___config_val(arg1_or_junk, cfg)  \
-	____config_val(arg1_or_junk CONFIG_SPL_##cfg, CONFIG_##cfg)
-#define ____config_val(__ignored, val, ...) val
-#endif
+#define IS_REACHABLE(option) __or(IS_BUILTIN(option), \
+				__and(IS_MODULE(option), __is_defined(MODULE)))
 
 /*
- * CONFIG_VAL(FOO) evaluates to the value of
- *  CONFIG_FOO if CONFIG_SPL_BUILD is undefined,
- *  CONFIG_SPL_FOO if CONFIG_SPL_BUILD is defined.
- *  CONFIG_TPL_FOO if CONFIG_TPL_BUILD is defined.
+ * IS_ENABLED(CONFIG_FOO) evaluates to 1 if CONFIG_FOO is set to 'y' or 'm',
+ * 0 otherwise.
  */
-#define CONFIG_VAL(option)  config_val(option)
-
-/*
- * CONFIG_IS_ENABLED(FOO) evaluates to
- *  1 if CONFIG_SPL_BUILD is undefined and CONFIG_FOO is set to 'y' or 'm',
- *  1 if CONFIG_SPL_BUILD is defined and CONFIG_SPL_FOO is set to 'y' or 'm',
- *  1 if CONFIG_TPL_BUILD is defined and CONFIG_TPL_FOO is set to 'y' or 'm',
- *  0 otherwise.
- */
-#define CONFIG_IS_ENABLED(option) \
-	(config_enabled(CONFIG_VAL(option)) ||		\
-	 config_enabled(CONFIG_VAL(option##_MODULE)))
-
-/*
- * CONFIG_IS_BUILTIN(FOO) evaluates to
- *  1 if CONFIG_SPL_BUILD is undefined and CONFIG_FOO is set to 'y',
- *  1 if CONFIG_SPL_BUILD is defined and CONFIG_SPL_FOO is set to 'y',
- *  0 otherwise.
- */
-#define CONFIG_IS_BUILTIN(option) config_enabled(CONFIG_VAL(option))
-
-/*
- * CONFIG_IS_MODULE(FOO) evaluates to
- *  1 if CONFIG_SPL_BUILD is undefined and CONFIG_FOO is set to 'm',
- *  1 if CONFIG_SPL_BUILD is defined and CONFIG_SPL_FOO is set to 'm',
- *  0 otherwise.
- */
-#define CONFIG_IS_MODULE(option) config_enabled(CONFIG_VAL(option##_MODULE))
+#define IS_ENABLED(option) __or(IS_BUILTIN(option), IS_MODULE(option))
 
 #endif /* __LINUX_KCONFIG_H */

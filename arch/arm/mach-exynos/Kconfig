@@ -1,174 +1,130 @@
+# SPDX-License-Identifier: GPL-2.0
+#
+# Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
+#		http://www.samsung.com/
+
+# Configuration options for the EXYNOS
+
+menuconfig ARCH_EXYNOS
+	bool "Samsung EXYNOS"
+	depends on ARCH_MULTI_V7
+	select ARCH_HAS_HOLES_MEMORYMODEL
+	select ARCH_SUPPORTS_BIG_ENDIAN
+	select ARM_AMBA
+	select ARM_GIC
+	select COMMON_CLK_SAMSUNG
+	select EXYNOS_CHIPID
+	select EXYNOS_THERMAL
+	select EXYNOS_PMU
+	select EXYNOS_SROM
+	select EXYNOS_PM_DOMAINS if PM_GENERIC_DOMAINS
+	select GPIOLIB
+	select HAVE_ARM_ARCH_TIMER if ARCH_EXYNOS5 && VIRTUALIZATION
+	select HAVE_ARM_SCU if SMP
+	select HAVE_S3C2410_I2C if I2C
+	select HAVE_S3C2410_WATCHDOG if WATCHDOG
+	select HAVE_S3C_RTC if RTC_CLASS
+	select PINCTRL
+	select PINCTRL_EXYNOS
+	select PM_GENERIC_DOMAINS if PM
+	select S5P_DEV_MFC
+	select SAMSUNG_MC
+	select SOC_SAMSUNG
+	select SRAM
+	select THERMAL
+	select THERMAL_OF
+	select MFD_SYSCON
+	select MEMORY
+	select CLKSRC_EXYNOS_MCT
+	select POWER_RESET
+	select POWER_RESET_SYSCON
+	select POWER_RESET_SYSCON_POWEROFF
+	help
+	  Support for SAMSUNG EXYNOS SoCs (EXYNOS4/5)
+
 if ARCH_EXYNOS
 
-choice
-	prompt "EXYNOS architecture type select"
-	optional
+config S5P_DEV_MFC
+	bool
+	help
+	  Compile in setup memory (init) code for MFC
+
+config ARCH_EXYNOS3
+	bool "SAMSUNG EXYNOS3"
+	default y
+	select ARM_CPU_SUSPEND if PM
+	help
+	  Samsung EXYNOS3 (Cortex-A7) SoC based systems
 
 config ARCH_EXYNOS4
-	bool "Exynos4 SoC family"
-	select BOARD_EARLY_INIT_F
-	select CPU_V7A
-	select BLK
-	select DM_MMC
+	bool "SAMSUNG EXYNOS4"
+	default y
+	select ARM_CPU_SUSPEND if PM_SLEEP
+	select CLKSRC_SAMSUNG_PWM if CPU_EXYNOS4210
+	select CPU_EXYNOS4210
+	select GIC_NON_BANKED
+	select MIGHT_HAVE_CACHE_L2X0
 	help
-	  Samsung Exynos4 SoC family are based on ARM Cortex-A9 CPU. There
-	  are multiple SoCs in this family including Exynos4210, Exynos4412,
-	  and Exynos4212.
+	  Samsung EXYNOS4 (Cortex-A9) SoC based systems
 
 config ARCH_EXYNOS5
-	bool "Exynos5 SoC family"
-	select BOARD_EARLY_INIT_F
-	select CPU_V7A
-	select SHA_HW_ACCEL
-	imply CMD_HASH
-	imply CRC32_VERIFY
-	imply HASH_VERIFY
-	imply USB_ETHER_ASIX
-	imply USB_ETHER_RTL8152
-	imply USB_ETHER_SMSC95XX
-	select BLK
-	select DM_MMC
-
+	bool "SAMSUNG EXYNOS5"
+	default y
 	help
-	  Samsung Exynos5 SoC family are based on ARM Cortex-A15 CPU (and
-	  Cortex-A7 CPU in big.LITTLE configuration). There are multiple SoCs
-	  in this family including Exynos5250, Exynos5420 and Exynos5800.
+	  Samsung EXYNOS5 (Cortex-A15/A7) SoC based systems
 
-config ARCH_EXYNOS7
-	bool "Exynos7 SoC family"
-	select ARM64
-	select BOARD_EARLY_INIT_F
-	select BLK
-	select DM_MMC
-	help
-	  Samsung Exynos7 SoC family are based on ARM Cortex-A57 CPU or
-	  Cortex-A53 CPU (and some in a big.LITTLE configuration). There are
-	  multiple SoCs in this family including Exynos7420.
+comment "EXYNOS SoCs"
 
-endchoice
-
-if ARCH_EXYNOS4
-
-choice
-	prompt "EXYNOS4 board select"
-
-config TARGET_SMDKV310
-	bool "Exynos4210 SMDKV310 board"
-	select OF_CONTROL
-	select SUPPORT_SPL
-
-config TARGET_TRATS
-	bool "Exynos4210 Trats board"
-
-config TARGET_S5PC210_UNIVERSAL
-	bool "EXYNOS4210 Universal C210 board"
-
-config TARGET_ORIGEN
-	bool "Exynos4412 Origen board"
-	select SUPPORT_SPL
-
-config TARGET_TRATS2
-	bool "Exynos4412 Trat2 board"
-
-config TARGET_ODROID
-	bool "Exynos4412 Odroid board"
-
-endchoice
-endif
-
-if ARCH_EXYNOS5
-
-config SPL_GPIO_SUPPORT
+config SOC_EXYNOS3250
+	bool "SAMSUNG EXYNOS3250"
 	default y
+	depends on ARCH_EXYNOS3
 
-config SPL_LIBCOMMON_SUPPORT
+config CPU_EXYNOS4210
+	bool "SAMSUNG EXYNOS4210"
 	default y
+	depends on ARCH_EXYNOS4
 
-config SPL_LIBGENERIC_SUPPORT
+config SOC_EXYNOS4412
+	bool "SAMSUNG EXYNOS4412"
 	default y
+	depends on ARCH_EXYNOS4
 
-choice
-	prompt "EXYNOS5 board select"
+config SOC_EXYNOS5250
+	bool "SAMSUNG EXYNOS5250"
+	default y
+	depends on ARCH_EXYNOS5
 
-config TARGET_ODROID_XU3
-	bool "Exynos5422 Odroid board"
-	select OF_CONTROL
+config SOC_EXYNOS5260
+	bool "SAMSUNG EXYNOS5260"
+	default y
+	depends on ARCH_EXYNOS5
 
-config TARGET_ARNDALE
-	bool "Exynos5250 Arndale board"
-	select ARM_ERRATA_773022
-	select ARM_ERRATA_774769
-	select CPU_V7_HAS_NONSEC
-	select CPU_V7_HAS_VIRT
-	select OF_CONTROL
-	select SUPPORT_SPL
+config SOC_EXYNOS5410
+	bool "SAMSUNG EXYNOS5410"
+	default y
+	depends on ARCH_EXYNOS5
 
-config TARGET_SMDK5250
-	bool "SMDK5250 board"
-	select OF_CONTROL
-	select SUPPORT_SPL
+config SOC_EXYNOS5420
+	bool "SAMSUNG EXYNOS5420"
+	default y
+	depends on ARCH_EXYNOS5
+	select EXYNOS_MCPM if SMP
+	select ARM_CCI400_PORT_CTRL
+	select ARM_CPU_SUSPEND
 
-config TARGET_SNOW
-	bool "Snow board"
-	select OF_CONTROL
-	select SUPPORT_SPL
+config SOC_EXYNOS5800
+	bool "SAMSUNG EXYNOS5800"
+	default y
+	depends on SOC_EXYNOS5420
 
-config TARGET_SPRING
-	bool "Spring board"
-	select OF_CONTROL
-	select SUPPORT_SPL
+config EXYNOS_MCPM
+	bool
+	select MCPM
 
-config TARGET_SMDK5420
-	bool "SMDK5420 board"
-	select OF_CONTROL
-	select SUPPORT_SPL
-
-config TARGET_PEACH_PI
-	bool "Peach Pi board"
-	select OF_CONTROL
-	select SUPPORT_SPL
-
-config TARGET_PEACH_PIT
-	bool "Peach Pit board"
-	select OF_CONTROL
-	select SUPPORT_SPL
-
-endchoice
-endif
-
-if ARCH_EXYNOS7
-
-choice
-	prompt "EXYNOS7 board select"
-
-config  TARGET_ESPRESSO7420
-	bool "ESPRESSO7420 board"
-	select ARM64
-	select ARMV8_MULTIENTRY
-	select CLK_EXYNOS
-	select OF_CONTROL
-	select PINCTRL
-	select PINCTRL_EXYNOS7420
-	select SUPPORT_SPL
-
-endchoice
-endif
-
-config SYS_SOC
-	default "exynos"
-
-source "board/samsung/smdkv310/Kconfig"
-source "board/samsung/trats/Kconfig"
-source "board/samsung/universal_c210/Kconfig"
-source "board/samsung/origen/Kconfig"
-source "board/samsung/trats2/Kconfig"
-source "board/samsung/odroid/Kconfig"
-source "board/samsung/arndale/Kconfig"
-source "board/samsung/smdk5250/Kconfig"
-source "board/samsung/smdk5420/Kconfig"
-source "board/samsung/espresso7420/Kconfig"
-
-config SPL_LDSCRIPT
-	default "board/samsung/common/exynos-uboot-spl.lds" if ARCH_EXYNOS5 || ARCH_EXYNOS4
+config EXYNOS_CPU_SUSPEND
+	bool
+	select ARM_CPU_SUSPEND
+	default PM_SLEEP || ARM_EXYNOS_CPUIDLE
 
 endif

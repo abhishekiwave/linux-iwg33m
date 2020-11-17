@@ -1,144 +1,133 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/*  Generic MTRR (Memory Type Range Register) ioctls.
+
+    Copyright (C) 1997-1999  Richard Gooch
+
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Library General Public
+    License as published by the Free Software Foundation; either
+    version 2 of the License, or (at your option) any later version.
+
+    This library is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+    Library General Public License for more details.
+
+    You should have received a copy of the GNU Library General Public
+    License along with this library; if not, write to the Free
+    Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+    Richard Gooch may be reached by email at  rgooch@atnf.csiro.au
+    The postal address is:
+      Richard Gooch, c/o ATNF, P. O. Box 76, Epping, N.S.W., 2121, Australia.
+*/
+#ifndef _ASM_X86_MTRR_H
+#define _ASM_X86_MTRR_H
+
+#include <uapi/asm/mtrr.h>
+#include <asm/pat.h>
+
+
 /*
- * Copyright (c) 2014 Google, Inc
- *
- * From Coreboot file of the same name
+ * The following functions are for use by other drivers that cannot use
+ * arch_phys_wc_add and arch_phys_wc_del.
  */
+# ifdef CONFIG_MTRR
+extern u8 mtrr_type_lookup(u64 addr, u64 end, u8 *uniform);
+extern void mtrr_save_fixed_ranges(void *);
+extern void mtrr_save_state(void);
+extern int mtrr_add(unsigned long base, unsigned long size,
+		    unsigned int type, bool increment);
+extern int mtrr_add_page(unsigned long base, unsigned long size,
+			 unsigned int type, bool increment);
+extern int mtrr_del(int reg, unsigned long base, unsigned long size);
+extern int mtrr_del_page(int reg, unsigned long base, unsigned long size);
+extern void mtrr_centaur_report_mcr(int mcr, u32 lo, u32 hi);
+extern void mtrr_ap_init(void);
+extern void mtrr_bp_init(void);
+extern void set_mtrr_aps_delayed_init(void);
+extern void mtrr_aps_init(void);
+extern void mtrr_bp_restore(void);
+extern int mtrr_trim_uncached_memory(unsigned long end_pfn);
+extern int amd_special_default_mtrr(void);
+#  else
+static inline u8 mtrr_type_lookup(u64 addr, u64 end, u8 *uniform)
+{
+	/*
+	 * Return no-MTRRs:
+	 */
+	return MTRR_TYPE_INVALID;
+}
+#define mtrr_save_fixed_ranges(arg) do {} while (0)
+#define mtrr_save_state() do {} while (0)
+static inline int mtrr_add(unsigned long base, unsigned long size,
+			   unsigned int type, bool increment)
+{
+    return -ENODEV;
+}
+static inline int mtrr_add_page(unsigned long base, unsigned long size,
+				unsigned int type, bool increment)
+{
+    return -ENODEV;
+}
+static inline int mtrr_del(int reg, unsigned long base, unsigned long size)
+{
+    return -ENODEV;
+}
+static inline int mtrr_del_page(int reg, unsigned long base, unsigned long size)
+{
+    return -ENODEV;
+}
+static inline int mtrr_trim_uncached_memory(unsigned long end_pfn)
+{
+	return 0;
+}
+static inline void mtrr_centaur_report_mcr(int mcr, u32 lo, u32 hi)
+{
+}
+static inline void mtrr_bp_init(void)
+{
+	pat_disable("MTRRs disabled, skipping PAT initialization too.");
+}
 
-#ifndef _ASM_MTRR_H
-#define _ASM_MTRR_H
+#define mtrr_ap_init() do {} while (0)
+#define set_mtrr_aps_delayed_init() do {} while (0)
+#define mtrr_aps_init() do {} while (0)
+#define mtrr_bp_restore() do {} while (0)
+#  endif
 
-/* MTRR region types */
-#define MTRR_TYPE_UNCACHEABLE	0
-#define MTRR_TYPE_WRCOMB	1
-#define MTRR_TYPE_WRTHROUGH	4
-#define MTRR_TYPE_WRPROT	5
-#define MTRR_TYPE_WRBACK	6
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
 
-#define MTRR_TYPE_COUNT		7
-
-#define MTRR_CAP_MSR		0x0fe
-#define MTRR_DEF_TYPE_MSR	0x2ff
-
-#define MTRR_CAP_SMRR		(1 << 11)
-#define MTRR_CAP_WC		(1 << 10)
-#define MTRR_CAP_FIX		(1 << 8)
-#define MTRR_CAP_VCNT_MASK	0xff
-
-#define MTRR_DEF_TYPE_MASK	0xff
-#define MTRR_DEF_TYPE_EN	(1 << 11)
-#define MTRR_DEF_TYPE_FIX_EN	(1 << 10)
-
-#define MTRR_PHYS_BASE_MSR(reg)	(0x200 + 2 * (reg))
-#define MTRR_PHYS_MASK_MSR(reg)	(0x200 + 2 * (reg) + 1)
-
-#define MTRR_PHYS_MASK_VALID	(1 << 11)
-
-#define MTRR_BASE_TYPE_MASK	0x7
-
-/* Number of MTRRs supported */
-#define MTRR_COUNT		8
-
-#define NUM_FIXED_MTRRS		11
-#define RANGES_PER_FIXED_MTRR	8
-#define NUM_FIXED_RANGES	(NUM_FIXED_MTRRS * RANGES_PER_FIXED_MTRR)
-
-#define MTRR_FIX_64K_00000_MSR	0x250
-#define MTRR_FIX_16K_80000_MSR	0x258
-#define MTRR_FIX_16K_A0000_MSR	0x259
-#define MTRR_FIX_4K_C0000_MSR	0x268
-#define MTRR_FIX_4K_C8000_MSR	0x269
-#define MTRR_FIX_4K_D0000_MSR	0x26a
-#define MTRR_FIX_4K_D8000_MSR	0x26b
-#define MTRR_FIX_4K_E0000_MSR	0x26c
-#define MTRR_FIX_4K_E8000_MSR	0x26d
-#define MTRR_FIX_4K_F0000_MSR	0x26e
-#define MTRR_FIX_4K_F8000_MSR	0x26f
-
-#define MTRR_FIX_TYPE(t)	((t << 24) | (t << 16) | (t << 8) | t)
-
-#if !defined(__ASSEMBLER__)
-
-/**
- * Information about the previous MTRR state, set up by mtrr_open()
- *
- * @deftype:		Previous value of MTRR_DEF_TYPE_MSR
- * @enable_cache:	true if cache was enabled
- */
-struct mtrr_state {
-	uint64_t deftype;
-	bool enable_cache;
+struct mtrr_sentry32 {
+    compat_ulong_t base;    /*  Base address     */
+    compat_uint_t size;    /*  Size of region   */
+    compat_uint_t type;     /*  Type of region   */
 };
 
-/**
- * mtrr_open() - Prepare to adjust MTRRs
- *
- * Use mtrr_open() passing in a structure - this function will init it. Then
- * when done, pass the same structure to mtrr_close() to re-enable MTRRs and
- * possibly the cache.
- *
- * @state:	Empty structure to pass in to hold settings
- * @do_caches:	true to disable caches before opening
- */
-void mtrr_open(struct mtrr_state *state, bool do_caches);
+struct mtrr_gentry32 {
+    compat_ulong_t regnum;   /*  Register number  */
+    compat_uint_t base;    /*  Base address     */
+    compat_uint_t size;    /*  Size of region   */
+    compat_uint_t type;     /*  Type of region   */
+};
 
-/**
- * mtrr_open() - Clean up after adjusting MTRRs, and enable them
- *
- * This uses the structure containing information returned from mtrr_open().
- *
- * @state:	Structure from mtrr_open()
- * @state:	true to restore cache state to that before mtrr_open()
- */
-void mtrr_close(struct mtrr_state *state, bool do_caches);
+#define MTRR_IOCTL_BASE 'M'
 
-/**
- * mtrr_add_request() - Add a new MTRR request
- *
- * This adds a request for a memory region to be set up in a particular way.
- *
- * @type:	Requested type (MTRR_TYPE_)
- * @start:	Start address
- * @size:	Size
- *
- * @return:	0 on success, non-zero on failure
- */
-int mtrr_add_request(int type, uint64_t start, uint64_t size);
+#define MTRRIOC32_ADD_ENTRY      _IOW(MTRR_IOCTL_BASE,  0, struct mtrr_sentry32)
+#define MTRRIOC32_SET_ENTRY      _IOW(MTRR_IOCTL_BASE,  1, struct mtrr_sentry32)
+#define MTRRIOC32_DEL_ENTRY      _IOW(MTRR_IOCTL_BASE,  2, struct mtrr_sentry32)
+#define MTRRIOC32_GET_ENTRY      _IOWR(MTRR_IOCTL_BASE, 3, struct mtrr_gentry32)
+#define MTRRIOC32_KILL_ENTRY     _IOW(MTRR_IOCTL_BASE,  4, struct mtrr_sentry32)
+#define MTRRIOC32_ADD_PAGE_ENTRY _IOW(MTRR_IOCTL_BASE,  5, struct mtrr_sentry32)
+#define MTRRIOC32_SET_PAGE_ENTRY _IOW(MTRR_IOCTL_BASE,  6, struct mtrr_sentry32)
+#define MTRRIOC32_DEL_PAGE_ENTRY _IOW(MTRR_IOCTL_BASE,  7, struct mtrr_sentry32)
+#define MTRRIOC32_GET_PAGE_ENTRY _IOWR(MTRR_IOCTL_BASE, 8, struct mtrr_gentry32)
+#define MTRRIOC32_KILL_PAGE_ENTRY		\
+				 _IOW(MTRR_IOCTL_BASE,  9, struct mtrr_sentry32)
+#endif /* CONFIG_COMPAT */
 
-/**
- * mtrr_commit() - set up the MTRR registers based on current requests
- *
- * This sets up MTRRs for the available DRAM and the requests received so far.
- * It must be called with caches disabled.
- *
- * @do_caches:	true if caches are currently on
- *
- * @return:	0 on success, non-zero on failure
- */
-int mtrr_commit(bool do_caches);
+/* Bit fields for enabled in struct mtrr_state_type */
+#define MTRR_STATE_MTRR_FIXED_ENABLED	0x01
+#define MTRR_STATE_MTRR_ENABLED		0x02
 
-/**
- * mtrr_set_next_var() - set up a variable MTRR
- *
- * This finds the first free variable MTRR and sets to the given area
- *
- * @type:	Requested type (MTRR_TYPE_)
- * @start:	Start address
- * @size:	Size
- * @return 0 on success, -ENOSPC if there are no more MTRRs
- */
-int mtrr_set_next_var(uint type, uint64_t base, uint64_t size);
-
-#endif
-
-#if ((CONFIG_XIP_ROM_SIZE & (CONFIG_XIP_ROM_SIZE - 1)) != 0)
-# error "CONFIG_XIP_ROM_SIZE is not a power of 2"
-#endif
-
-#if ((CONFIG_CACHE_ROM_SIZE & (CONFIG_CACHE_ROM_SIZE - 1)) != 0)
-# error "CONFIG_CACHE_ROM_SIZE is not a power of 2"
-#endif
-
-#define CACHE_ROM_BASE	(((1 << 20) - (CONFIG_CACHE_ROM_SIZE >> 12)) << 12)
-
-#endif
+#endif /* _ASM_X86_MTRR_H */

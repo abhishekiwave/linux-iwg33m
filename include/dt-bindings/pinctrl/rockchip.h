@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Header providing constants for Rockchip pinctrl bindings.
  *
@@ -54,7 +54,5 @@
 #define RK_FUNC_2	2
 #define RK_FUNC_3	3
 #define RK_FUNC_4	4
-#define RK_FUNC_5	5
-#define RK_FUNC_6	6
 
 #endif

@@ -1,6 +1,9 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
+# ===========================================================================
+# Post-link MIPS pass
+# ===========================================================================
 #
-# Copyright (c) 2017 Imagination Technologies Ltd.
+# 1. Insert relocations into vmlinux
 
 PHONY := __archpost
 __archpost:
@@ -8,14 +11,26 @@ __archpost:
 -include include/config/auto.conf
 include scripts/Kbuild.include
 
-CMD_RELOCS = tools/mips-relocs
+CMD_RELOCS = arch/mips/boot/tools/relocs
 quiet_cmd_relocs = RELOCS  $@
       cmd_relocs = $(CMD_RELOCS) $@
 
-u-boot: FORCE
-	@true
-	$(call if_changed,relocs)
+# `@true` prevents complaint when there is nothing to be done
 
-.PHONY: FORCE
+vmlinux: FORCE
+	@true
+ifeq ($(CONFIG_RELOCATABLE),y)
+	$(call if_changed,relocs)
+endif
+
+%.ko: FORCE
+	@true
+
+clean:
+	@true
+
+PHONY += FORCE clean
 
 FORCE:
+
+.PHONY: $(PHONY)

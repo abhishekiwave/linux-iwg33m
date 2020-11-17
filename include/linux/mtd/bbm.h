@@ -1,7 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- *  linux/include/linux/mtd/bbm.h
- *
  *  NAND family Bad Block Management (BBM) header file
  *    - Bad Block Table (BBT) implementation
  *
@@ -10,15 +8,12 @@
  *
  *  Copyright © 2000-2005
  *  Thomas Gleixner <tglx@linuxtronix.de>
- *
  */
 #ifndef __LINUX_MTD_BBM_H
 #define __LINUX_MTD_BBM_H
 
 /* The maximum number of NAND chips in an array */
-#ifndef CONFIG_SYS_NAND_MAX_CHIPS
-#define CONFIG_SYS_NAND_MAX_CHIPS	1
-#endif
+#define NAND_MAX_CHIPS		8
 
 /**
  * struct nand_bbt_descr - bad block table descriptor
@@ -45,10 +40,10 @@
  */
 struct nand_bbt_descr {
 	int options;
-	int pages[CONFIG_SYS_NAND_MAX_CHIPS];
+	int pages[NAND_MAX_CHIPS];
 	int offs;
 	int veroffs;
-	uint8_t version[CONFIG_SYS_NAND_MAX_CHIPS];
+	uint8_t version[NAND_MAX_CHIPS];
 	int len;
 	int maxblocks;
 	int reserved_block_code;
@@ -84,10 +79,7 @@ struct nand_bbt_descr {
 #define NAND_BBT_WRITE		0x00002000
 /* Read and write back block contents when writing bbt */
 #define NAND_BBT_SAVECONTENT	0x00004000
-/* Search good / bad pattern on the first and the second page */
-#define NAND_BBT_SCAN2NDPAGE	0x00008000
-/* Search good / bad pattern on the last page of the eraseblock */
-#define NAND_BBT_SCANLASTPAGE	0x00010000
+
 /*
  * Use a flash based bad block table. By default, OOB identifier is saved in
  * OOB area. This option is passed to the default bad block table function.
@@ -115,13 +107,6 @@ struct nand_bbt_descr {
 #define NAND_BBT_SCAN_MAXBLOCKS	4
 
 /*
- * Constants for oob configuration
- */
-#define NAND_SMALL_BADBLOCK_POS		5
-#define NAND_LARGE_BADBLOCK_POS		0
-#define ONENAND_BADBLOCK_POS		0
-
-/*
  * Bad block scanning errors
  */
 #define ONENAND_BBT_READ_ERROR		1
@@ -131,7 +116,6 @@ struct nand_bbt_descr {
 /**
  * struct bbm_info - [GENERIC] Bad Block Table data structure
  * @bbt_erase_shift:	[INTERN] number of address bits in a bbt entry
- * @badblockpos:	[INTERN] position of the bad block marker in the oob area
  * @options:		options for this descriptor
  * @bbt:		[INTERN] bad block table pointer
  * @isbad_bbt:		function to determine if a block is bad
@@ -141,7 +125,6 @@ struct nand_bbt_descr {
  */
 struct bbm_info {
 	int bbt_erase_shift;
-	int badblockpos;
 	int options;
 
 	uint8_t *bbt;
@@ -155,7 +138,6 @@ struct bbm_info {
 };
 
 /* OneNAND BBT interface */
-extern int onenand_scan_bbt(struct mtd_info *mtd, struct nand_bbt_descr *bd);
 extern int onenand_default_bbt(struct mtd_info *mtd);
 
 #endif	/* __LINUX_MTD_BBM_H */

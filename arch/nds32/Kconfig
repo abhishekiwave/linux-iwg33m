@@ -1,48 +1,106 @@
-menu "NDS32 architecture"
-	depends on NDS32
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# For a description of the syntax of this configuration file,
+# see Documentation/kbuild/kconfig-language.rst.
+#
 
-config SYS_ARCH
-	default "nds32"
-
-choice
-	prompt "Target select"
-	optional
-
-config TARGET_ADP_AG101P
-	bool "Support adp-ag101p"
-
-config TARGET_ADP_AE3XX
-	bool "Support adp-ae3xx"
-
-endchoice
-
-config SYS_ICACHE_OFF
-	bool "Do not enable icache"
-	default n
+config NDS32
+	def_bool y
+	select ARCH_32BIT_OFF_T
+	select ARCH_HAS_DMA_PREP_COHERENT
+	select ARCH_HAS_SYNC_DMA_FOR_CPU
+	select ARCH_HAS_SYNC_DMA_FOR_DEVICE
+	select ARCH_WANT_FRAME_POINTERS if FTRACE
+	select CLKSRC_MMIO
+	select CLONE_BACKWARDS
+	select COMMON_CLK
+	select DMA_DIRECT_REMAP
+	select GENERIC_ATOMIC64
+	select GENERIC_CPU_DEVICES
+	select GENERIC_CLOCKEVENTS
+	select GENERIC_IRQ_CHIP
+	select GENERIC_IRQ_SHOW
+	select GENERIC_LIB_ASHLDI3
+	select GENERIC_LIB_ASHRDI3
+	select GENERIC_LIB_CMPDI2
+	select GENERIC_LIB_LSHRDI3
+	select GENERIC_LIB_MULDI3
+	select GENERIC_LIB_UCMPDI2
+	select GENERIC_STRNCPY_FROM_USER
+	select GENERIC_STRNLEN_USER
+	select GENERIC_TIME_VSYSCALL
+	select HANDLE_DOMAIN_IRQ
+	select HAVE_ARCH_TRACEHOOK
+	select HAVE_DEBUG_KMEMLEAK
+	select HAVE_EXIT_THREAD
+	select HAVE_REGS_AND_STACK_ACCESS_API
+	select HAVE_PERF_EVENTS
+	select IRQ_DOMAIN
+	select LOCKDEP_SUPPORT
+	select MODULES_USE_ELF_RELA
+	select OF
+	select OF_EARLY_FLATTREE
+	select NO_IOPORT_MAP
+	select RTC_LIB
+	select THREAD_INFO_IN_TASK
+	select HAVE_FUNCTION_TRACER
+	select HAVE_FUNCTION_GRAPH_TRACER
+	select HAVE_FTRACE_MCOUNT_RECORD
+	select HAVE_DYNAMIC_FTRACE
 	help
-	  Do not enable instruction cache in U-Boot.
+	  Andes(nds32) Linux support.
 
-config SPL_SYS_ICACHE_OFF
-	bool "Do not enable icache in SPL"
-	depends on SPL
-	default SYS_ICACHE_OFF
+config GENERIC_CALIBRATE_DELAY
+	def_bool y
+
+config GENERIC_CSUM
+	def_bool y
+
+config GENERIC_HWEIGHT
+	def_bool y
+
+config GENERIC_LOCKBREAK
+	def_bool y
+	depends on PREEMPT
+
+config TRACE_IRQFLAGS_SUPPORT
+	def_bool y
+
+config STACKTRACE_SUPPORT
+	def_bool y
+
+config FIX_EARLYCON_MEM
+	def_bool y
+
+config PGTABLE_LEVELS
+	default 2
+
+menu "System Type"
+source "arch/nds32/Kconfig.cpu"
+config NR_CPUS
+	int
+	default 1
+
+config MMU
+	def_bool y
+
+config NDS32_BUILTIN_DTB
+	string "Builtin DTB"
+	default ""
 	help
-	  Do not enable instruction cache in SPL.
+	  User can use it to specify the dts of the SoC
+endmenu
 
-config SYS_DCACHE_OFF
-	bool "Do not enable dcache"
-	default n
-	help
-	  Do not enable data cache in U-Boot.
+menu "Kernel Features"
+source "kernel/Kconfig.hz"
+endmenu
 
-config SPL_SYS_DCACHE_OFF
-	bool "Do not enable dcache in SPL"
-	depends on SPL
-	default SYS_DCACHE_OFF
-	help
-	  Do not enable data cache in SPL.
+menu "Power management options"
+config SYS_SUPPORTS_APM_EMULATION
+	bool
 
-source "board/AndesTech/adp-ag101p/Kconfig"
-source "board/AndesTech/adp-ae3xx/Kconfig"
+config ARCH_SUSPEND_POSSIBLE
+	def_bool y
 
+source "kernel/power/Kconfig"
 endmenu

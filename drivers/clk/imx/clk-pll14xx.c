@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright 2017-2019 NXP.
- *
- * Peng Fan <peng.fan@nxp.com>
+ * Copyright 2017-2018 NXP.
  */
 
-#include <common.h>
-#include <asm/io.h>
-#include <malloc.h>
-#include <clk-uclass.h>
-#include <dm/device.h>
-#include <dm/devres.h>
+#include <linux/bitops.h>
 #include <linux/clk-provider.h>
 #include <linux/err.h>
+#include <linux/io.h>
 #include <linux/iopoll.h>
-#include <clk.h>
-#include <div64.h>
+#include <linux/slab.h>
+#include <linux/jiffies.h>
 
 #include "clk.h"
-
-#define UBOOT_DM_CLK_IMX_PLL1443X "imx_clk_pll1443x"
-#define UBOOT_DM_CLK_IMX_PLL1416X "imx_clk_pll1416x"
 
 #define GNRL_CTL	0x0
 #define DIV_CTL		0x4
@@ -41,14 +32,14 @@
 #define LOCK_TIMEOUT_US		10000
 
 struct clk_pll14xx {
-	struct clk			clk;
+	struct clk_hw			hw;
 	void __iomem			*base;
 	enum imx_pll14xx_type		type;
 	const struct imx_pll14xx_rate_table *rate_table;
 	int rate_count;
 };
 
-#define to_clk_pll14xx(_clk) container_of(_clk, struct clk_pll14xx, clk)
+#define to_clk_pll14xx(_hw) container_of(_hw, struct clk_pll14xx, hw)
 
 static const struct imx_pll14xx_rate_table *imx_get_pll_settings(
 		struct clk_pll14xx *pll, unsigned long rate)
@@ -63,13 +54,30 @@ static const struct imx_pll14xx_rate_table *imx_get_pll_settings(
 	return NULL;
 }
 
-static unsigned long clk_pll1416x_recalc_rate(struct clk *clk)
+static long clk_pll14xx_round_rate(struct clk_hw *hw, unsigned long rate,
+			unsigned long *prate)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
-	u64 fvco = clk_get_parent_rate(clk);
-	u32 mdiv, pdiv, sdiv, pll_div;
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+	const struct imx_pll14xx_rate_table *rate_table = pll->rate_table;
+	int i;
 
-	pll_div = readl(pll->base + 4);
+	/* Assumming rate_table is in descending order */
+	for (i = 0; i < pll->rate_count; i++)
+		if (rate >= rate_table[i].rate)
+			return rate_table[i].rate;
+
+	/* return minimum supported value */
+	return rate_table[i - 1].rate;
+}
+
+static unsigned long clk_pll1416x_recalc_rate(struct clk_hw *hw,
+						  unsigned long parent_rate)
+{
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+	u32 mdiv, pdiv, sdiv, pll_div;
+	u64 fvco = parent_rate;
+
+	pll_div = readl_relaxed(pll->base + 4);
 	mdiv = (pll_div & MDIV_MASK) >> MDIV_SHIFT;
 	pdiv = (pll_div & PDIV_MASK) >> PDIV_SHIFT;
 	sdiv = (pll_div & SDIV_MASK) >> SDIV_SHIFT;
@@ -80,19 +88,35 @@ static unsigned long clk_pll1416x_recalc_rate(struct clk *clk)
 	return fvco;
 }
 
-static unsigned long clk_pll1443x_recalc_rate(struct clk *clk)
+static unsigned long clk_pll1443x_recalc_rate(struct clk_hw *hw,
+						  unsigned long parent_rate)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
-	u64 fvco = clk_get_parent_rate(clk);
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+	const struct imx_pll14xx_rate_table *rate_table = pll->rate_table;
 	u32 mdiv, pdiv, sdiv, pll_div_ctl0, pll_div_ctl1;
 	short int kdiv;
+	u64 fvco = parent_rate;
+	long rate = 0;
+	int i;
 
-	pll_div_ctl0 = readl(pll->base + 4);
-	pll_div_ctl1 = readl(pll->base + 8);
+	pll_div_ctl0 = readl_relaxed(pll->base + 4);
+	pll_div_ctl1 = readl_relaxed(pll->base + 8);
 	mdiv = (pll_div_ctl0 & MDIV_MASK) >> MDIV_SHIFT;
 	pdiv = (pll_div_ctl0 & PDIV_MASK) >> PDIV_SHIFT;
 	sdiv = (pll_div_ctl0 & SDIV_MASK) >> SDIV_SHIFT;
 	kdiv = pll_div_ctl1 & KDIV_MASK;
+
+	/*
+	 * Sometimes, the recalculated rate has deviation due to
+	 * the frac part. So find the accurate pll rate from the table
+	 * first, if no match rate in the table, use the rate calculated
+	 * from the equation below.
+	 */
+	for (i = 0; i < pll->rate_count; i++) {
+		if (rate_table[i].pdiv == pdiv && rate_table[i].mdiv == mdiv &&
+		    rate_table[i].sdiv == sdiv && rate_table[i].kdiv == kdiv)
+			rate = rate_table[i].rate;
+	}
 
 	/* fvco = (m * 65536 + k) * Fin / (p * 65536) */
 	fvco *= (mdiv * 65536 + kdiv);
@@ -100,10 +124,10 @@ static unsigned long clk_pll1443x_recalc_rate(struct clk *clk)
 
 	do_div(fvco, pdiv << sdiv);
 
-	return fvco;
+	return rate ? (unsigned long) rate : (unsigned long)fvco;
 }
 
-static inline bool clk_pll1416x_mp_change(const struct imx_pll14xx_rate_table *rate,
+static inline bool clk_pll14xx_mp_change(const struct imx_pll14xx_rate_table *rate,
 					  u32 pll_div)
 {
 	u32 old_mdiv, old_pdiv;
@@ -114,43 +138,18 @@ static inline bool clk_pll1416x_mp_change(const struct imx_pll14xx_rate_table *r
 	return rate->mdiv != old_mdiv || rate->pdiv != old_pdiv;
 }
 
-static inline bool clk_pll1443x_mpk_change(const struct imx_pll14xx_rate_table *rate,
-					   u32 pll_div_ctl0, u32 pll_div_ctl1)
-{
-	u32 old_mdiv, old_pdiv, old_kdiv;
-
-	old_mdiv = (pll_div_ctl0 & MDIV_MASK) >> MDIV_SHIFT;
-	old_pdiv = (pll_div_ctl0 & PDIV_MASK) >> PDIV_SHIFT;
-	old_kdiv = (pll_div_ctl1 & KDIV_MASK) >> KDIV_SHIFT;
-
-	return rate->mdiv != old_mdiv || rate->pdiv != old_pdiv ||
-		rate->kdiv != old_kdiv;
-}
-
-static inline bool clk_pll1443x_mp_change(const struct imx_pll14xx_rate_table *rate,
-					  u32 pll_div_ctl0, u32 pll_div_ctl1)
-{
-	u32 old_mdiv, old_pdiv, old_kdiv;
-
-	old_mdiv = (pll_div_ctl0 & MDIV_MASK) >> MDIV_SHIFT;
-	old_pdiv = (pll_div_ctl0 & PDIV_MASK) >> PDIV_SHIFT;
-	old_kdiv = (pll_div_ctl1 & KDIV_MASK) >> KDIV_SHIFT;
-
-	return rate->mdiv != old_mdiv || rate->pdiv != old_pdiv ||
-		rate->kdiv != old_kdiv;
-}
-
 static int clk_pll14xx_wait_lock(struct clk_pll14xx *pll)
 {
 	u32 val;
 
-	return readl_poll_timeout(pll->base, val, val & LOCK_TIMEOUT_US,
+	return readl_poll_timeout(pll->base, val, val & LOCK_STATUS, 0,
 			LOCK_TIMEOUT_US);
 }
 
-static ulong clk_pll1416x_set_rate(struct clk *clk, unsigned long drate)
+static int clk_pll1416x_set_rate(struct clk_hw *hw, unsigned long drate,
+				 unsigned long prate)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	const struct imx_pll14xx_rate_table *rate;
 	u32 tmp, div_val;
 	int ret;
@@ -158,37 +157,36 @@ static ulong clk_pll1416x_set_rate(struct clk *clk, unsigned long drate)
 	rate = imx_get_pll_settings(pll, drate);
 	if (!rate) {
 		pr_err("%s: Invalid rate : %lu for pll clk %s\n", __func__,
-		       drate, "xxxx");
+		       drate, clk_hw_get_name(hw));
 		return -EINVAL;
 	}
 
-	tmp = readl(pll->base + 4);
+	tmp = readl_relaxed(pll->base + 4);
 
-	if (!clk_pll1416x_mp_change(rate, tmp)) {
+	if (!clk_pll14xx_mp_change(rate, tmp)) {
 		tmp &= ~(SDIV_MASK) << SDIV_SHIFT;
 		tmp |= rate->sdiv << SDIV_SHIFT;
-		writel(tmp, pll->base + 4);
+		writel_relaxed(tmp, pll->base + 4);
 
-		return clk_pll1416x_recalc_rate(clk);
+		return 0;
 	}
 
 	/* Bypass clock and set lock to pll output lock */
-	tmp = readl(pll->base);
+	tmp = readl_relaxed(pll->base);
 	tmp |= LOCK_SEL_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	/* Enable RST */
 	tmp &= ~RST_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	/* Enable BYPASS */
 	tmp |= BYPASS_MASK;
 	writel(tmp, pll->base);
 
-
 	div_val = (rate->mdiv << MDIV_SHIFT) | (rate->pdiv << PDIV_SHIFT) |
 		(rate->sdiv << SDIV_SHIFT);
-	writel(div_val, pll->base + 0x4);
+	writel_relaxed(div_val, pll->base + 0x4);
 
 	/*
 	 * According to SPEC, t3 - t2 need to be greater than
@@ -200,7 +198,7 @@ static ulong clk_pll1416x_set_rate(struct clk *clk, unsigned long drate)
 
 	/* Disable RST */
 	tmp |= RST_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	/* Wait Lock */
 	ret = clk_pll14xx_wait_lock(pll);
@@ -209,14 +207,15 @@ static ulong clk_pll1416x_set_rate(struct clk *clk, unsigned long drate)
 
 	/* Bypass */
 	tmp &= ~BYPASS_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
-	return clk_pll1416x_recalc_rate(clk);
+	return 0;
 }
 
-static ulong clk_pll1443x_set_rate(struct clk *clk, unsigned long drate)
+static int clk_pll1443x_set_rate(struct clk_hw *hw, unsigned long drate,
+				 unsigned long prate)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	const struct imx_pll14xx_rate_table *rate;
 	u32 tmp, div_val;
 	int ret;
@@ -224,35 +223,36 @@ static ulong clk_pll1443x_set_rate(struct clk *clk, unsigned long drate)
 	rate = imx_get_pll_settings(pll, drate);
 	if (!rate) {
 		pr_err("%s: Invalid rate : %lu for pll clk %s\n", __func__,
-		       drate, "===");
+			drate, clk_hw_get_name(hw));
 		return -EINVAL;
 	}
 
-	tmp = readl(pll->base + 4);
-	div_val = readl(pll->base + 8);
+	tmp = readl_relaxed(pll->base + 4);
 
-	if (!clk_pll1443x_mpk_change(rate, tmp, div_val)) {
+	if (!clk_pll14xx_mp_change(rate, tmp)) {
 		tmp &= ~(SDIV_MASK) << SDIV_SHIFT;
 		tmp |= rate->sdiv << SDIV_SHIFT;
-		writel(tmp, pll->base + 4);
+		writel_relaxed(tmp, pll->base + 4);
 
-		return clk_pll1443x_recalc_rate(clk);
+		tmp = rate->kdiv << KDIV_SHIFT;
+		writel_relaxed(tmp, pll->base + 8);
+
+		return 0;
 	}
 
-	tmp = readl(pll->base);
-
 	/* Enable RST */
+	tmp = readl_relaxed(pll->base);
 	tmp &= ~RST_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	/* Enable BYPASS */
 	tmp |= BYPASS_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	div_val = (rate->mdiv << MDIV_SHIFT) | (rate->pdiv << PDIV_SHIFT) |
 		(rate->sdiv << SDIV_SHIFT);
-	writel(div_val, pll->base + 0x4);
-	writel(rate->kdiv << KDIV_SHIFT, pll->base + 0x8);
+	writel_relaxed(div_val, pll->base + 0x4);
+	writel_relaxed(rate->kdiv << KDIV_SHIFT, pll->base + 0x8);
 
 	/*
 	 * According to SPEC, t3 - t2 need to be greater than
@@ -264,7 +264,7 @@ static ulong clk_pll1443x_set_rate(struct clk *clk, unsigned long drate)
 
 	/* Disable RST */
 	tmp |= RST_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
 	/* Wait Lock*/
 	ret = clk_pll14xx_wait_lock(pll);
@@ -273,111 +273,154 @@ static ulong clk_pll1443x_set_rate(struct clk *clk, unsigned long drate)
 
 	/* Bypass */
 	tmp &= ~BYPASS_MASK;
-	writel(tmp, pll->base);
+	writel_relaxed(tmp, pll->base);
 
-	return clk_pll1443x_recalc_rate(clk);
+	return 0;
 }
 
-static int clk_pll14xx_prepare(struct clk *clk)
+static int clk_pll14xx_prepare(struct clk_hw *hw)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	u32 val;
+	int ret;
 
 	/*
 	 * RESETB = 1 from 0, PLL starts its normal
 	 * operation after lock time
 	 */
-	val = readl(pll->base + GNRL_CTL);
+	val = readl_relaxed(pll->base + GNRL_CTL);
+	if (val & RST_MASK)
+		return 0;
+	val |= BYPASS_MASK;
+	writel_relaxed(val, pll->base + GNRL_CTL);
 	val |= RST_MASK;
-	writel(val, pll->base + GNRL_CTL);
+	writel_relaxed(val, pll->base + GNRL_CTL);
 
-	return clk_pll14xx_wait_lock(pll);
+	ret = clk_pll14xx_wait_lock(pll);
+	if (ret)
+		return ret;
+
+	val &= ~BYPASS_MASK;
+	writel_relaxed(val, pll->base + GNRL_CTL);
+
+	return 0;
 }
 
-static int clk_pll14xx_unprepare(struct clk *clk)
+static int clk_pll14xx_is_prepared(struct clk_hw *hw)
 {
-	struct clk_pll14xx *pll = to_clk_pll14xx(dev_get_clk_ptr(clk->dev));
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+	u32 val;
+
+	val = readl_relaxed(pll->base + GNRL_CTL);
+
+	return (val & RST_MASK) ? 1 : 0;
+}
+
+static void clk_pll14xx_unprepare(struct clk_hw *hw)
+{
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
 	u32 val;
 
 	/*
 	 * Set RST to 0, power down mode is enabled and
 	 * every digital block is reset
 	 */
-	val = readl(pll->base + GNRL_CTL);
+	val = readl_relaxed(pll->base + GNRL_CTL);
 	val &= ~RST_MASK;
-	writel(val, pll->base + GNRL_CTL);
+	writel_relaxed(val, pll->base + GNRL_CTL);
+}
 
-	return 0;
+void clk_set_delta_k(struct clk_hw *hw, short int delta_k)
+{
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+	short int k;
+	u32 val;
+
+	val = readl_relaxed(pll->base + 8);
+	k = (val & KDIV_MASK) + delta_k;
+	writel_relaxed(k << KDIV_SHIFT, pll->base + 8);
+}
+
+void clk_get_pll_setting(struct clk_hw *hw, u32 *pll_div_ctrl0,
+	u32 *pll_div_ctrl1)
+{
+	struct clk_pll14xx *pll = to_clk_pll14xx(hw);
+
+	*pll_div_ctrl0 = readl_relaxed(pll->base + 4);
+	*pll_div_ctrl1 = readl_relaxed(pll->base + 8);
 }
 
 static const struct clk_ops clk_pll1416x_ops = {
-	.enable		= clk_pll14xx_prepare,
-	.disable	= clk_pll14xx_unprepare,
+	.prepare	= clk_pll14xx_prepare,
+	.unprepare	= clk_pll14xx_unprepare,
+	.is_prepared	= clk_pll14xx_is_prepared,
+	.recalc_rate	= clk_pll1416x_recalc_rate,
+	.round_rate	= clk_pll14xx_round_rate,
 	.set_rate	= clk_pll1416x_set_rate,
-	.get_rate	= clk_pll1416x_recalc_rate,
+};
+
+static const struct clk_ops clk_pll1416x_min_ops = {
+	.recalc_rate	= clk_pll1416x_recalc_rate,
 };
 
 static const struct clk_ops clk_pll1443x_ops = {
-	.enable		= clk_pll14xx_prepare,
-	.disable	= clk_pll14xx_unprepare,
+	.prepare	= clk_pll14xx_prepare,
+	.unprepare	= clk_pll14xx_unprepare,
+	.is_prepared	= clk_pll14xx_is_prepared,
+	.recalc_rate	= clk_pll1443x_recalc_rate,
+	.round_rate	= clk_pll14xx_round_rate,
 	.set_rate	= clk_pll1443x_set_rate,
-	.get_rate	= clk_pll1443x_recalc_rate,
 };
 
-struct clk *imx_clk_pll14xx(const char *name, const char *parent_name,
-			    void __iomem *base,
+struct clk *imx_dev_clk_pll14xx(struct device *dev, const char *name,
+			    const char *parent_name, void __iomem *base,
 			    const struct imx_pll14xx_clk *pll_clk)
 {
 	struct clk_pll14xx *pll;
 	struct clk *clk;
-	char *type_name;
-	int ret;
+	struct clk_init_data init;
+	u32 val;
 
 	pll = kzalloc(sizeof(*pll), GFP_KERNEL);
 	if (!pll)
 		return ERR_PTR(-ENOMEM);
 
+	init.name = name;
+	init.flags = pll_clk->flags;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+
 	switch (pll_clk->type) {
 	case PLL_1416X:
-		type_name = UBOOT_DM_CLK_IMX_PLL1416X;
+		if (!pll_clk->rate_table)
+			init.ops = &clk_pll1416x_min_ops;
+		else
+			init.ops = &clk_pll1416x_ops;
 		break;
 	case PLL_1443X:
-		type_name = UBOOT_DM_CLK_IMX_PLL1443X;
+		init.ops = &clk_pll1443x_ops;
 		break;
 	default:
 		pr_err("%s: Unknown pll type for pll clk %s\n",
 		       __func__, name);
-		return ERR_PTR(-EINVAL);
 	};
 
 	pll->base = base;
+	pll->hw.init = &init;
 	pll->type = pll_clk->type;
 	pll->rate_table = pll_clk->rate_table;
 	pll->rate_count = pll_clk->rate_count;
 
-	clk = &pll->clk;
+	val = readl_relaxed(pll->base + GNRL_CTL);
+	val &= ~BYPASS_MASK;
+	writel_relaxed(val, pll->base + GNRL_CTL);
 
-	ret = clk_register(clk, type_name, name, parent_name);
-	if (ret) {
-		pr_err("%s: failed to register pll %s %d\n",
-		       __func__, name, ret);
+	clk = clk_register(dev, &pll->hw);
+	if (IS_ERR(clk)) {
+		pr_err("%s: failed to register pll %s %lu\n",
+			__func__, name, PTR_ERR(clk));
 		kfree(pll);
-		return ERR_PTR(ret);
 	}
 
 	return clk;
 }
-
-U_BOOT_DRIVER(clk_pll1443x) = {
-	.name	= UBOOT_DM_CLK_IMX_PLL1443X,
-	.id	= UCLASS_CLK,
-	.ops	= &clk_pll1443x_ops,
-	.flags = DM_FLAG_PRE_RELOC,
-};
-
-U_BOOT_DRIVER(clk_pll1416x) = {
-	.name	= UBOOT_DM_CLK_IMX_PLL1416X,
-	.id	= UCLASS_CLK,
-	.ops	= &clk_pll1416x_ops,
-	.flags = DM_FLAG_PRE_RELOC,
-};

@@ -10,11 +10,7 @@
 #ifndef _LINUX_PUBLIC_KEY_H
 #define _LINUX_PUBLIC_KEY_H
 
-#ifdef __UBOOT__
-#include <linux/types.h>
-#else
 #include <linux/keyctl.h>
-#endif
 #include <linux/oid_registry.h>
 
 /*
@@ -52,7 +48,6 @@ struct public_key_signature {
 
 extern void public_key_signature_free(struct public_key_signature *sig);
 
-#ifndef __UBOOT__
 extern struct asymmetric_key_subtype public_key_subtype;
 
 struct key;
@@ -85,6 +80,5 @@ extern int verify_signature(const struct key *,
 
 int public_key_verify_signature(const struct public_key *pkey,
 				const struct public_key_signature *sig);
-#endif /* !__UBOOT__ */
 
 #endif /* _LINUX_PUBLIC_KEY_H */

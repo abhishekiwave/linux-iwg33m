@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
  * Copyright (c) Nokia Corporation, 2006
@@ -25,16 +25,9 @@
  * transaction with a roll-back capability.
  */
 
-#ifndef __UBOOT__
-#include <malloc.h>
-#include <linux/uaccess.h>
-#else
-#include <div64.h>
-#include <ubi_uboot.h>
-#endif
 #include <linux/err.h>
+#include <linux/uaccess.h>
 #include <linux/math64.h>
-
 #include "ubi.h"
 
 /**
@@ -142,11 +135,11 @@ int ubi_start_update(struct ubi_device *ubi, struct ubi_volume *vol,
 			return err;
 	}
 
-	if (bytes == 0) {
-		err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
-		if (err)
-			return err;
+	err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
+	if (err)
+		return err;
 
+	if (bytes == 0) {
 		err = clear_update_marker(ubi, vol, 0);
 		if (err)
 			return err;
@@ -187,7 +180,7 @@ int ubi_start_leb_change(struct ubi_device *ubi, struct ubi_volume *vol,
 	vol->changing_leb = 1;
 	vol->ch_lnum = req->lnum;
 
-	vol->upd_buf = vmalloc(req->bytes);
+	vol->upd_buf = vmalloc(ALIGN((int)req->bytes, ubi->min_io_size));
 	if (!vol->upd_buf)
 		return -ENOMEM;
 
@@ -272,12 +265,7 @@ static int write_leb(struct ubi_device *ubi, struct ubi_volume *vol, int lnum,
 int ubi_more_update_data(struct ubi_device *ubi, struct ubi_volume *vol,
 			 const void __user *buf, int count)
 {
-#ifndef __UBOOT__
 	int lnum, offs, err = 0, len, to_write = count;
-#else
-	int lnum, err = 0, len, to_write = count;
-	u32 offs;
-#endif
 
 	dbg_gen("write %d of %lld bytes, %lld already passed",
 		count, vol->upd_bytes, vol->upd_received);

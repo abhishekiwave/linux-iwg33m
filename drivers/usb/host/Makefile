@@ -1,62 +1,90 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2000-2007
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for USB Host Controller Drivers
+#
 
-ifdef CONFIG_$(SPL_)DM_USB
-obj-y += usb-uclass.o
-obj-$(CONFIG_SANDBOX) += usb-sandbox.o
+# tell define_trace.h where to find the xhci trace header
+CFLAGS_xhci-trace.o := -I$(src)
+
+fhci-y := fhci-hcd.o fhci-hub.o fhci-q.o
+fhci-y += fhci-mem.o fhci-tds.o fhci-sched.o
+
+fhci-$(CONFIG_FHCI_DEBUG) += fhci-dbg.o
+
+xhci-hcd-y := xhci.o xhci-mem.o xhci-ext-caps.o
+xhci-hcd-y += xhci-ring.o xhci-hub.o xhci-dbg.o
+xhci-hcd-y += xhci-trace.o
+
+ifneq ($(CONFIG_USB_XHCI_DBGCAP), )
+	xhci-hcd-y += xhci-dbgcap.o xhci-dbgtty.o
 endif
 
-# ohci
-obj-$(CONFIG_USB_OHCI_NEW) += ohci-hcd.o
-obj-$(CONFIG_USB_ATMEL) += ohci-at91.o
-obj-$(CONFIG_USB_OHCI_DA8XX) += ohci-da8xx.o
-obj-$(CONFIG_USB_R8A66597_HCD) += r8a66597-hcd.o
-obj-$(CONFIG_USB_SL811HS) += sl811-hcd.o
-obj-$(CONFIG_USB_OHCI_EP93XX) += ohci-ep93xx.o
-obj-$(CONFIG_USB_OHCI_LPC32XX) += ohci-lpc32xx.o
-obj-$(CONFIG_USB_OHCI_PCI) += ohci-pci.o
-obj-$(CONFIG_USB_OHCI_GENERIC) += ohci-generic.o
+ifneq ($(CONFIG_USB_XHCI_MTK), )
+	xhci-hcd-y += xhci-mtk-sch.o
+endif
 
-# echi
-obj-$(CONFIG_USB_EHCI_HCD) += ehci-hcd.o
-obj-$(CONFIG_USB_EHCI_ARMADA100) += ehci-armada100.o utmi-armada100.o
-obj-$(CONFIG_USB_EHCI_ATMEL) += ehci-atmel.o
-obj-$(CONFIG_USB_EHCI_FSL) += ehci-fsl.o
-obj-$(CONFIG_USB_EHCI_FARADAY) += ehci-faraday.o
-obj-$(CONFIG_USB_EHCI_GENERIC) += ehci-generic.o
-obj-$(CONFIG_USB_EHCI_EXYNOS) += ehci-exynos.o
-obj-$(CONFIG_USB_EHCI_MXC) += ehci-mxc.o
-obj-$(CONFIG_USB_EHCI_MXS) += ehci-mxs.o
-obj-$(CONFIG_USB_EHCI_MX5) += ehci-mx5.o
-obj-$(CONFIG_USB_EHCI_MX6) += ehci-mx6.o
-obj-$(CONFIG_USB_EHCI_MX7) += ehci-mx6.o
-obj-$(CONFIG_USB_EHCI_OMAP) += ehci-omap.o
-obj-$(CONFIG_USB_EHCI_MARVELL) += ehci-marvell.o
-obj-$(CONFIG_USB_EHCI_MSM) += ehci-msm.o
-obj-$(CONFIG_USB_EHCI_PCI) += ehci-pci.o
-obj-$(CONFIG_USB_EHCI_SPEAR) += ehci-spear.o
-obj-$(CONFIG_USB_EHCI_TEGRA) += ehci-tegra.o
-obj-$(CONFIG_USB_EHCI_VCT) += ehci-vct.o
-obj-$(CONFIG_USB_EHCI_VF) += ehci-vf.o
-obj-$(CONFIG_USB_EHCI_RMOBILE) += ehci-rmobile.o
-obj-$(CONFIG_USB_EHCI_ZYNQ) += ehci-zynq.o
+xhci-plat-hcd-y := xhci-plat.o
+ifneq ($(CONFIG_USB_XHCI_MVEBU), )
+	xhci-plat-hcd-y		+= xhci-mvebu.o
+endif
+ifneq ($(CONFIG_USB_XHCI_RCAR), )
+	xhci-plat-hcd-y		+= xhci-rcar.o
+endif
 
-# xhci
-obj-$(CONFIG_USB_XHCI_HCD) += xhci.o xhci-mem.o xhci-ring.o
-obj-$(CONFIG_USB_XHCI_DWC3) += xhci-dwc3.o
-obj-$(CONFIG_USB_XHCI_DWC3_OF_SIMPLE) += dwc3-of-simple.o
-obj-$(CONFIG_USB_XHCI_ROCKCHIP) += xhci-rockchip.o
-obj-$(CONFIG_USB_XHCI_EXYNOS) += xhci-exynos5.o
-obj-$(CONFIG_USB_XHCI_FSL) += xhci-fsl.o
-obj-$(CONFIG_USB_XHCI_MVEBU) += xhci-mvebu.o
-obj-$(CONFIG_USB_XHCI_OMAP) += xhci-omap.o
-obj-$(CONFIG_USB_XHCI_PCI) += xhci-pci.o
-obj-$(CONFIG_USB_XHCI_RCAR) += xhci-rcar.o
-obj-$(CONFIG_USB_XHCI_STI) += dwc3-sti-glue.o
-obj-$(CONFIG_USB_XHCI_IMX8) += xhci-imx8.o
-obj-$(CONFIG_USB_XHCI_IMX8M) += xhci-imx8m.o
+ifneq ($(CONFIG_DEBUG_FS),)
+	xhci-hcd-y		+= xhci-debugfs.o
+endif
 
-# designware
-obj-$(CONFIG_USB_DWC2) += dwc2.o
+obj-$(CONFIG_USB_PCI)	+= pci-quirks.o
+
+obj-$(CONFIG_USB_EHCI_HCD)	+= ehci-hcd.o
+obj-$(CONFIG_USB_EHCI_PCI)	+= ehci-pci.o
+obj-$(CONFIG_USB_EHCI_HCD_PLATFORM)	+= ehci-platform.o
+obj-$(CONFIG_USB_EHCI_MXC)	+= ehci-mxc.o
+obj-$(CONFIG_USB_EHCI_HCD_NPCM7XX)	+= ehci-npcm7xx.o
+obj-$(CONFIG_USB_EHCI_HCD_OMAP)	+= ehci-omap.o
+obj-$(CONFIG_USB_EHCI_HCD_ORION)	+= ehci-orion.o
+obj-$(CONFIG_USB_EHCI_HCD_SPEAR)	+= ehci-spear.o
+obj-$(CONFIG_USB_EHCI_HCD_STI)	+= ehci-st.o
+obj-$(CONFIG_USB_EHCI_EXYNOS)	+= ehci-exynos.o
+obj-$(CONFIG_USB_EHCI_HCD_AT91) += ehci-atmel.o
+obj-$(CONFIG_USB_EHCI_TEGRA)	+= ehci-tegra.o
+
+obj-$(CONFIG_USB_OXU210HP_HCD)	+= oxu210hp-hcd.o
+obj-$(CONFIG_USB_ISP116X_HCD)	+= isp116x-hcd.o
+obj-$(CONFIG_USB_ISP1362_HCD)	+= isp1362-hcd.o
+
+obj-$(CONFIG_USB_OHCI_HCD)	+= ohci-hcd.o
+obj-$(CONFIG_USB_OHCI_HCD_PCI)	+= ohci-pci.o
+obj-$(CONFIG_USB_OHCI_HCD_PLATFORM)	+= ohci-platform.o
+obj-$(CONFIG_USB_OHCI_EXYNOS)	+= ohci-exynos.o
+obj-$(CONFIG_USB_OHCI_HCD_OMAP1)	+= ohci-omap.o
+obj-$(CONFIG_USB_OHCI_HCD_SPEAR)	+= ohci-spear.o
+obj-$(CONFIG_USB_OHCI_HCD_STI)	+= ohci-st.o
+obj-$(CONFIG_USB_OHCI_HCD_AT91)	+= ohci-at91.o
+obj-$(CONFIG_USB_OHCI_HCD_S3C2410)	+= ohci-s3c2410.o
+obj-$(CONFIG_USB_OHCI_HCD_LPC32XX)	+= ohci-nxp.o
+obj-$(CONFIG_USB_OHCI_HCD_PXA27X)	+= ohci-pxa27x.o
+obj-$(CONFIG_USB_OHCI_HCD_DAVINCI)	+= ohci-da8xx.o
+
+obj-$(CONFIG_USB_UHCI_HCD)	+= uhci-hcd.o
+obj-$(CONFIG_USB_FHCI_HCD)	+= fhci.o
+obj-$(CONFIG_USB_XHCI_HCD)	+= xhci-hcd.o
+obj-$(CONFIG_USB_XHCI_PCI)	+= xhci-pci.o
+obj-$(CONFIG_USB_XHCI_PLATFORM) += xhci-plat-hcd.o
+obj-$(CONFIG_USB_XHCI_HISTB)	+= xhci-histb.o
+obj-$(CONFIG_USB_XHCI_MTK)	+= xhci-mtk.o
+obj-$(CONFIG_USB_XHCI_TEGRA)	+= xhci-tegra.o
+obj-$(CONFIG_USB_SL811_HCD)	+= sl811-hcd.o
+obj-$(CONFIG_USB_SL811_CS)	+= sl811_cs.o
+obj-$(CONFIG_USB_U132_HCD)	+= u132-hcd.o
+obj-$(CONFIG_USB_R8A66597_HCD)	+= r8a66597-hcd.o
+obj-$(CONFIG_USB_IMX21_HCD)	+= imx21-hcd.o
+obj-$(CONFIG_USB_FSL_USB2)	+= fsl-mph-dr-of.o
+obj-$(CONFIG_USB_EHCI_FSL)	+= fsl-mph-dr-of.o
+obj-$(CONFIG_USB_EHCI_FSL)	+= ehci-fsl.o
+obj-$(CONFIG_USB_EHCI_MV)	+= ehci-mv.o
+obj-$(CONFIG_USB_HCD_BCMA)	+= bcma-hcd.o
+obj-$(CONFIG_USB_HCD_SSB)	+= ssb-hcd.o
+obj-$(CONFIG_USB_FOTG210_HCD)	+= fotg210-hcd.o
+obj-$(CONFIG_USB_MAX3421_HCD)	+= max3421-hcd.o

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of UBIFS.
  *
@@ -15,11 +15,6 @@
  * debugging functions.
  */
 
-#ifdef __UBOOT__
-#include <hexdump.h>
-#include <dm/devres.h>
-#include <linux/err.h>
-#endif
 #include "ubifs.h"
 
 /**
@@ -168,9 +163,8 @@ struct ubifs_scan_leb *ubifs_start_scan(const struct ubifs_info *c, int lnum,
 void ubifs_end_scan(const struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 		    int lnum, int offs)
 {
-	lnum = lnum;
 	dbg_scan("stop scanning LEB %d at offset %d", lnum, offs);
-	ubifs_assert(offs % c->min_io_size == 0);
+	ubifs_assert(c, offs % c->min_io_size == 0);
 
 	sleb->endpt = ALIGN(offs, c->min_io_size);
 }
@@ -238,7 +232,7 @@ void ubifs_scanned_corruption(const struct ubifs_info *c, int lnum, int offs,
 	if (len > 8192)
 		len = 8192;
 	ubifs_err(c, "first %d bytes from LEB %d:%d", len, lnum, offs);
-	print_hex_dump("", DUMP_PREFIX_OFFSET, 32, 4, buf, len, 1);
+	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_OFFSET, 32, 4, buf, len, 1);
 }
 
 /**

@@ -1,110 +1,120 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2016 Atmel Corporation
- *               Wenyou.Yang <wenyou.yang@atmel.com>
+ *  Copyright (C) 2013 Boris BREZILLON <b.brezillon@overkiz.com>
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
-#include <linux/io.h>
-#include <mach/at91_pmc.h>
+#include <linux/clk-provider.h>
+#include <linux/clkdev.h>
+#include <linux/clk/at91_pmc.h>
+#include <linux/of.h>
+#include <linux/mfd/syscon.h>
+#include <linux/regmap.h>
+
 #include "pmc.h"
 
 #define SYSTEM_MAX_ID		31
 
-/**
- * at91_system_clk_bind() - for the system clock driver
- * Recursively bind its children as clk devices.
- *
- * @return: 0 on success, or negative error code on failure
- */
-static int at91_system_clk_bind(struct udevice *dev)
-{
-	return at91_clk_sub_device_bind(dev, "system-clk");
-}
+#define SYSTEM_MAX_NAME_SZ	32
 
-static const struct udevice_id at91_system_clk_match[] = {
-	{ .compatible = "atmel,at91rm9200-clk-system" },
-	{}
+#define to_clk_system(hw) container_of(hw, struct clk_system, hw)
+struct clk_system {
+	struct clk_hw hw;
+	struct regmap *regmap;
+	u8 id;
 };
-
-U_BOOT_DRIVER(at91_system_clk) = {
-	.name = "at91-system-clk",
-	.id = UCLASS_MISC,
-	.of_match = at91_system_clk_match,
-	.bind = at91_system_clk_bind,
-};
-
-/*----------------------------------------------------------*/
 
 static inline int is_pck(int id)
 {
 	return (id >= 8) && (id <= 15);
 }
 
-static ulong system_clk_get_rate(struct clk *clk)
+static inline bool clk_system_ready(struct regmap *regmap, int id)
 {
-	struct clk clk_dev;
-	int ret;
+	unsigned int status;
 
-	ret = clk_get_by_index(clk->dev, 0, &clk_dev);
-	if (ret)
-		return -EINVAL;
+	regmap_read(regmap, AT91_PMC_SR, &status);
 
-	return clk_get_rate(&clk_dev);
+	return status & (1 << id) ? 1 : 0;
 }
 
-static ulong system_clk_set_rate(struct clk *clk, ulong rate)
+static int clk_system_prepare(struct clk_hw *hw)
 {
-	struct clk clk_dev;
-	int ret;
+	struct clk_system *sys = to_clk_system(hw);
 
-	ret = clk_get_by_index(clk->dev, 0, &clk_dev);
-	if (ret)
-		return -EINVAL;
+	regmap_write(sys->regmap, AT91_PMC_SCER, 1 << sys->id);
 
-	return clk_set_rate(&clk_dev, rate);
-}
-
-static int system_clk_enable(struct clk *clk)
-{
-	struct pmc_platdata *plat = dev_get_platdata(clk->dev);
-	struct at91_pmc *pmc = plat->reg_base;
-	u32 mask;
-
-	if (clk->id > SYSTEM_MAX_ID)
-		return -EINVAL;
-
-	mask = BIT(clk->id);
-
-	writel(mask, &pmc->scer);
-
-	/**
-	 * For the programmable clocks the Ready status in the PMC
-	 * status register should be checked after enabling.
-	 * For other clocks this is unnecessary.
-	 */
-	if (!is_pck(clk->id))
+	if (!is_pck(sys->id))
 		return 0;
 
-	while (!(readl(&pmc->sr) & mask))
-		;
+	while (!clk_system_ready(sys->regmap, sys->id))
+		cpu_relax();
 
 	return 0;
 }
 
-static struct clk_ops system_clk_ops = {
-	.of_xlate = at91_clk_of_xlate,
-	.get_rate = system_clk_get_rate,
-	.set_rate = system_clk_set_rate,
-	.enable = system_clk_enable,
+static void clk_system_unprepare(struct clk_hw *hw)
+{
+	struct clk_system *sys = to_clk_system(hw);
+
+	regmap_write(sys->regmap, AT91_PMC_SCDR, 1 << sys->id);
+}
+
+static int clk_system_is_prepared(struct clk_hw *hw)
+{
+	struct clk_system *sys = to_clk_system(hw);
+	unsigned int status;
+
+	regmap_read(sys->regmap, AT91_PMC_SCSR, &status);
+
+	if (!(status & (1 << sys->id)))
+		return 0;
+
+	if (!is_pck(sys->id))
+		return 1;
+
+	regmap_read(sys->regmap, AT91_PMC_SR, &status);
+
+	return status & (1 << sys->id) ? 1 : 0;
+}
+
+static const struct clk_ops system_ops = {
+	.prepare = clk_system_prepare,
+	.unprepare = clk_system_unprepare,
+	.is_prepared = clk_system_is_prepared,
 };
 
-U_BOOT_DRIVER(system_clk) = {
-	.name = "system-clk",
-	.id = UCLASS_CLK,
-	.probe = at91_clk_probe,
-	.platdata_auto_alloc_size = sizeof(struct pmc_platdata),
-	.ops = &system_clk_ops,
-};
+struct clk_hw * __init
+at91_clk_register_system(struct regmap *regmap, const char *name,
+			 const char *parent_name, u8 id)
+{
+	struct clk_system *sys;
+	struct clk_hw *hw;
+	struct clk_init_data init;
+	int ret;
+
+	if (!parent_name || id > SYSTEM_MAX_ID)
+		return ERR_PTR(-EINVAL);
+
+	sys = kzalloc(sizeof(*sys), GFP_KERNEL);
+	if (!sys)
+		return ERR_PTR(-ENOMEM);
+
+	init.name = name;
+	init.ops = &system_ops;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
+	init.flags = CLK_SET_RATE_PARENT;
+
+	sys->id = id;
+	sys->hw.init = &init;
+	sys->regmap = regmap;
+
+	hw = &sys->hw;
+	ret = clk_hw_register(NULL, &sys->hw);
+	if (ret) {
+		kfree(sys);
+		hw = ERR_PTR(ret);
+	}
+
+	return hw;
+}

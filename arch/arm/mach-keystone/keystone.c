@@ -1,57 +1,107 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Keystone EVM : Board initialization
+ * Keystone2 based boards and SOC related code.
  *
- * (C) Copyright 2014
- *     Texas Instruments Incorporated, <www.ti.com>
+ * Copyright 2013 Texas Instruments, Inc.
+ *	Cyril Chemparathy <cyril@ti.com>
+ *	Santosh Shilimkar <santosh.shillimkar@ti.com>
  */
+#include <linux/io.h>
+#include <linux/of.h>
+#include <linux/init.h>
+#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/memblock.h>
 
-#include <common.h>
-#include <asm/io.h>
-#include <asm/arch/psc_defs.h>
-#include <asm/arch/hardware.h>
+#include <asm/setup.h>
+#include <asm/mach/map.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/time.h>
+#include <asm/smp_plat.h>
+#include <asm/memory.h>
 
-/**
- * cpu_to_bus - swap bytes of the 32-bit data if the device is BE
- * @ptr - array of data
- * @length - lenght of data array
- */
-int cpu_to_bus(u32 *ptr, u32 length)
+#include "memory.h"
+
+#include "keystone.h"
+
+static unsigned long keystone_dma_pfn_offset __read_mostly;
+
+static int keystone_platform_notifier(struct notifier_block *nb,
+				      unsigned long event, void *data)
 {
-	u32 i;
+	struct device *dev = data;
 
-	if (!(readl(KS2_DEVSTAT) & 0x1))
-		for (i = 0; i < length; i++, ptr++)
-			*ptr = cpu_to_be32(*ptr);
+	if (event != BUS_NOTIFY_ADD_DEVICE)
+		return NOTIFY_DONE;
 
-	return 0;
-}
+	if (!dev)
+		return NOTIFY_BAD;
 
-static void turn_off_all_dsps(int num_dsps)
-{
-	int i;
-
-	for (i = 0; i < num_dsps; i++) {
-		if (psc_disable_module(i + KS2_LPSC_GEM_0))
-			printf("Cannot disable module for #%d DSP", i);
-
-		if (psc_disable_domain(i + KS2_GEM_0_PWR_DOMAIN))
-			printf("Cannot disable domain for #%d DSP", i);
+	if (!dev->of_node) {
+		dev->dma_pfn_offset = keystone_dma_pfn_offset;
+		dev_err(dev, "set dma_pfn_offset%08lx\n",
+			dev->dma_pfn_offset);
 	}
+	return NOTIFY_OK;
 }
 
-int misc_init_r(void)
+static struct notifier_block platform_nb = {
+	.notifier_call = keystone_platform_notifier,
+};
+
+static void __init keystone_init(void)
 {
-	char *env;
-	long ks2_debug = 0;
-
-	env = env_get("ks2_debug");
-
-	if (env)
-		ks2_debug = simple_strtol(env, NULL, 0);
-
-	if ((ks2_debug & DBG_LEAVE_DSPS_ON) == 0)
-		turn_off_all_dsps(KS2_NUM_DSPS);
-
-	return 0;
+	if (PHYS_OFFSET >= KEYSTONE_HIGH_PHYS_START) {
+		keystone_dma_pfn_offset = PFN_DOWN(KEYSTONE_HIGH_PHYS_START -
+						   KEYSTONE_LOW_PHYS_START);
+		bus_register_notifier(&platform_bus_type, &platform_nb);
+	}
+	keystone_pm_runtime_init();
 }
+
+static long long __init keystone_pv_fixup(void)
+{
+	long long offset;
+	phys_addr_t mem_start, mem_end;
+
+	mem_start = memblock_start_of_DRAM();
+	mem_end = memblock_end_of_DRAM();
+
+	/* nothing to do if we are running out of the <32-bit space */
+	if (mem_start >= KEYSTONE_LOW_PHYS_START &&
+	    mem_end   <= KEYSTONE_LOW_PHYS_END)
+		return 0;
+
+	if (mem_start < KEYSTONE_HIGH_PHYS_START ||
+	    mem_end   > KEYSTONE_HIGH_PHYS_END) {
+		pr_crit("Invalid address space for memory (%08llx-%08llx)\n",
+		        (u64)mem_start, (u64)mem_end);
+		return 0;
+	}
+
+	offset = KEYSTONE_HIGH_PHYS_START - KEYSTONE_LOW_PHYS_START;
+
+	/* Populate the arch idmap hook */
+	arch_phys_to_idmap_offset = -offset;
+
+	return offset;
+}
+
+static const char *const keystone_match[] __initconst = {
+	"ti,k2hk",
+	"ti,k2e",
+	"ti,k2l",
+	"ti,k2g",
+	"ti,keystone",
+	NULL,
+};
+
+DT_MACHINE_START(KEYSTONE, "Keystone")
+#if defined(CONFIG_ZONE_DMA) && defined(CONFIG_ARM_LPAE)
+	.dma_zone_size	= SZ_2G,
+#endif
+	.smp		= smp_ops(keystone_smp_ops),
+	.init_machine	= keystone_init,
+	.dt_compat	= keystone_match,
+	.pv_fixup	= keystone_pv_fixup,
+MACHINE_END

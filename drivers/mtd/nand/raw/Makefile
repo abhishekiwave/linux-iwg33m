@@ -1,79 +1,70 @@
-# SPDX-License-Identifier: GPL-2.0+
-#
-# (C) Copyright 2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# SPDX-License-Identifier: GPL-2.0
 
-ifdef CONFIG_SPL_BUILD
+obj-$(CONFIG_MTD_RAW_NAND)		+= nand.o
+obj-$(CONFIG_MTD_NAND_ECC_SW_HAMMING)	+= nand_ecc.o
+nand-$(CONFIG_MTD_NAND_ECC_SW_BCH)	+= nand_bch.o
+obj-$(CONFIG_MTD_SM_COMMON) 		+= sm_common.o
 
-ifdef CONFIG_SPL_NAND_DRIVERS
-NORMAL_DRIVERS=y
-endif
+obj-$(CONFIG_MTD_NAND_CAFE)		+= cafe_nand.o
+obj-$(CONFIG_MTD_NAND_AMS_DELTA)	+= ams-delta.o
+obj-$(CONFIG_MTD_NAND_DENALI)		+= denali.o
+obj-$(CONFIG_MTD_NAND_DENALI_PCI)	+= denali_pci.o
+obj-$(CONFIG_MTD_NAND_DENALI_DT)	+= denali_dt.o
+obj-$(CONFIG_MTD_NAND_AU1550)		+= au1550nd.o
+obj-$(CONFIG_MTD_NAND_S3C2410)		+= s3c2410.o
+obj-$(CONFIG_MTD_NAND_TANGO)		+= tango_nand.o
+obj-$(CONFIG_MTD_NAND_DAVINCI)		+= davinci_nand.o
+obj-$(CONFIG_MTD_NAND_DISKONCHIP)	+= diskonchip.o
+obj-$(CONFIG_MTD_NAND_FSMC)		+= fsmc_nand.o
+obj-$(CONFIG_MTD_NAND_SHARPSL)		+= sharpsl.o
+obj-$(CONFIG_MTD_NAND_NANDSIM)		+= nandsim.o
+obj-$(CONFIG_MTD_NAND_CS553X)		+= cs553x_nand.o
+obj-$(CONFIG_MTD_NAND_NDFC)		+= ndfc.o
+obj-$(CONFIG_MTD_NAND_ATMEL)		+= atmel/
+obj-$(CONFIG_MTD_NAND_GPIO)		+= gpio.o
+omap2_nand-objs := omap2.o
+obj-$(CONFIG_MTD_NAND_OMAP2) 		+= omap2_nand.o
+obj-$(CONFIG_MTD_NAND_OMAP_BCH_BUILD)	+= omap_elm.o
+obj-$(CONFIG_MTD_NAND_CM_X270)		+= cmx270_nand.o
+obj-$(CONFIG_MTD_NAND_MARVELL)		+= marvell_nand.o
+obj-$(CONFIG_MTD_NAND_TMIO)		+= tmio_nand.o
+obj-$(CONFIG_MTD_NAND_PLATFORM)		+= plat_nand.o
+obj-$(CONFIG_MTD_NAND_PASEMI)		+= pasemi_nand.o
+obj-$(CONFIG_MTD_NAND_ORION)		+= orion_nand.o
+obj-$(CONFIG_MTD_NAND_OXNAS)		+= oxnas_nand.o
+obj-$(CONFIG_MTD_NAND_FSL_ELBC)		+= fsl_elbc_nand.o
+obj-$(CONFIG_MTD_NAND_FSL_IFC)		+= fsl_ifc_nand.o
+obj-$(CONFIG_MTD_NAND_FSL_UPM)		+= fsl_upm.o
+obj-$(CONFIG_MTD_NAND_SLC_LPC32XX)      += lpc32xx_slc.o
+obj-$(CONFIG_MTD_NAND_MLC_LPC32XX)      += lpc32xx_mlc.o
+obj-$(CONFIG_MTD_NAND_SH_FLCTL)		+= sh_flctl.o
+obj-$(CONFIG_MTD_NAND_MXC)		+= mxc_nand.o
+obj-$(CONFIG_MTD_NAND_SOCRATES)		+= socrates_nand.o
+obj-$(CONFIG_MTD_NAND_TXX9NDFMC)	+= txx9ndfmc.o
+obj-$(CONFIG_MTD_NAND_MPC5121_NFC)	+= mpc5121_nfc.o
+obj-$(CONFIG_MTD_NAND_VF610_NFC)	+= vf610_nfc.o
+obj-$(CONFIG_MTD_NAND_RICOH)		+= r852.o
+obj-y					+= ingenic/
+obj-$(CONFIG_MTD_NAND_GPMI_NAND)	+= gpmi-nand/
+obj-$(CONFIG_MTD_NAND_XWAY)		+= xway_nand.o
+obj-$(CONFIG_MTD_NAND_BCM47XXNFLASH)	+= bcm47xxnflash/
+obj-$(CONFIG_MTD_NAND_SUNXI)		+= sunxi_nand.o
+obj-$(CONFIG_MTD_NAND_HISI504)	        += hisi504_nand.o
+obj-$(CONFIG_MTD_NAND_BRCMNAND)		+= brcmnand/
+obj-$(CONFIG_MTD_NAND_QCOM)		+= qcom_nandc.o
+obj-$(CONFIG_MTD_NAND_MTK)		+= mtk_ecc.o mtk_nand.o
+obj-$(CONFIG_MTD_NAND_MXIC)		+= mxic_nand.o
+obj-$(CONFIG_MTD_NAND_TEGRA)		+= tegra_nand.o
+obj-$(CONFIG_MTD_NAND_STM32_FMC2)	+= stm32_fmc2_nand.o
+obj-$(CONFIG_MTD_NAND_MESON)		+= meson_nand.o
 
-obj-$(CONFIG_SPL_NAND_AM33XX_BCH) += am335x_spl_bch.o
-obj-$(CONFIG_SPL_NAND_DENALI) += denali_spl.o
-obj-$(CONFIG_SPL_NAND_SIMPLE) += nand_spl_simple.o
-obj-$(CONFIG_SPL_NAND_LOAD) += nand_spl_load.o
-obj-$(CONFIG_SPL_NAND_ECC) += nand_ecc.o
-obj-$(CONFIG_SPL_NAND_BASE) += nand_base.o
-obj-$(CONFIG_SPL_NAND_IDENT) += nand_ids.o nand_timings.o
-obj-$(CONFIG_SPL_NAND_INIT) += nand.o
-ifeq ($(CONFIG_SPL_ENV_SUPPORT),y)
-obj-$(CONFIG_ENV_IS_IN_NAND) += nand_util.o
-endif
-
-else # not spl
-
-NORMAL_DRIVERS=y
-
-obj-y += nand.o
-obj-y += nand_bbt.o
-obj-y += nand_ids.o
-obj-y += nand_util.o
-obj-y += nand_ecc.o
-obj-y += nand_base.o
-obj-y += nand_timings.o
-
-endif # not spl
-
-ifdef NORMAL_DRIVERS
-
-obj-$(CONFIG_NAND_ECC_BCH) += nand_bch.o
-
-obj-$(CONFIG_NAND_ATMEL) += atmel_nand.o
-obj-$(CONFIG_NAND_ARASAN) += arasan_nfc.o
-obj-$(CONFIG_NAND_BRCMNAND) += brcmnand/
-obj-$(CONFIG_NAND_DAVINCI) += davinci_nand.o
-obj-$(CONFIG_NAND_DENALI) += denali.o
-obj-$(CONFIG_NAND_DENALI_DT) += denali_dt.o
-obj-$(CONFIG_NAND_FSL_ELBC) += fsl_elbc_nand.o
-obj-$(CONFIG_NAND_FSL_IFC) += fsl_ifc_nand.o
-obj-$(CONFIG_NAND_FSL_UPM) += fsl_upm.o
-obj-$(CONFIG_NAND_FSMC) += fsmc_nand.o
-obj-$(CONFIG_NAND_KB9202) += kb9202_nand.o
-obj-$(CONFIG_NAND_KIRKWOOD) += kirkwood_nand.o
-obj-$(CONFIG_NAND_KMETER1) += kmeter1_nand.o
-obj-$(CONFIG_NAND_LPC32XX_MLC) += lpc32xx_nand_mlc.o
-obj-$(CONFIG_NAND_LPC32XX_SLC) += lpc32xx_nand_slc.o
-obj-$(CONFIG_NAND_VF610_NFC) += vf610_nfc.o
-obj-$(CONFIG_NAND_MXC) += mxc_nand.o
-obj-$(CONFIG_NAND_MXS) += mxs_nand.o
-obj-$(CONFIG_NAND_MXS_DT) += mxs_nand_dt.o
-obj-$(CONFIG_NAND_PXA3XX) += pxa3xx_nand.o
-obj-$(CONFIG_NAND_SPEAR) += spr_nand.o
-obj-$(CONFIG_TEGRA_NAND) += tegra_nand.o
-obj-$(CONFIG_NAND_OMAP_GPMC) += omap_gpmc.o
-obj-$(CONFIG_NAND_OMAP_ELM) += omap_elm.o
-obj-$(CONFIG_NAND_PLAT) += nand_plat.o
-obj-$(CONFIG_NAND_SUNXI) += sunxi_nand.o
-obj-$(CONFIG_NAND_ZYNQ) += zynq_nand.o
-obj-$(CONFIG_NAND_STM32_FMC2) += stm32_fmc2_nand.o
-
-else  # minimal SPL drivers
-
-obj-$(CONFIG_NAND_FSL_ELBC) += fsl_elbc_spl.o
-obj-$(CONFIG_NAND_FSL_IFC) += fsl_ifc_spl.o
-obj-$(CONFIG_NAND_MXC) += mxc_nand_spl.o
-obj-$(CONFIG_NAND_MXS) += mxs_nand_spl.o mxs_nand.o
-obj-$(CONFIG_NAND_SUNXI) += sunxi_nand_spl.o
-
-endif # drivers
+nand-objs := nand_base.o nand_legacy.o nand_bbt.o nand_timings.o nand_ids.o
+nand-objs += nand_onfi.o
+nand-objs += nand_jedec.o
+nand-objs += nand_amd.o
+nand-objs += nand_esmt.o
+nand-objs += nand_hynix.o
+nand-objs += nand_macronix.o
+nand-objs += nand_micron.o
+nand-objs += nand_samsung.o
+nand-objs += nand_toshiba.o

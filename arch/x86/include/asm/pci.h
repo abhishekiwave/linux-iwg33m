@@ -1,78 +1,162 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-/*
- * (C) Copyright 2002
- * Daniel Engström, Omicron Ceti AB, daniel@omicron.se
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_X86_PCI_H
+#define _ASM_X86_PCI_H
 
-#ifndef _PCI_I386_H_
-#define _PCI_I386_H_
+#include <linux/mm.h> /* for struct page */
+#include <linux/types.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/scatterlist.h>
+#include <linux/numa.h>
+#include <asm/io.h>
+#include <asm/pat.h>
+#include <asm/x86_init.h>
 
-#include <pci.h>
+#ifdef __KERNEL__
 
-/* bus mapping constants (used for PCI core initialization) */
-#define PCI_REG_ADDR	0xcf8
-#define PCI_REG_DATA	0xcfc
+struct pci_sysdata {
+	int		domain;		/* PCI domain */
+	int		node;		/* NUMA node */
+#ifdef CONFIG_ACPI
+	struct acpi_device *companion;	/* ACPI companion device */
+#endif
+#ifdef CONFIG_X86_64
+	void		*iommu;		/* IOMMU private data */
+#endif
+#ifdef CONFIG_PCI_MSI_IRQ_DOMAIN
+	void		*fwnode;	/* IRQ domain for MSI assignment */
+#endif
+#if IS_ENABLED(CONFIG_VMD)
+	bool vmd_domain;		/* True if in Intel VMD domain */
+#endif
+};
 
-#define PCI_CFG_EN	0x80000000
+extern int pci_routeirq;
+extern int noioapicquirk;
+extern int noioapicreroute;
 
-#ifndef __ASSEMBLY__
+#ifdef CONFIG_PCI
 
-/**
- * pci_x86_read_config() - Read a configuration value from a device
- *
- * This function can be called before PCI is set up in driver model.
- *
- * @bdf:	PCI device address: bus, device and function -see PCI_BDF()
- * @offset:	Register offset to read
- * @valuep:	Place to put the returned value
- * @size:	Access size
- * @return 0 if OK, -ve on error
- */
-int pci_x86_read_config(pci_dev_t bdf, uint offset, ulong *valuep,
-			enum pci_size_t size);
+#ifdef CONFIG_PCI_DOMAINS
+static inline int pci_domain_nr(struct pci_bus *bus)
+{
+	struct pci_sysdata *sd = bus->sysdata;
 
-/**
- * pci_bus_write_config() - Write a configuration value to a device
- *
- * This function can be called before PCI is set up in driver model.
- *
- * @bdf:	PCI device address: bus, device and function -see PCI_BDF()
- * @offset:	Register offset to write
- * @value:	Value to write
- * @size:	Access size
- * @return 0 if OK, -ve on error
- */
-int pci_x86_write_config(pci_dev_t bdf, uint offset, ulong value,
-			 enum pci_size_t size);
+	return sd->domain;
+}
 
-/**
- * pci_bus_clrset_config32() - Update a configuration value for a device
- *
- * The register at @offset is updated to (oldvalue & ~clr) | set. This function
- * can be called before PCI is set up in driver model.
- *
- * @bdf:	PCI device address: bus, device and function -see PCI_BDF()
- * @offset:	Register offset to update
- * @clr:	Bits to clear
- * @set:	Bits to set
- * @return 0 if OK, -ve on error
- */
-int pci_x86_clrset_config(pci_dev_t bdf, uint offset, ulong clr, ulong set,
-			  enum pci_size_t size);
+static inline int pci_proc_domain(struct pci_bus *bus)
+{
+	return pci_domain_nr(bus);
+}
+#endif
 
-/**
- * Assign IRQ number to a PCI device
- *
- * This function assigns IRQ for a PCI device. If the device does not exist
- * or does not require interrupts then this function has no effect.
- *
- * @bus:	PCI bus number
- * @device:	PCI device number
- * @irq:	An array of IRQ numbers that are assigned to INTA through
- *		INTD of this PCI device.
- */
-void pci_assign_irqs(int bus, int device, u8 irq[4]);
+#ifdef CONFIG_PCI_MSI_IRQ_DOMAIN
+static inline void *_pci_root_bus_fwnode(struct pci_bus *bus)
+{
+	struct pci_sysdata *sd = bus->sysdata;
 
-#endif /* __ASSEMBLY__ */
+	return sd->fwnode;
+}
 
-#endif /* _PCI_I386_H_ */
+#define pci_root_bus_fwnode	_pci_root_bus_fwnode
+#endif
+
+static inline bool is_vmd(struct pci_bus *bus)
+{
+#if IS_ENABLED(CONFIG_VMD)
+	struct pci_sysdata *sd = bus->sysdata;
+
+	return sd->vmd_domain;
+#else
+	return false;
+#endif
+}
+
+/* Can be used to override the logic in pci_scan_bus for skipping
+   already-configured bus numbers - to be used for buggy BIOSes
+   or architectures with incomplete PCI setup by the loader */
+
+extern unsigned int pcibios_assign_all_busses(void);
+extern int pci_legacy_init(void);
+#else
+static inline int pcibios_assign_all_busses(void) { return 0; }
+#endif
+
+extern unsigned long pci_mem_start;
+#define PCIBIOS_MIN_IO		0x1000
+#define PCIBIOS_MIN_MEM		(pci_mem_start)
+
+#define PCIBIOS_MIN_CARDBUS_IO	0x4000
+
+extern int pcibios_enabled;
+void pcibios_scan_root(int bus);
+
+struct irq_routing_table *pcibios_get_irq_routing_table(void);
+int pcibios_set_irq_routing(struct pci_dev *dev, int pin, int irq);
+
+
+#define HAVE_PCI_MMAP
+#define arch_can_pci_mmap_wc()	pat_enabled()
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE
+
+#ifdef CONFIG_PCI
+extern void early_quirks(void);
+#else
+static inline void early_quirks(void) { }
+#endif
+
+extern void pci_iommu_alloc(void);
+
+#ifdef CONFIG_PCI_MSI
+/* implemented in arch/x86/kernel/apic/io_apic. */
+struct msi_desc;
+int native_setup_msi_irqs(struct pci_dev *dev, int nvec, int type);
+void native_teardown_msi_irq(unsigned int irq);
+void native_restore_msi_irqs(struct pci_dev *dev);
+#else
+#define native_setup_msi_irqs		NULL
+#define native_teardown_msi_irq		NULL
+#endif
+#endif  /* __KERNEL__ */
+
+#ifdef CONFIG_X86_64
+#include <asm/pci_64.h>
+#endif
+
+/* generic pci stuff */
+#include <asm-generic/pci.h>
+
+#ifdef CONFIG_NUMA
+/* Returns the node based on pci bus */
+static inline int __pcibus_to_node(const struct pci_bus *bus)
+{
+	const struct pci_sysdata *sd = bus->sysdata;
+
+	return sd->node;
+}
+
+static inline const struct cpumask *
+cpumask_of_pcibus(const struct pci_bus *bus)
+{
+	int node;
+
+	node = __pcibus_to_node(bus);
+	return (node == NUMA_NO_NODE) ? cpu_online_mask :
+			      cpumask_of_node(node);
+}
+#endif
+
+struct pci_setup_rom {
+	struct setup_data data;
+	uint16_t vendor;
+	uint16_t devid;
+	uint64_t pcilen;
+	unsigned long segment;
+	unsigned long bus;
+	unsigned long device;
+	unsigned long function;
+	uint8_t romdata[0];
+};
+
+#endif /* _ASM_X86_PCI_H */

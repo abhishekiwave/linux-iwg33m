@@ -1,43 +1,32 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2000-2007
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for the memory technology device drivers.
+#
 
-mtd-$(CONFIG_MTD) += mtdcore.o mtd_uboot.o
-mtd-$(CONFIG_DM_MTD) += mtd-uclass.o
-mtd-$(CONFIG_MTD_PARTITIONS) += mtdpart.o
-mtd-$(CONFIG_MTD_CONCAT) += mtdconcat.o
-mtd-$(CONFIG_ALTERA_QSPI) += altera_qspi.o
-mtd-$(CONFIG_FLASH_CFI_DRIVER) += cfi_flash.o
-mtd-$(CONFIG_FLASH_CFI_MTD) += cfi_mtd.o
-mtd-$(CONFIG_FLASH_CFI_LEGACY) += jedec_flash.o
-mtd-$(CONFIG_MW_EEPROM) += mw_eeprom.o
-mtd-$(CONFIG_FLASH_PIC32) += pic32_flash.o
-mtd-$(CONFIG_ST_SMI) += st_smi.o
-mtd-$(CONFIG_STM32_FLASH) += stm32_flash.o
-mtd-$(CONFIG_RENESAS_RPC_HF) += renesas_rpc_hf.o
-mtd-$(CONFIG_HBMC_AM654) += hbmc-am654.o
+# Core functionality.
+obj-$(CONFIG_MTD)		+= mtd.o
+mtd-y				:= mtdcore.o mtdsuper.o mtdconcat.o mtdpart.o mtdchar.o
 
-# U-Boot build
-ifeq ($(CONFIG_SPL_BUILD)$(CONFIG_TPL_BUILD),)
+obj-y				+= parsers/
 
-ifneq ($(mtd-y),)
-obj-y += mtd.o
-endif
-obj-y += nand/
-obj-y += onenand/
-obj-y += spi/
-obj-$(CONFIG_MTD_UBI) += ubi/
+# 'Users' - code which presents functionality to userspace.
+obj-$(CONFIG_MTD_BLKDEVS)	+= mtd_blkdevs.o
+obj-$(CONFIG_MTD_BLOCK)		+= mtdblock.o
+obj-$(CONFIG_MTD_BLOCK_RO)	+= mtdblock_ro.o
+obj-$(CONFIG_FTL)		+= ftl.o
+obj-$(CONFIG_NFTL)		+= nftl.o
+obj-$(CONFIG_INFTL)		+= inftl.o
+obj-$(CONFIG_RFD_FTL)		+= rfd_ftl.o
+obj-$(CONFIG_SSFDC)		+= ssfdc.o
+obj-$(CONFIG_SM_FTL)		+= sm_ftl.o
+obj-$(CONFIG_MTD_OOPS)		+= mtdoops.o
+obj-$(CONFIG_MTD_SWAP)		+= mtdswap.o
 
-#SPL/TPL build
-else
+nftl-objs		:= nftlcore.o nftlmount.o
+inftl-objs		:= inftlcore.o inftlmount.o
 
-ifneq ($(mtd-y),)
-obj-$(CONFIG_SPL_MTD_SUPPORT) += mtd.o
-endif
-obj-$(CONFIG_$(SPL_TPL_)NAND_SUPPORT) += nand/
-obj-$(CONFIG_SPL_ONENAND_SUPPORT) += onenand/
-obj-$(CONFIG_$(SPL_TPL_)SPI_FLASH_SUPPORT) += spi/
-obj-$(CONFIG_SPL_UBI) += ubispl/
+obj-y		+= chips/ lpddr/ maps/ devices/ nand/ tests/
 
-endif
+obj-$(CONFIG_MTD_SPI_NOR)	+= spi-nor/
+obj-$(CONFIG_MTD_UBI)		+= ubi/
+obj-$(CONFIG_MTD_HYPERBUS)	+= hyperbus/

@@ -1,25 +1,47 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2008
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for the fpga framework and fpga manager drivers.
+#
 
-obj-y += fpga.o
-obj-$(CONFIG_FPGA_SPARTAN2) += spartan2.o
-obj-$(CONFIG_FPGA_SPARTAN3) += spartan3.o
-obj-$(CONFIG_FPGA_VERSALPL) += versalpl.o
-obj-$(CONFIG_FPGA_VIRTEX2) += virtex2.o
-obj-$(CONFIG_FPGA_ZYNQPL) += zynqpl.o
-obj-$(CONFIG_FPGA_ZYNQMPPL) += zynqmppl.o
-obj-$(CONFIG_FPGA_XILINX) += xilinx.o
-obj-$(CONFIG_FPGA_LATTICE) += ivm_core.o lattice.o
-ifdef CONFIG_FPGA_ALTERA
-obj-y += altera.o
-obj-$(CONFIG_FPGA_ACEX1K) += ACEX1K.o
-obj-$(CONFIG_FPGA_CYCLON2) += cyclon2.o
-obj-$(CONFIG_FPGA_STRATIX_II) += stratixII.o
-obj-$(CONFIG_FPGA_STRATIX_V) += stratixv.o
-obj-$(CONFIG_FPGA_STRATIX10) += stratix10.o
-obj-$(CONFIG_FPGA_SOCFPGA) += socfpga.o
-obj-$(CONFIG_TARGET_SOCFPGA_GEN5) += socfpga_gen5.o
-obj-$(CONFIG_TARGET_SOCFPGA_ARRIA10) += socfpga_arria10.o
-endif
+# Core FPGA Manager Framework
+obj-$(CONFIG_FPGA)			+= fpga-mgr.o
+
+# FPGA Manager Drivers
+obj-$(CONFIG_FPGA_MGR_ALTERA_CVP)	+= altera-cvp.o
+obj-$(CONFIG_FPGA_MGR_ALTERA_PS_SPI)	+= altera-ps-spi.o
+obj-$(CONFIG_FPGA_MGR_ICE40_SPI)	+= ice40-spi.o
+obj-$(CONFIG_FPGA_MGR_MACHXO2_SPI)	+= machxo2-spi.o
+obj-$(CONFIG_FPGA_MGR_SOCFPGA)		+= socfpga.o
+obj-$(CONFIG_FPGA_MGR_SOCFPGA_A10)	+= socfpga-a10.o
+obj-$(CONFIG_FPGA_MGR_STRATIX10_SOC)	+= stratix10-soc.o
+obj-$(CONFIG_FPGA_MGR_TS73XX)		+= ts73xx-fpga.o
+obj-$(CONFIG_FPGA_MGR_XILINX_SPI)	+= xilinx-spi.o
+obj-$(CONFIG_FPGA_MGR_ZYNQ_FPGA)	+= zynq-fpga.o
+obj-$(CONFIG_FPGA_MGR_ZYNQMP_FPGA)	+= zynqmp-fpga.o
+obj-$(CONFIG_ALTERA_PR_IP_CORE)         += altera-pr-ip-core.o
+obj-$(CONFIG_ALTERA_PR_IP_CORE_PLAT)    += altera-pr-ip-core-plat.o
+
+# FPGA Bridge Drivers
+obj-$(CONFIG_FPGA_BRIDGE)		+= fpga-bridge.o
+obj-$(CONFIG_SOCFPGA_FPGA_BRIDGE)	+= altera-hps2fpga.o altera-fpga2sdram.o
+obj-$(CONFIG_ALTERA_FREEZE_BRIDGE)	+= altera-freeze-bridge.o
+obj-$(CONFIG_XILINX_PR_DECOUPLER)	+= xilinx-pr-decoupler.o
+
+# High Level Interfaces
+obj-$(CONFIG_FPGA_REGION)		+= fpga-region.o
+obj-$(CONFIG_OF_FPGA_REGION)		+= of-fpga-region.o
+
+# FPGA Device Feature List Support
+obj-$(CONFIG_FPGA_DFL)			+= dfl.o
+obj-$(CONFIG_FPGA_DFL_FME)		+= dfl-fme.o
+obj-$(CONFIG_FPGA_DFL_FME_MGR)		+= dfl-fme-mgr.o
+obj-$(CONFIG_FPGA_DFL_FME_BRIDGE)	+= dfl-fme-br.o
+obj-$(CONFIG_FPGA_DFL_FME_REGION)	+= dfl-fme-region.o
+obj-$(CONFIG_FPGA_DFL_AFU)		+= dfl-afu.o
+
+dfl-fme-objs := dfl-fme-main.o dfl-fme-pr.o dfl-fme-error.o
+dfl-afu-objs := dfl-afu-main.o dfl-afu-region.o dfl-afu-dma-region.o
+dfl-afu-objs += dfl-afu-error.o
+
+# Drivers for FPGAs which implement DFL
+obj-$(CONFIG_FPGA_DFL_PCI)		+= dfl-pci.o

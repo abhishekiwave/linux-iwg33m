@@ -1,13 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright 1995, Russell King.
  * Various bits and pieces copyrights include:
  *  Linus Torvalds (test_bit).
+ * Big endian support: Copyright 2001, Nicolas Pitre
+ *  reworked by rmk.
  *
- * bit 0 is the LSB of addr; bit 32 is the LSB of (addr+1).
+ * bit 0 is the LSB of an "unsigned long" quantity.
  *
  * Please note that the code in this file should never be included
  * from user space.  Many of these are not implemented in assembler
- * since they would be too costly.  Also, they require priviledged
+ * since they would be too costly.  Also, they require privileged
  * instructions (which are not available from user mode) to ensure
  * that they are atomic.
  */
@@ -15,169 +18,260 @@
 #ifndef __ASM_ARM_BITOPS_H
 #define __ASM_ARM_BITOPS_H
 
-#include <asm-generic/bitops/__ffs.h>
-
 #ifdef __KERNEL__
 
-#include <asm/proc-armv/system.h>
+#ifndef _LINUX_BITOPS_H
+#error only <linux/bitops.h> can be included directly
+#endif
 
-#define smp_mb__before_clear_bit()	do { } while (0)
-#define smp_mb__after_clear_bit()	do { } while (0)
+#include <linux/compiler.h>
+#include <linux/irqflags.h>
+#include <asm/barrier.h>
 
 /*
- * Function prototypes to keep gcc -Wall happy.
+ * These functions are the basis of our bit ops.
+ *
+ * First, the atomic bitops. These use native endian.
  */
-extern void set_bit(int nr, volatile void * addr);
-
-extern void clear_bit(int nr, volatile void * addr);
-
-extern void change_bit(int nr, volatile void * addr);
-
-static inline void __change_bit(int nr, volatile void *addr)
+static inline void ____atomic_set_bit(unsigned int bit, volatile unsigned long *p)
 {
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
+	unsigned long flags;
+	unsigned long mask = BIT_MASK(bit);
 
+	p += BIT_WORD(bit);
+
+	raw_local_irq_save(flags);
+	*p |= mask;
+	raw_local_irq_restore(flags);
+}
+
+static inline void ____atomic_clear_bit(unsigned int bit, volatile unsigned long *p)
+{
+	unsigned long flags;
+	unsigned long mask = BIT_MASK(bit);
+
+	p += BIT_WORD(bit);
+
+	raw_local_irq_save(flags);
+	*p &= ~mask;
+	raw_local_irq_restore(flags);
+}
+
+static inline void ____atomic_change_bit(unsigned int bit, volatile unsigned long *p)
+{
+	unsigned long flags;
+	unsigned long mask = BIT_MASK(bit);
+
+	p += BIT_WORD(bit);
+
+	raw_local_irq_save(flags);
 	*p ^= mask;
+	raw_local_irq_restore(flags);
 }
 
-static inline int __test_and_set_bit(int nr, volatile void *addr)
+static inline int
+____atomic_test_and_set_bit(unsigned int bit, volatile unsigned long *p)
 {
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
-	unsigned long old = *p;
+	unsigned long flags;
+	unsigned int res;
+	unsigned long mask = BIT_MASK(bit);
 
-	*p = old | mask;
-	return (old & mask) != 0;
+	p += BIT_WORD(bit);
+
+	raw_local_irq_save(flags);
+	res = *p;
+	*p = res | mask;
+	raw_local_irq_restore(flags);
+
+	return (res & mask) != 0;
 }
 
-static inline int test_and_set_bit(int nr, volatile void * addr)
+static inline int
+____atomic_test_and_clear_bit(unsigned int bit, volatile unsigned long *p)
 {
-	unsigned long flags = 0;
-	int out;
+	unsigned long flags;
+	unsigned int res;
+	unsigned long mask = BIT_MASK(bit);
 
-	local_irq_save(flags);
-	out = __test_and_set_bit(nr, addr);
-	local_irq_restore(flags);
+	p += BIT_WORD(bit);
 
-	return out;
+	raw_local_irq_save(flags);
+	res = *p;
+	*p = res & ~mask;
+	raw_local_irq_restore(flags);
+
+	return (res & mask) != 0;
 }
 
-static inline int __test_and_clear_bit(int nr, volatile void *addr)
+static inline int
+____atomic_test_and_change_bit(unsigned int bit, volatile unsigned long *p)
 {
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
-	unsigned long old = *p;
+	unsigned long flags;
+	unsigned int res;
+	unsigned long mask = BIT_MASK(bit);
 
-	*p = old & ~mask;
-	return (old & mask) != 0;
+	p += BIT_WORD(bit);
+
+	raw_local_irq_save(flags);
+	res = *p;
+	*p = res ^ mask;
+	raw_local_irq_restore(flags);
+
+	return (res & mask) != 0;
 }
 
-static inline int test_and_clear_bit(int nr, volatile void * addr)
-{
-	unsigned long flags = 0;
-	int out;
-
-	local_irq_save(flags);
-	out = __test_and_clear_bit(nr, addr);
-	local_irq_restore(flags);
-
-	return out;
-}
-
-extern int test_and_change_bit(int nr, volatile void * addr);
-
-static inline int __test_and_change_bit(int nr, volatile void *addr)
-{
-	unsigned long mask = BIT_MASK(nr);
-	unsigned long *p = ((unsigned long *)addr) + BIT_WORD(nr);
-	unsigned long old = *p;
-
-	*p = old ^ mask;
-	return (old & mask) != 0;
-}
+#include <asm-generic/bitops/non-atomic.h>
 
 /*
- * This routine doesn't need to be atomic.
+ *  A note about Endian-ness.
+ *  -------------------------
+ *
+ * When the ARM is put into big endian mode via CR15, the processor
+ * merely swaps the order of bytes within words, thus:
+ *
+ *          ------------ physical data bus bits -----------
+ *          D31 ... D24  D23 ... D16  D15 ... D8  D7 ... D0
+ * little     byte 3       byte 2       byte 1      byte 0
+ * big        byte 0       byte 1       byte 2      byte 3
+ *
+ * This means that reading a 32-bit word at address 0 returns the same
+ * value irrespective of the endian mode bit.
+ *
+ * Peripheral devices should be connected with the data bus reversed in
+ * "Big Endian" mode.  ARM Application Note 61 is applicable, and is
+ * available from http://www.arm.com/.
+ *
+ * The following assumes that the data bus connectivity for big endian
+ * mode has been followed.
+ *
+ * Note that bit 0 is defined to be 32-bit word bit 0, not byte 0 bit 0.
  */
-static inline int test_bit(int nr, const void * addr)
-{
-    return ((unsigned char *) addr)[nr >> 3] & (1U << (nr & 7));
-}
-
-static inline int __ilog2(unsigned int x)
-{
-	return generic_fls(x) - 1;
-}
-
-#define ffz(x)  __ffs(~(x))
-
-static inline int find_next_zero_bit(void *addr, int size, int offset)
-{
-	unsigned long *p = ((unsigned long *)addr) + (offset / BITS_PER_LONG);
-	unsigned long result = offset & ~(BITS_PER_LONG - 1);
-	unsigned long tmp;
-
-	if (offset >= size)
-		return size;
-	size -= result;
-	offset &= (BITS_PER_LONG - 1);
-	if (offset) {
-		tmp = *(p++);
-		tmp |= ~0UL >> (BITS_PER_LONG - offset);
-		if (size < BITS_PER_LONG)
-			goto found_first;
-		if (~tmp)
-			goto found_middle;
-		size -= BITS_PER_LONG;
-		result += BITS_PER_LONG;
-	}
-	while (size & ~(BITS_PER_LONG - 1)) {
-		tmp = *(p++);
-		if (~tmp)
-			goto found_middle;
-		result += BITS_PER_LONG;
-		size -= BITS_PER_LONG;
-	}
-	if (!size)
-		return result;
-	tmp = *p;
-
-found_first:
-	tmp |= ~0UL << size;
-found_middle:
-	return result + ffz(tmp);
-}
 
 /*
- * hweightN: returns the hamming weight (i.e. the number
- * of bits set) of a N-bit word
+ * Native endian assembly bitops.  nr = 0 -> word 0 bit 0.
  */
+extern void _set_bit(int nr, volatile unsigned long * p);
+extern void _clear_bit(int nr, volatile unsigned long * p);
+extern void _change_bit(int nr, volatile unsigned long * p);
+extern int _test_and_set_bit(int nr, volatile unsigned long * p);
+extern int _test_and_clear_bit(int nr, volatile unsigned long * p);
+extern int _test_and_change_bit(int nr, volatile unsigned long * p);
 
-#define hweight32(x) generic_hweight32(x)
-#define hweight16(x) generic_hweight16(x)
-#define hweight8(x) generic_hweight8(x)
+/*
+ * Little endian assembly bitops.  nr = 0 -> byte 0 bit 0.
+ */
+extern int _find_first_zero_bit_le(const unsigned long *p, unsigned size);
+extern int _find_next_zero_bit_le(const unsigned long *p, int size, int offset);
+extern int _find_first_bit_le(const unsigned long *p, unsigned size);
+extern int _find_next_bit_le(const unsigned long *p, int size, int offset);
 
-#define find_first_zero_bit(addr, size) \
-	find_next_zero_bit((addr), (size), 0)
+/*
+ * Big endian assembly bitops.  nr = 0 -> byte 3 bit 0.
+ */
+extern int _find_first_zero_bit_be(const unsigned long *p, unsigned size);
+extern int _find_next_zero_bit_be(const unsigned long *p, int size, int offset);
+extern int _find_first_bit_be(const unsigned long *p, unsigned size);
+extern int _find_next_bit_be(const unsigned long *p, int size, int offset);
 
-#define ext2_set_bit			test_and_set_bit
-#define ext2_clear_bit			test_and_clear_bit
-#define ext2_test_bit			test_bit
-#define ext2_find_first_zero_bit	find_first_zero_bit
-#define ext2_find_next_zero_bit		find_next_zero_bit
+#ifndef CONFIG_SMP
+/*
+ * The __* form of bitops are non-atomic and may be reordered.
+ */
+#define ATOMIC_BITOP(name,nr,p)			\
+	(__builtin_constant_p(nr) ? ____atomic_##name(nr, p) : _##name(nr,p))
+#else
+#define ATOMIC_BITOP(name,nr,p)		_##name(nr,p)
+#endif
 
-/* Bitmap functions for the minix filesystem. */
-#define minix_test_and_set_bit(nr,addr)	test_and_set_bit(nr,addr)
-#define minix_set_bit(nr,addr)		set_bit(nr,addr)
-#define minix_test_and_clear_bit(nr,addr)	test_and_clear_bit(nr,addr)
-#define minix_test_bit(nr,addr)		test_bit(nr,addr)
-#define minix_find_first_zero_bit(addr,size)	find_first_zero_bit(addr,size)
+/*
+ * Native endian atomic definitions.
+ */
+#define set_bit(nr,p)			ATOMIC_BITOP(set_bit,nr,p)
+#define clear_bit(nr,p)			ATOMIC_BITOP(clear_bit,nr,p)
+#define change_bit(nr,p)		ATOMIC_BITOP(change_bit,nr,p)
+#define test_and_set_bit(nr,p)		ATOMIC_BITOP(test_and_set_bit,nr,p)
+#define test_and_clear_bit(nr,p)	ATOMIC_BITOP(test_and_clear_bit,nr,p)
+#define test_and_change_bit(nr,p)	ATOMIC_BITOP(test_and_change_bit,nr,p)
 
-#endif /* __KERNEL__ */
+#ifndef __ARMEB__
+/*
+ * These are the little endian, atomic definitions.
+ */
+#define find_first_zero_bit(p,sz)	_find_first_zero_bit_le(p,sz)
+#define find_next_zero_bit(p,sz,off)	_find_next_zero_bit_le(p,sz,off)
+#define find_first_bit(p,sz)		_find_first_bit_le(p,sz)
+#define find_next_bit(p,sz,off)		_find_next_bit_le(p,sz,off)
+
+#else
+/*
+ * These are the big endian, atomic definitions.
+ */
+#define find_first_zero_bit(p,sz)	_find_first_zero_bit_be(p,sz)
+#define find_next_zero_bit(p,sz,off)	_find_next_zero_bit_be(p,sz,off)
+#define find_first_bit(p,sz)		_find_first_bit_be(p,sz)
+#define find_next_bit(p,sz,off)		_find_next_bit_be(p,sz,off)
+
+#endif
+
+#if __LINUX_ARM_ARCH__ < 5
 
 #include <asm-generic/bitops/__fls.h>
+#include <asm-generic/bitops/__ffs.h>
 #include <asm-generic/bitops/fls.h>
+#include <asm-generic/bitops/ffs.h>
+
+#else
+
+/*
+ * On ARMv5 and above, the gcc built-ins may rely on the clz instruction
+ * and produce optimal inlined code in all cases. On ARMv7 it is even
+ * better by also using the rbit instruction.
+ */
+#include <asm-generic/bitops/builtin-__fls.h>
+#include <asm-generic/bitops/builtin-__ffs.h>
+#include <asm-generic/bitops/builtin-fls.h>
+#include <asm-generic/bitops/builtin-ffs.h>
+
+#endif
+
+#include <asm-generic/bitops/ffz.h>
+
 #include <asm-generic/bitops/fls64.h>
+
+#include <asm-generic/bitops/sched.h>
+#include <asm-generic/bitops/hweight.h>
+#include <asm-generic/bitops/lock.h>
+
+#ifdef __ARMEB__
+
+static inline int find_first_zero_bit_le(const void *p, unsigned size)
+{
+	return _find_first_zero_bit_le(p, size);
+}
+#define find_first_zero_bit_le find_first_zero_bit_le
+
+static inline int find_next_zero_bit_le(const void *p, int size, int offset)
+{
+	return _find_next_zero_bit_le(p, size, offset);
+}
+#define find_next_zero_bit_le find_next_zero_bit_le
+
+static inline int find_next_bit_le(const void *p, int size, int offset)
+{
+	return _find_next_bit_le(p, size, offset);
+}
+#define find_next_bit_le find_next_bit_le
+
+#endif
+
+#include <asm-generic/bitops/find.h>
+#include <asm-generic/bitops/le.h>
+
+/*
+ * Ext2 is defined to use little-endian byte ordering.
+ */
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
+
+#endif /* __KERNEL__ */
 
 #endif /* _ARM_BITOPS_H */

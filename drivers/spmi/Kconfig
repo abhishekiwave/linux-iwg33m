@@ -1,23 +1,28 @@
-menu "SPMI support"
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# SPMI driver configuration
+#
+menuconfig SPMI
+	tristate "SPMI support"
+	help
+	  SPMI (System Power Management Interface) is a two-wire
+	  serial interface between baseband and application processors
+	  and Power Management Integrated Circuits (PMIC).
 
-config SPMI
-	bool "Enable SPMI bus support"
-	depends on DM
-	---help---
-	  Select this to enable to support SPMI bus.
-	  SPMI (System Power Management Interface) bus is used
-	  to connect PMIC devices on various SoCs.
+if SPMI
 
-config SPMI_MSM
-	bool "Support Qualcomm SPMI bus"
-	depends on SPMI
-	---help---
-	  Support SPMI bus implementation found on Qualcomm Snapdragon SoCs.
+config SPMI_MSM_PMIC_ARB
+	tristate "Qualcomm MSM SPMI Controller (PMIC Arbiter)"
+	select IRQ_DOMAIN_HIERARCHY
+	depends on ARCH_QCOM || COMPILE_TEST
+	depends on HAS_IOMEM
+	default ARCH_QCOM
+	help
+	  If you say yes to this option, support will be included for the
+	  built-in SPMI PMIC Arbiter interface on Qualcomm MSM family
+	  processors.
 
-config SPMI_SANDBOX
-	bool "Support for Sandbox SPMI bus"
-	depends on SPMI
-	---help---
-	  Demo SPMI bus implementation. Emulates part of PM8916 as single
-          slave (0) on bus. It has 4 GPIO peripherals, pid 0xC0-0xC3.
-endmenu
+	  This is required for communicating with Qualcomm PMICs and
+	  other devices that have the SPMI interface.
+
+endif

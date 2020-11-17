@@ -1,164 +1,112 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TIME_H
 #define _LINUX_TIME_H
 
-#include <rtc.h>
-#include <vsprintf.h>
-#include <linux/types.h>
+# include <linux/cache.h>
+# include <linux/seqlock.h>
+# include <linux/math64.h>
+# include <linux/time64.h>
 
-#define _DEFUN(a,b,c) a(c)
-#define _CONST const
-#define _AND ,
+extern struct timezone sys_tz;
 
-#define _REENT_ONLY
+int get_timespec64(struct timespec64 *ts,
+		const struct __kernel_timespec __user *uts);
+int put_timespec64(const struct timespec64 *ts,
+		struct __kernel_timespec __user *uts);
+int get_itimerspec64(struct itimerspec64 *it,
+			const struct __kernel_itimerspec __user *uit);
+int put_itimerspec64(const struct itimerspec64 *it,
+			struct __kernel_itimerspec __user *uit);
 
-#define SECSPERMIN	60L
-#define MINSPERHOUR	60L
-#define HOURSPERDAY	24L
-#define SECSPERHOUR	(SECSPERMIN * MINSPERHOUR)
-#define SECSPERDAY	(SECSPERHOUR * HOURSPERDAY)
-#define DAYSPERWEEK	7
-#define MONSPERYEAR	12
+extern time64_t mktime64(const unsigned int year, const unsigned int mon,
+			const unsigned int day, const unsigned int hour,
+			const unsigned int min, const unsigned int sec);
 
-#define YEAR_BASE	1900
-#define EPOCH_YEAR      1970
-#define EPOCH_WDAY      4
-
-#define isleap(y) ((((y) % 4) == 0 && ((y) % 100) != 0) || ((y) % 400) == 0)
-
-
-/* Used by other time functions.  */
-struct tm {
-    int tm_sec;                   /* Seconds.     [0-60] (1 leap second) */
-    int tm_min;                   /* Minutes.     [0-59] */
-    int tm_hour;                  /* Hours.       [0-23] */
-    int tm_mday;                  /* Day.         [1-31] */
-    int tm_mon;                   /* Month.       [0-11] */
-    int tm_year;                  /* Year - 1900.  */
-    int tm_wday;                  /* Day of week. [0-6] */
-    int tm_yday;                  /* Days in year.[0-365] */
-    int tm_isdst;                 /* DST.         [-1/0/1]*/
-
-# ifdef __USE_BSD
-    long int tm_gmtoff;           /* Seconds east of UTC.  */
-    __const char *tm_zone;        /* Timezone abbreviation.  */
-# else
-    long int __tm_gmtoff;         /* Seconds east of UTC.  */
-    __const char *__tm_zone;      /* Timezone abbreviation.  */
-# endif
-};
-
-static inline char *
-_DEFUN (asctime_r, (tim_p, result),
-	_CONST struct tm *tim_p _AND
-	char *result)
-{
-    static _CONST char day_name[7][3] = {
-	"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"
-    };
-    static _CONST char mon_name[12][3] = {
-	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-    };
-
-    sprintf (result, "%.3s %.3s %.2d %.2d:%.2d:%.2d %d\n",
-	    day_name[tim_p->tm_wday],
-	    mon_name[tim_p->tm_mon],
-	    tim_p->tm_mday, tim_p->tm_hour, tim_p->tm_min,
-	    tim_p->tm_sec, 1900 + tim_p->tm_year);
-    return result;
-}
-
-static inline struct tm *
-_DEFUN (localtime_r, (tim_p, res),
-	_CONST time_t * tim_p _AND
-	struct tm *res)
-{
-    static _CONST int mon_lengths[2][MONSPERYEAR] = {
-      {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31},
-      {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31}
-    } ;
-
-    static _CONST int year_lengths[2] = {
-      365,
-      366
-    } ;
-
-    long days, rem;
-    int y;
-    int yleap;
-    _CONST int *ip;
-
-    days = ((long) *tim_p) / SECSPERDAY;
-    rem = ((long) *tim_p) % SECSPERDAY;
-    while (rem < 0)
-    {
-	rem += SECSPERDAY;
-	--days;
-    }
-
-    /* compute hour, min, and sec */
-    res->tm_hour = (int) (rem / SECSPERHOUR);
-    rem %= SECSPERHOUR;
-    res->tm_min = (int) (rem / SECSPERMIN);
-    res->tm_sec = (int) (rem % SECSPERMIN);
-
-    /* compute day of week */
-    if ((res->tm_wday = ((EPOCH_WDAY + days) % DAYSPERWEEK)) < 0)
-	res->tm_wday += DAYSPERWEEK;
-
-    /* compute year & day of year */
-    y = EPOCH_YEAR;
-    if (days >= 0)
-    {
-	for (;;)
-	{
-	    yleap = isleap(y);
-	    if (days < year_lengths[yleap])
-		break;
-	    y++;
-	    days -= year_lengths[yleap];
-	}
-    }
-    else
-    {
-	do
-	{
-	    --y;
-	    yleap = isleap(y);
-	    days += year_lengths[yleap];
-	} while (days < 0);
-    }
-
-    res->tm_year = y - YEAR_BASE;
-    res->tm_yday = days;
-    ip = mon_lengths[yleap];
-    for (res->tm_mon = 0; days >= ip[res->tm_mon]; ++res->tm_mon)
-	days -= ip[res->tm_mon];
-    res->tm_mday = days + 1;
-
-    /* set daylight saving time flag */
-    res->tm_isdst = -1;
-
-    return (res);
-}
-
-static inline char *
-_DEFUN (ctime_r, (tim_p, result),
-	_CONST time_t * tim_p _AND
-	char * result)
-
-{
-    struct tm tm;
-    return asctime_r (localtime_r (tim_p, &tm), result);
-}
-
-/* for compatibility with linux code */
-typedef __s64 time64_t;
-
-#ifdef CONFIG_LIB_DATE
-time64_t mktime64(const unsigned int year, const unsigned int mon,
-		  const unsigned int day, const unsigned int hour,
-		  const unsigned int min, const unsigned int sec);
+/* Some architectures do not supply their own clocksource.
+ * This is mainly the case in architectures that get their
+ * inter-tick times by reading the counter on their interval
+ * timer. Since these timers wrap every tick, they're not really
+ * useful as clocksources. Wrapping them to act like one is possible
+ * but not very efficient. So we provide a callout these arches
+ * can implement for use with the jiffies clocksource to provide
+ * finer then tick granular time.
+ */
+#ifdef CONFIG_ARCH_USES_GETTIMEOFFSET
+extern u32 (*arch_gettimeoffset)(void);
 #endif
 
+struct itimerval;
+extern int do_setitimer(int which, struct itimerval *value,
+			struct itimerval *ovalue);
+extern int do_getitimer(int which, struct itimerval *value);
+
+extern long do_utimes(int dfd, const char __user *filename, struct timespec64 *times, int flags);
+
+/*
+ * Similar to the struct tm in userspace <time.h>, but it needs to be here so
+ * that the kernel source is self contained.
+ */
+struct tm {
+	/*
+	 * the number of seconds after the minute, normally in the range
+	 * 0 to 59, but can be up to 60 to allow for leap seconds
+	 */
+	int tm_sec;
+	/* the number of minutes after the hour, in the range 0 to 59*/
+	int tm_min;
+	/* the number of hours past midnight, in the range 0 to 23 */
+	int tm_hour;
+	/* the day of the month, in the range 1 to 31 */
+	int tm_mday;
+	/* the number of months since January, in the range 0 to 11 */
+	int tm_mon;
+	/* the number of years since 1900 */
+	long tm_year;
+	/* the number of days since Sunday, in the range 0 to 6 */
+	int tm_wday;
+	/* the number of days since January 1, in the range 0 to 365 */
+	int tm_yday;
+};
+
+void time64_to_tm(time64_t totalsecs, int offset, struct tm *result);
+
+# include <linux/time32.h>
+
+static inline bool itimerspec64_valid(const struct itimerspec64 *its)
+{
+	if (!timespec64_valid(&(its->it_interval)) ||
+		!timespec64_valid(&(its->it_value)))
+		return false;
+
+	return true;
+}
+
+/**
+ * time_after32 - compare two 32-bit relative times
+ * @a:	the time which may be after @b
+ * @b:	the time which may be before @a
+ *
+ * time_after32(a, b) returns true if the time @a is after time @b.
+ * time_before32(b, a) returns true if the time @b is before time @a.
+ *
+ * Similar to time_after(), compare two 32-bit timestamps for relative
+ * times.  This is useful for comparing 32-bit seconds values that can't
+ * be converted to 64-bit values (e.g. due to disk format or wire protocol
+ * issues) when it is known that the times are less than 68 years apart.
+ */
+#define time_after32(a, b)	((s32)((u32)(b) - (u32)(a)) < 0)
+#define time_before32(b, a)	time_after32(a, b)
+
+/**
+ * time_between32 - check if a 32-bit timestamp is within a given time range
+ * @t:	the time which may be within [l,h]
+ * @l:	the lower bound of the range
+ * @h:	the higher bound of the range
+ *
+ * time_before32(t, l, h) returns true if @l <= @t <= @h. All operands are
+ * treated as 32-bit integers.
+ *
+ * Equivalent to !(time_before32(@t, @l) || time_after32(@t, @h)).
+ */
+#define time_between32(t, l, h) ((u32)(h) - (u32)(l) >= (u32)(t) - (u32)(l))
 #endif

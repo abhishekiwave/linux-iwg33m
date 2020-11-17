@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright 2020 iWave Systems Technologies
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/usb/pd.h>
+#include "imx8mq-iwg33m.dtsi"
+
+/{
+	sound-hdmi {
+		status = "okay";
+	};
+};
+
+
+&irqsteer {
+	status = "okay";
+};
+
+&dcss {
+	status = "okay";
+
+	port@0 {
+		dcss_out: endpoint {
+			  remote-endpoint = <&hdmi_in>;
+		};
+	};
+};
+
+&hdmi {
+	compatible = "cdn,imx8mq-hdmi";
+	lane-mapping = <0xe4>;
+	status = "okay";
+	port@1 {
+		hdmi_in: endpoint {
+			remote-endpoint = <&dcss_out>;
+		};
+	};
+};

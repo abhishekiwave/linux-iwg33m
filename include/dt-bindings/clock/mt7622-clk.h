@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2019 MediaTek Inc.
+ * Copyright (c) 2017 MediaTek Inc.
+ * Author: Chen Zhong <chen.zhong@mediatek.com>
  */
+
 #ifndef _DT_BINDINGS_CLK_MT7622_H
 #define _DT_BINDINGS_CLK_MT7622_H
 
 /* TOPCKGEN */
 
-/* FIXED_CLKS */
 #define CLK_TOP_TO_U2_PHY		0
 #define CLK_TOP_TO_U2_PHY_1P		1
 #define CLK_TOP_PCIE0_PIPE_EN		2
@@ -18,7 +19,6 @@
 #define CLK_TOP_SSUSB_CDR_FB		7
 #define CLK_TOP_SATA_ASIC		8
 #define CLK_TOP_SATA_RBC		9
-/* FIXED_DIVS */
 #define CLK_TOP_TO_USB3_SYS		10
 #define CLK_TOP_P1_1MHZ			11
 #define CLK_TOP_4MHZ			12
@@ -65,7 +65,6 @@
 #define CLK_TOP_PCIE1_MAC_EN		53
 #define CLK_TOP_PCIE0_MAC_EN		54
 #define CLK_TOP_ETH_500M		55
-/* TOP_MUXES */
 #define CLK_TOP_AXI_SEL			56
 #define CLK_TOP_MEM_SEL			57
 #define CLK_TOP_DDRPHYCFG_SEL		58
@@ -117,46 +116,54 @@
 #define CLK_TOP_I2S1_MCK_DIV_PD		104
 #define CLK_TOP_I2S2_MCK_DIV_PD		105
 #define CLK_TOP_I2S3_MCK_DIV_PD		106
+#define CLK_TOP_A1SYS_HP_DIV_PD		107
+#define CLK_TOP_A2SYS_HP_DIV_PD		108
+#define CLK_TOP_NR_CLK			109
 
 /* INFRACFG */
 
-#define CLK_INFRA_DBGCLK_PD		0
-#define CLK_INFRA_TRNG			1
+#define CLK_INFRA_MUX1_SEL		0
+#define CLK_INFRA_DBGCLK_PD		1
 #define CLK_INFRA_AUDIO_PD		2
 #define CLK_INFRA_IRRX_PD		3
 #define CLK_INFRA_APXGPT_PD		4
 #define CLK_INFRA_PMIC_PD		5
+#define CLK_INFRA_TRNG			6
+#define CLK_INFRA_NR_CLK		7
 
 /* PERICFG */
 
-#define CLK_PERI_THERM_PD		0
-#define CLK_PERI_PWM1_PD		1
-#define CLK_PERI_PWM2_PD		2
-#define CLK_PERI_PWM3_PD		3
-#define CLK_PERI_PWM4_PD		4
-#define CLK_PERI_PWM5_PD		5
-#define CLK_PERI_PWM6_PD		6
-#define CLK_PERI_PWM7_PD		7
-#define CLK_PERI_PWM_PD			8
-#define CLK_PERI_AP_DMA_PD		9
-#define CLK_PERI_MSDC30_0_PD		10
-#define CLK_PERI_MSDC30_1_PD		11
-#define CLK_PERI_UART0_PD		12
-#define CLK_PERI_UART1_PD		13
-#define CLK_PERI_UART2_PD		14
-#define CLK_PERI_UART3_PD		15
-#define CLK_PERI_BTIF_PD		16
-#define CLK_PERI_I2C0_PD		17
-#define CLK_PERI_I2C1_PD		18
-#define CLK_PERI_I2C2_PD		19
-#define CLK_PERI_SPI1_PD		20
-#define CLK_PERI_AUXADC_PD		21
-#define CLK_PERI_SPI0_PD		22
-#define CLK_PERI_SNFI_PD		23
-#define CLK_PERI_NFI_PD			24
-#define CLK_PERI_NFIECC_PD		25
-#define CLK_PERI_FLASH_PD		26
-#define CLK_PERI_IRTX_PD		27
+#define CLK_PERIBUS_SEL			0
+#define CLK_PERI_THERM_PD		1
+#define CLK_PERI_PWM1_PD		2
+#define CLK_PERI_PWM2_PD		3
+#define CLK_PERI_PWM3_PD		4
+#define CLK_PERI_PWM4_PD		5
+#define CLK_PERI_PWM5_PD		6
+#define CLK_PERI_PWM6_PD		7
+#define CLK_PERI_PWM7_PD		8
+#define CLK_PERI_PWM_PD			9
+#define CLK_PERI_AP_DMA_PD		10
+#define CLK_PERI_MSDC30_0_PD		11
+#define CLK_PERI_MSDC30_1_PD		12
+#define CLK_PERI_UART0_PD		13
+#define CLK_PERI_UART1_PD		14
+#define CLK_PERI_UART2_PD		15
+#define CLK_PERI_UART3_PD		16
+#define CLK_PERI_UART4_PD		17
+#define CLK_PERI_BTIF_PD		18
+#define CLK_PERI_I2C0_PD		19
+#define CLK_PERI_I2C1_PD		20
+#define CLK_PERI_I2C2_PD		21
+#define CLK_PERI_SPI1_PD		22
+#define CLK_PERI_AUXADC_PD		23
+#define CLK_PERI_SPI0_PD		24
+#define CLK_PERI_SNFI_PD		25
+#define CLK_PERI_NFI_PD			26
+#define CLK_PERI_NFIECC_PD		27
+#define CLK_PERI_FLASH_PD		28
+#define CLK_PERI_IRTX_PD		29
+#define CLK_PERI_NR_CLK			30
 
 /* APMIXEDSYS */
 
@@ -169,6 +176,8 @@
 #define CLK_APMIXED_AUD2PLL		6
 #define CLK_APMIXED_TRGPLL		7
 #define CLK_APMIXED_SGMIPLL		8
+#define CLK_APMIXED_MAIN_CORE_EN	9
+#define CLK_APMIXED_NR_CLK		10
 
 /* AUDIOSYS */
 
@@ -206,7 +215,7 @@
 #define CLK_AUDIO_DLMCH			31
 #define CLK_AUDIO_ARB1			32
 #define CLK_AUDIO_AWB			33
-#define CLK_AUDIO_AWB3			34
+#define CLK_AUDIO_AWB2			34
 #define CLK_AUDIO_DAI			35
 #define CLK_AUDIO_MOD			36
 #define CLK_AUDIO_ASRCI3		37
@@ -259,6 +268,7 @@
 #define CLK_ETH_GP2_EN			2
 #define CLK_ETH_GP1_EN			3
 #define CLK_ETH_GP0_EN			4
+#define CLK_ETH_NR_CLK			5
 
 /* SGMIISYS */
 
@@ -266,6 +276,7 @@
 #define CLK_SGMII_RX250M_EN		1
 #define CLK_SGMII_CDR_REF		2
 #define CLK_SGMII_CDR_FB		3
+#define CLK_SGMII_NR_CLK		4
 
 #endif /* _DT_BINDINGS_CLK_MT7622_H */
 

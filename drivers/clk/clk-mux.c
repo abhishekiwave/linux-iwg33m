@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 DENX Software Engineering
- * Lukasz Majewski, DENX Software Engineering, lukma@denx.de
- *
  * Copyright (C) 2011 Sascha Hauer, Pengutronix <s.hauer@pengutronix.de>
  * Copyright (C) 2011 Richard Zhao, Linaro <richard.zhao@linaro.org>
  * Copyright (C) 2011-2012 Mike Turquette, Linaro Ltd <mturquette@linaro.org>
@@ -10,36 +7,42 @@
  * Simple multiplexer clock implementation
  */
 
-/*
- * U-Boot CCF porting node:
- *
- * The Linux kernel - as of tag: 5.0-rc3 is using also the imx_clk_fixup_mux()
- * version of CCF mux. It is used on e.g. imx6q to provide fixes (like
- * imx_cscmr1_fixup) for broken HW.
- *
- * At least for IMX6Q (but NOT IMX6QP) it is important when we set the parent
- * clock.
- */
-
-#include <common.h>
-#include <asm/io.h>
-#include <malloc.h>
-#include <clk-uclass.h>
-#include <dm/device.h>
-#include <dm/devres.h>
 #include <linux/clk-provider.h>
-#include <clk.h>
-#include "clk.h"
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 #include <linux/err.h>
 
-#define UBOOT_DM_CLK_CCF_MUX "ccf_clk_mux"
+/*
+ * DOC: basic adjustable multiplexer clock that cannot gate
+ *
+ * Traits of this clock:
+ * prepare - clk_prepare only ensures that parents are prepared
+ * enable - clk_enable only ensures that parents are enabled
+ * rate - rate is only affected by parent switching.  No clk_set_rate support
+ * parent - parent is adjustable through clk_set_parent
+ */
 
-int clk_mux_val_to_index(struct clk *clk, u32 *table, unsigned int flags,
+static inline u32 clk_mux_readl(struct clk_mux *mux)
+{
+	if (mux->flags & CLK_MUX_BIG_ENDIAN)
+		return ioread32be(mux->reg);
+
+	return readl(mux->reg);
+}
+
+static inline void clk_mux_writel(struct clk_mux *mux, u32 val)
+{
+	if (mux->flags & CLK_MUX_BIG_ENDIAN)
+		iowrite32be(val, mux->reg);
+	else
+		writel(val, mux->reg);
+}
+
+int clk_mux_val_to_index(struct clk_hw *hw, u32 *table, unsigned int flags,
 			 unsigned int val)
 {
-	struct clk_mux *mux = to_clk_mux(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
-	int num_parents = mux->num_parents;
+	int num_parents = clk_hw_get_num_parents(hw);
 
 	if (table) {
 		int i;
@@ -61,6 +64,7 @@ int clk_mux_val_to_index(struct clk *clk, u32 *table, unsigned int flags,
 
 	return val;
 }
+EXPORT_SYMBOL_GPL(clk_mux_val_to_index);
 
 unsigned int clk_mux_index_to_val(u32 *table, unsigned int flags, u8 index)
 {
@@ -78,85 +82,78 @@ unsigned int clk_mux_index_to_val(u32 *table, unsigned int flags, u8 index)
 
 	return val;
 }
+EXPORT_SYMBOL_GPL(clk_mux_index_to_val);
 
-u8 clk_mux_get_parent(struct clk *clk)
+static u8 clk_mux_get_parent(struct clk_hw *hw)
 {
-	struct clk_mux *mux = to_clk_mux(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
+	struct clk_mux *mux = to_clk_mux(hw);
 	u32 val;
 
-#if CONFIG_IS_ENABLED(SANDBOX_CLK_CCF)
-	val = mux->io_mux_val;
-#else
-	val = readl(mux->reg);
-#endif
-	val >>= mux->shift;
+	val = clk_mux_readl(mux) >> mux->shift;
 	val &= mux->mask;
 
-	return clk_mux_val_to_index(clk, mux->table, mux->flags, val);
+	return clk_mux_val_to_index(hw, mux->table, mux->flags, val);
 }
 
-static int clk_fetch_parent_index(struct clk *clk,
-				  struct clk *parent)
+static int clk_mux_set_parent(struct clk_hw *hw, u8 index)
 {
-	struct clk_mux *mux = to_clk_mux(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
-
-	int i;
-
-	if (!parent)
-		return -EINVAL;
-
-	for (i = 0; i < mux->num_parents; i++) {
-		if (!strcmp(parent->dev->name, mux->parent_names[i]))
-			return i;
-	}
-
-	return -EINVAL;
-}
-
-static int clk_mux_set_parent(struct clk *clk, struct clk *parent)
-{
-	struct clk_mux *mux = to_clk_mux(clk_dev_binded(clk) ?
-			dev_get_clk_ptr(clk->dev) : clk);
-	int index;
-	u32 val;
+	struct clk_mux *mux = to_clk_mux(hw);
+	u32 val = clk_mux_index_to_val(mux->table, mux->flags, index);
+	unsigned long flags = 0;
 	u32 reg;
 
-	index = clk_fetch_parent_index(clk, parent);
-	if (index < 0) {
-		printf("Could not fetch index\n");
-		return index;
-	}
-
-	val = clk_mux_index_to_val(mux->table, mux->flags, index);
+	if (mux->lock)
+		spin_lock_irqsave(mux->lock, flags);
+	else
+		__acquire(mux->lock);
 
 	if (mux->flags & CLK_MUX_HIWORD_MASK) {
 		reg = mux->mask << (mux->shift + 16);
 	} else {
-		reg = readl(mux->reg);
+		reg = clk_mux_readl(mux);
 		reg &= ~(mux->mask << mux->shift);
 	}
 	val = val << mux->shift;
 	reg |= val;
-	writel(reg, mux->reg);
+	clk_mux_writel(mux, reg);
+
+	if (mux->lock)
+		spin_unlock_irqrestore(mux->lock, flags);
+	else
+		__release(mux->lock);
 
 	return 0;
 }
 
-const struct clk_ops clk_mux_ops = {
-	.get_rate = clk_generic_get_rate,
-	.set_parent = clk_mux_set_parent,
-};
+static int clk_mux_determine_rate(struct clk_hw *hw,
+				  struct clk_rate_request *req)
+{
+	struct clk_mux *mux = to_clk_mux(hw);
 
-struct clk *clk_hw_register_mux_table(struct device *dev, const char *name,
+	return clk_mux_determine_rate_flags(hw, req, mux->flags);
+}
+
+const struct clk_ops clk_mux_ops = {
+	.get_parent = clk_mux_get_parent,
+	.set_parent = clk_mux_set_parent,
+	.determine_rate = clk_mux_determine_rate,
+};
+EXPORT_SYMBOL_GPL(clk_mux_ops);
+
+const struct clk_ops clk_mux_ro_ops = {
+	.get_parent = clk_mux_get_parent,
+};
+EXPORT_SYMBOL_GPL(clk_mux_ro_ops);
+
+struct clk_hw *clk_hw_register_mux_table(struct device *dev, const char *name,
 		const char * const *parent_names, u8 num_parents,
 		unsigned long flags,
 		void __iomem *reg, u8 shift, u32 mask,
-		u8 clk_mux_flags, u32 *table)
+		u8 clk_mux_flags, u32 *table, spinlock_t *lock)
 {
 	struct clk_mux *mux;
-	struct clk *clk;
+	struct clk_hw *hw;
+	struct clk_init_data init;
 	u8 width = 0;
 	int ret;
 
@@ -173,70 +170,103 @@ struct clk *clk_hw_register_mux_table(struct device *dev, const char *name,
 	if (!mux)
 		return ERR_PTR(-ENOMEM);
 
-	/* U-boot specific assignments */
-	mux->parent_names = parent_names;
-	mux->num_parents = num_parents;
+	init.name = name;
+	if (clk_mux_flags & CLK_MUX_READ_ONLY)
+		init.ops = &clk_mux_ro_ops;
+	else
+		init.ops = &clk_mux_ops;
+	init.flags = flags;
+	init.parent_names = parent_names;
+	init.num_parents = num_parents;
 
 	/* struct clk_mux assignments */
 	mux->reg = reg;
 	mux->shift = shift;
 	mux->mask = mask;
 	mux->flags = clk_mux_flags;
+	mux->lock = lock;
 	mux->table = table;
-#if CONFIG_IS_ENABLED(SANDBOX_CLK_CCF)
-	mux->io_mux_val = *(u32 *)reg;
-#endif
+	mux->hw.init = &init;
 
-	clk = &mux->clk;
-
-	/*
-	 * Read the current mux setup - so we assign correct parent.
-	 *
-	 * Changing parent would require changing internals of udevice struct
-	 * for the corresponding clock (to do that define .set_parent() method.
-	 */
-	ret = clk_register(clk, UBOOT_DM_CLK_CCF_MUX, name,
-			   parent_names[clk_mux_get_parent(clk)]);
+	hw = &mux->hw;
+	ret = clk_hw_register(dev, hw);
 	if (ret) {
 		kfree(mux);
-		return ERR_PTR(ret);
+		hw = ERR_PTR(ret);
 	}
 
-	return clk;
+	return hw;
 }
+EXPORT_SYMBOL_GPL(clk_hw_register_mux_table);
 
 struct clk *clk_register_mux_table(struct device *dev, const char *name,
 		const char * const *parent_names, u8 num_parents,
 		unsigned long flags,
 		void __iomem *reg, u8 shift, u32 mask,
-		u8 clk_mux_flags, u32 *table)
+		u8 clk_mux_flags, u32 *table, spinlock_t *lock)
 {
-	struct clk *clk;
+	struct clk_hw *hw;
 
-	clk = clk_hw_register_mux_table(dev, name, parent_names, num_parents,
+	hw = clk_hw_register_mux_table(dev, name, parent_names, num_parents,
 				       flags, reg, shift, mask, clk_mux_flags,
-				       table);
-	if (IS_ERR(clk))
-		return ERR_CAST(clk);
-	return clk;
+				       table, lock);
+	if (IS_ERR(hw))
+		return ERR_CAST(hw);
+	return hw->clk;
 }
+EXPORT_SYMBOL_GPL(clk_register_mux_table);
 
 struct clk *clk_register_mux(struct device *dev, const char *name,
 		const char * const *parent_names, u8 num_parents,
 		unsigned long flags,
 		void __iomem *reg, u8 shift, u8 width,
-		u8 clk_mux_flags)
+		u8 clk_mux_flags, spinlock_t *lock)
 {
 	u32 mask = BIT(width) - 1;
 
 	return clk_register_mux_table(dev, name, parent_names, num_parents,
 				      flags, reg, shift, mask, clk_mux_flags,
-				      NULL);
+				      NULL, lock);
 }
+EXPORT_SYMBOL_GPL(clk_register_mux);
 
-U_BOOT_DRIVER(ccf_clk_mux) = {
-	.name	= UBOOT_DM_CLK_CCF_MUX,
-	.id	= UCLASS_CLK,
-	.ops	= &clk_mux_ops,
-	.flags = DM_FLAG_PRE_RELOC,
-};
+struct clk_hw *clk_hw_register_mux(struct device *dev, const char *name,
+		const char * const *parent_names, u8 num_parents,
+		unsigned long flags,
+		void __iomem *reg, u8 shift, u8 width,
+		u8 clk_mux_flags, spinlock_t *lock)
+{
+	u32 mask = BIT(width) - 1;
+
+	return clk_hw_register_mux_table(dev, name, parent_names, num_parents,
+				      flags, reg, shift, mask, clk_mux_flags,
+				      NULL, lock);
+}
+EXPORT_SYMBOL_GPL(clk_hw_register_mux);
+
+void clk_unregister_mux(struct clk *clk)
+{
+	struct clk_mux *mux;
+	struct clk_hw *hw;
+
+	hw = __clk_get_hw(clk);
+	if (!hw)
+		return;
+
+	mux = to_clk_mux(hw);
+
+	clk_unregister(clk);
+	kfree(mux);
+}
+EXPORT_SYMBOL_GPL(clk_unregister_mux);
+
+void clk_hw_unregister_mux(struct clk_hw *hw)
+{
+	struct clk_mux *mux;
+
+	mux = to_clk_mux(hw);
+
+	clk_hw_unregister(hw);
+	kfree(mux);
+}
+EXPORT_SYMBOL_GPL(clk_hw_unregister_mux);

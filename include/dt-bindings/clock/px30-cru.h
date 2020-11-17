@@ -1,8 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/*
- * Copyright (c) 2017 Rockchip Electronics Co. Ltd.
- * Author: Elaine <zhangqing@rock-chips.com>
- */
 
 #ifndef _DT_BINDINGS_CLK_ROCKCHIP_PX30_H
 #define _DT_BINDINGS_CLK_ROCKCHIP_PX30_H
@@ -87,6 +83,8 @@
 #define SCLK_SDIO_DIV50		81
 #define SCLK_EMMC_DIV		82
 #define SCLK_EMMC_DIV50		83
+#define SCLK_DDRCLK		84
+#define SCLK_UART1_SRC		85
 
 /* dclk gates */
 #define DCLK_VOPB		150
@@ -109,6 +107,8 @@
 #define ACLK_GIC		184
 #define ACLK_DCF		186
 #define ACLK_DMAC		187
+#define ACLK_BUS_SRC		188
+#define ACLK_PERI_SRC		189
 
 /* hclk gates */
 #define HCLK_BUS_PRE		240

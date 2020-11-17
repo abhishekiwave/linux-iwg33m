@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright (c) International Business Machines Corp., 2006
  *
@@ -12,13 +12,8 @@ void ubi_dump_flash(struct ubi_device *ubi, int pnum, int offset, int len);
 void ubi_dump_ec_hdr(const struct ubi_ec_hdr *ec_hdr);
 void ubi_dump_vid_hdr(const struct ubi_vid_hdr *vid_hdr);
 
-#ifndef __UBOOT__
 #include <linux/random.h>
-#endif
 
-#include <hexdump.h>
-
-#ifndef __UBOOT__
 #define ubi_assert(expr)  do {                                               \
 	if (unlikely(!(expr))) {                                             \
 		pr_crit("UBI assert failed in %s at %u (pid %d)\n",          \
@@ -26,18 +21,9 @@ void ubi_dump_vid_hdr(const struct ubi_vid_hdr *vid_hdr);
 		dump_stack();                                                \
 	}                                                                    \
 } while (0)
-#else
-#define ubi_assert(expr)  do {                                               \
-	if (unlikely(!(expr))) {                                             \
-		pr_debug("UBI assert failed in %s at %u\n",                  \
-		       __func__, __LINE__);                                  \
-		dump_stack();                                                \
-	}                                                                    \
-} while (0)
-#endif
 
-#define ubi_dbg_print_hex_dump(ps, pt, r, g, b, len, a)                      \
-		print_hex_dump(ps, pt, r, g, b, len, a)
+#define ubi_dbg_print_hex_dump(l, ps, pt, r, g, b, len, a)                   \
+		print_hex_dump(l, ps, pt, r, g, b, len, a)
 
 #define ubi_dbg_msg(type, fmt, ...) \
 	pr_debug("UBI DBG " type " (pid %d): " fmt "\n", current->pid,       \

@@ -1,0 +1,1 @@
+obj-$(CONFIG_TOUCHSCREEN_HYNITRON_CST)	+= hyn_cst3xx.o 

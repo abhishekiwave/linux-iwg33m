@@ -9,7 +9,6 @@
 
 #define pr_fmt(fmt)	"spi-nand: " fmt
 
-#ifndef __UBOOT__
 #include <linux/device.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -19,33 +18,6 @@
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/spi-mem.h>
-#else
-#include <common.h>
-#include <errno.h>
-#include <spi.h>
-#include <spi-mem.h>
-#include <dm/device_compat.h>
-#include <dm/devres.h>
-#include <linux/mtd/spinand.h>
-#endif
-
-/* SPI NAND index visible in MTD names */
-static int spi_nand_idx;
-
-static void spinand_cache_op_adjust_colum(struct spinand_device *spinand,
-					  const struct nand_page_io_req *req,
-					  u16 *column)
-{
-	struct nand_device *nand = spinand_to_nand(spinand);
-	unsigned int shift;
-
-	if (nand->memorg.planes_per_lun < 2)
-		return;
-
-	/* The plane number is passed in MSB just above the column address */
-	shift = fls(nand->memorg.pagesize);
-	*column |= req->pos.plane << shift;
-}
 
 static int spinand_read_reg_op(struct spinand_device *spinand, u8 reg, u8 *val)
 {
@@ -53,7 +25,7 @@ static int spinand_read_reg_op(struct spinand_device *spinand, u8 reg, u8 *val)
 						      spinand->scratchbuf);
 	int ret;
 
-	ret = spi_mem_exec_op(spinand->slave, &op);
+	ret = spi_mem_exec_op(spinand->spimem, &op);
 	if (ret)
 		return ret;
 
@@ -67,7 +39,7 @@ static int spinand_write_reg_op(struct spinand_device *spinand, u8 reg, u8 val)
 						      spinand->scratchbuf);
 
 	*spinand->scratchbuf = val;
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static int spinand_read_status(struct spinand_device *spinand, u8 *status)
@@ -168,13 +140,13 @@ int spinand_select_target(struct spinand_device *spinand, unsigned int target)
 static int spinand_init_cfg_cache(struct spinand_device *spinand)
 {
 	struct nand_device *nand = spinand_to_nand(spinand);
-	struct udevice *dev = spinand->slave->dev;
+	struct device *dev = &spinand->spimem->spi->dev;
 	unsigned int target;
 	int ret;
 
-	spinand->cfg_cache = devm_kzalloc(dev,
-					  sizeof(*spinand->cfg_cache) *
+	spinand->cfg_cache = devm_kcalloc(dev,
 					  nand->memorg.ntargets,
+					  sizeof(*spinand->cfg_cache),
 					  GFP_KERNEL);
 	if (!spinand->cfg_cache)
 		return -ENOMEM;
@@ -224,7 +196,7 @@ static int spinand_write_enable_op(struct spinand_device *spinand)
 {
 	struct spi_mem_op op = SPINAND_WR_EN_DIS_OP(true);
 
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static int spinand_load_page_op(struct spinand_device *spinand,
@@ -234,33 +206,27 @@ static int spinand_load_page_op(struct spinand_device *spinand,
 	unsigned int row = nanddev_pos_to_row(nand, &req->pos);
 	struct spi_mem_op op = SPINAND_PAGE_READ_OP(row);
 
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static int spinand_read_from_cache_op(struct spinand_device *spinand,
 				      const struct nand_page_io_req *req)
 {
-	struct spi_mem_op op = *spinand->op_templates.read_cache;
 	struct nand_device *nand = spinand_to_nand(spinand);
 	struct mtd_info *mtd = nanddev_to_mtd(nand);
-	struct nand_page_io_req adjreq = *req;
+	struct spi_mem_dirmap_desc *rdesc;
 	unsigned int nbytes = 0;
 	void *buf = NULL;
 	u16 column = 0;
-	int ret;
+	ssize_t ret;
 
 	if (req->datalen) {
-		adjreq.datalen = nanddev_page_size(nand);
-		adjreq.dataoffs = 0;
-		adjreq.databuf.in = spinand->databuf;
 		buf = spinand->databuf;
-		nbytes = adjreq.datalen;
+		nbytes = nanddev_page_size(nand);
+		column = 0;
 	}
 
 	if (req->ooblen) {
-		adjreq.ooblen = nanddev_per_page_oobsize(nand);
-		adjreq.ooboffs = 0;
-		adjreq.oobbuf.in = spinand->oobbuf;
 		nbytes += nanddev_per_page_oobsize(nand);
 		if (!buf) {
 			buf = spinand->oobbuf;
@@ -268,28 +234,19 @@ static int spinand_read_from_cache_op(struct spinand_device *spinand,
 		}
 	}
 
-	spinand_cache_op_adjust_colum(spinand, &adjreq, &column);
-	op.addr.val = column;
+	rdesc = spinand->dirmaps[req->pos.plane].rdesc;
 
-	/*
-	 * Some controllers are limited in term of max RX data size. In this
-	 * case, just repeat the READ_CACHE operation after updating the
-	 * column.
-	 */
 	while (nbytes) {
-		op.data.buf.in = buf;
-		op.data.nbytes = nbytes;
-		ret = spi_mem_adjust_op_size(spinand->slave, &op);
-		if (ret)
+		ret = spi_mem_dirmap_read(rdesc, column, nbytes, buf);
+		if (ret < 0)
 			return ret;
 
-		ret = spi_mem_exec_op(spinand->slave, &op);
-		if (ret)
-			return ret;
+		if (!ret || ret > nbytes)
+			return -EIO;
 
-		buf += op.data.nbytes;
-		nbytes -= op.data.nbytes;
-		op.addr.val += op.data.nbytes;
+		nbytes -= ret;
+		column += ret;
+		buf += ret;
 	}
 
 	if (req->datalen)
@@ -313,28 +270,26 @@ static int spinand_read_from_cache_op(struct spinand_device *spinand,
 static int spinand_write_to_cache_op(struct spinand_device *spinand,
 				     const struct nand_page_io_req *req)
 {
-	struct spi_mem_op op = *spinand->op_templates.write_cache;
 	struct nand_device *nand = spinand_to_nand(spinand);
 	struct mtd_info *mtd = nanddev_to_mtd(nand);
-	struct nand_page_io_req adjreq = *req;
-	unsigned int nbytes = 0;
-	void *buf = NULL;
-	u16 column = 0;
-	int ret;
+	struct spi_mem_dirmap_desc *wdesc;
+	unsigned int nbytes, column = 0;
+	void *buf = spinand->databuf;
+	ssize_t ret;
 
-	memset(spinand->databuf, 0xff,
-	       nanddev_page_size(nand) +
-	       nanddev_per_page_oobsize(nand));
+	/*
+	 * Looks like PROGRAM LOAD (AKA write cache) does not necessarily reset
+	 * the cache content to 0xFF (depends on vendor implementation), so we
+	 * must fill the page cache entirely even if we only want to program
+	 * the data portion of the page, otherwise we might corrupt the BBM or
+	 * user data previously programmed in OOB area.
+	 */
+	nbytes = nanddev_page_size(nand) + nanddev_per_page_oobsize(nand);
+	memset(spinand->databuf, 0xff, nbytes);
 
-	if (req->datalen) {
+	if (req->datalen)
 		memcpy(spinand->databuf + req->dataoffs, req->databuf.out,
 		       req->datalen);
-		adjreq.dataoffs = 0;
-		adjreq.datalen = nanddev_page_size(nand);
-		adjreq.databuf.out = spinand->databuf;
-		nbytes = adjreq.datalen;
-		buf = spinand->databuf;
-	}
 
 	if (req->ooblen) {
 		if (req->mode == MTD_OPS_AUTO_OOB)
@@ -345,52 +300,21 @@ static int spinand_write_to_cache_op(struct spinand_device *spinand,
 		else
 			memcpy(spinand->oobbuf + req->ooboffs, req->oobbuf.out,
 			       req->ooblen);
-
-		adjreq.ooblen = nanddev_per_page_oobsize(nand);
-		adjreq.ooboffs = 0;
-		nbytes += nanddev_per_page_oobsize(nand);
-		if (!buf) {
-			buf = spinand->oobbuf;
-			column = nanddev_page_size(nand);
-		}
 	}
 
-	spinand_cache_op_adjust_colum(spinand, &adjreq, &column);
+	wdesc = spinand->dirmaps[req->pos.plane].wdesc;
 
-	op = *spinand->op_templates.write_cache;
-	op.addr.val = column;
-
-	/*
-	 * Some controllers are limited in term of max TX data size. In this
-	 * case, split the operation into one LOAD CACHE and one or more
-	 * LOAD RANDOM CACHE.
-	 */
 	while (nbytes) {
-		op.data.buf.out = buf;
-		op.data.nbytes = nbytes;
-
-		ret = spi_mem_adjust_op_size(spinand->slave, &op);
-		if (ret)
+		ret = spi_mem_dirmap_write(wdesc, column, nbytes, buf);
+		if (ret < 0)
 			return ret;
 
-		ret = spi_mem_exec_op(spinand->slave, &op);
-		if (ret)
-			return ret;
+		if (!ret || ret > nbytes)
+			return -EIO;
 
-		buf += op.data.nbytes;
-		nbytes -= op.data.nbytes;
-		op.addr.val += op.data.nbytes;
-
-		/*
-		 * We need to use the RANDOM LOAD CACHE operation if there's
-		 * more than one iteration, because the LOAD operation resets
-		 * the cache to 0xff.
-		 */
-		if (nbytes) {
-			column = op.addr.val;
-			op = *spinand->op_templates.update_cache;
-			op.addr.val = column;
-		}
+		nbytes -= ret;
+		column += ret;
+		buf += ret;
 	}
 
 	return 0;
@@ -403,27 +327,25 @@ static int spinand_program_op(struct spinand_device *spinand,
 	unsigned int row = nanddev_pos_to_row(nand, &req->pos);
 	struct spi_mem_op op = SPINAND_PROG_EXEC_OP(row);
 
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static int spinand_erase_op(struct spinand_device *spinand,
 			    const struct nand_pos *pos)
 {
-	struct nand_device *nand = &spinand->base;
+	struct nand_device *nand = spinand_to_nand(spinand);
 	unsigned int row = nanddev_pos_to_row(nand, pos);
 	struct spi_mem_op op = SPINAND_BLK_ERASE_OP(row);
 
-	return spi_mem_exec_op(spinand->slave, &op);
+	return spi_mem_exec_op(spinand->spimem, &op);
 }
 
 static int spinand_wait(struct spinand_device *spinand, u8 *s)
 {
-	unsigned long start, stop;
+	unsigned long timeo =  jiffies + msecs_to_jiffies(400);
 	u8 status;
 	int ret;
 
-	start = get_timer(0);
-	stop = 400;
 	do {
 		ret = spinand_read_status(spinand, &status);
 		if (ret)
@@ -431,7 +353,7 @@ static int spinand_wait(struct spinand_device *spinand, u8 *s)
 
 		if (!(status & STATUS_BUSY))
 			goto out;
-	} while (get_timer(start) < stop);
+	} while (time_before(jiffies, timeo));
 
 	/*
 	 * Extra read, just in case the STATUS_READY bit has changed
@@ -454,7 +376,7 @@ static int spinand_read_id_op(struct spinand_device *spinand, u8 *buf)
 						 SPINAND_MAX_ID_LEN);
 	int ret;
 
-	ret = spi_mem_exec_op(spinand->slave, &op);
+	ret = spi_mem_exec_op(spinand->spimem, &op);
 	if (!ret)
 		memcpy(buf, spinand->scratchbuf, SPINAND_MAX_ID_LEN);
 
@@ -466,7 +388,7 @@ static int spinand_reset_op(struct spinand_device *spinand)
 	struct spi_mem_op op = SPINAND_RESET_OP;
 	int ret;
 
-	ret = spi_mem_exec_op(spinand->slave, &op);
+	ret = spi_mem_exec_op(spinand->spimem, &op);
 	if (ret)
 		return ret;
 
@@ -571,9 +493,7 @@ static int spinand_mtd_read(struct mtd_info *mtd, loff_t from,
 	if (ops->mode != MTD_OPS_RAW && spinand->eccinfo.ooblayout)
 		enable_ecc = true;
 
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 
 	nanddev_io_for_each_page(nand, from, ops, &iter) {
 		ret = spinand_select_target(spinand, iter.req.pos.target);
@@ -591,19 +511,18 @@ static int spinand_mtd_read(struct mtd_info *mtd, loff_t from,
 		if (ret == -EBADMSG) {
 			ecc_failed = true;
 			mtd->ecc_stats.failed++;
-			ret = 0;
 		} else {
 			mtd->ecc_stats.corrected += ret;
 			max_bitflips = max_t(unsigned int, max_bitflips, ret);
 		}
 
+		ret = 0;
 		ops->retlen += iter.req.datalen;
 		ops->oobretlen += iter.req.ooblen;
 	}
 
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
+
 	if (ecc_failed && !ret)
 		ret = -EBADMSG;
 
@@ -622,9 +541,7 @@ static int spinand_mtd_write(struct mtd_info *mtd, loff_t to,
 	if (ops->mode != MTD_OPS_RAW && mtd->ooblayout)
 		enable_ecc = true;
 
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 
 	nanddev_io_for_each_page(nand, to, ops, &iter) {
 		ret = spinand_select_target(spinand, iter.req.pos.target);
@@ -643,9 +560,7 @@ static int spinand_mtd_write(struct mtd_info *mtd, loff_t to,
 		ops->oobretlen += iter.req.ooblen;
 	}
 
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
 
 	return ret;
 }
@@ -660,17 +575,10 @@ static bool spinand_isbad(struct nand_device *nand, const struct nand_pos *pos)
 		.oobbuf.in = spinand->oobbuf,
 		.mode = MTD_OPS_RAW,
 	};
-	int ret;
 
 	memset(spinand->oobbuf, 0, 2);
-	ret = spinand_select_target(spinand, pos->target);
-	if (ret)
-		return ret;
-
-	ret = spinand_read_page(spinand, &req, false);
-	if (ret)
-		return ret;
-
+	spinand_select_target(spinand, pos->target);
+	spinand_read_page(spinand, &req, false);
 	if (spinand->oobbuf[0] != 0xff || spinand->oobbuf[1] != 0xff)
 		return true;
 
@@ -680,20 +588,15 @@ static bool spinand_isbad(struct nand_device *nand, const struct nand_pos *pos)
 static int spinand_mtd_block_isbad(struct mtd_info *mtd, loff_t offs)
 {
 	struct nand_device *nand = mtd_to_nanddev(mtd);
-#ifndef __UBOOT__
 	struct spinand_device *spinand = nand_to_spinand(nand);
-#endif
 	struct nand_pos pos;
 	int ret;
 
 	nanddev_offs_to_pos(nand, offs, &pos);
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 	ret = nanddev_isbad(nand, &pos);
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
+
 	return ret;
 }
 
@@ -717,9 +620,7 @@ static int spinand_markbad(struct nand_device *nand, const struct nand_pos *pos)
 	if (ret)
 		return ret;
 
-	ret = spinand_erase_op(spinand, pos);
-	if (ret)
-		return ret;
+	spinand_erase_op(spinand, pos);
 
 	memset(spinand->oobbuf, 0, 2);
 	return spinand_write_page(spinand, &req);
@@ -728,20 +629,15 @@ static int spinand_markbad(struct nand_device *nand, const struct nand_pos *pos)
 static int spinand_mtd_block_markbad(struct mtd_info *mtd, loff_t offs)
 {
 	struct nand_device *nand = mtd_to_nanddev(mtd);
-#ifndef __UBOOT__
 	struct spinand_device *spinand = nand_to_spinand(nand);
-#endif
 	struct nand_pos pos;
 	int ret;
 
 	nanddev_offs_to_pos(nand, offs, &pos);
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 	ret = nanddev_markbad(nand, &pos);
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
+
 	return ret;
 }
 
@@ -773,56 +669,82 @@ static int spinand_erase(struct nand_device *nand, const struct nand_pos *pos)
 static int spinand_mtd_erase(struct mtd_info *mtd,
 			     struct erase_info *einfo)
 {
-#ifndef __UBOOT__
 	struct spinand_device *spinand = mtd_to_spinand(mtd);
-#endif
 	int ret;
 
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 	ret = nanddev_mtd_erase(mtd, einfo);
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
 
 	return ret;
 }
 
 static int spinand_mtd_block_isreserved(struct mtd_info *mtd, loff_t offs)
 {
-#ifndef __UBOOT__
 	struct spinand_device *spinand = mtd_to_spinand(mtd);
-#endif
 	struct nand_device *nand = mtd_to_nanddev(mtd);
 	struct nand_pos pos;
 	int ret;
 
 	nanddev_offs_to_pos(nand, offs, &pos);
-#ifndef __UBOOT__
 	mutex_lock(&spinand->lock);
-#endif
 	ret = nanddev_isreserved(nand, &pos);
-#ifndef __UBOOT__
 	mutex_unlock(&spinand->lock);
-#endif
 
 	return ret;
 }
 
-const struct spi_mem_op *
-spinand_find_supported_op(struct spinand_device *spinand,
-			  const struct spi_mem_op *ops,
-			  unsigned int nops)
+static int spinand_create_dirmap(struct spinand_device *spinand,
+				 unsigned int plane)
 {
-	unsigned int i;
+	struct nand_device *nand = spinand_to_nand(spinand);
+	struct spi_mem_dirmap_info info = {
+		.length = nanddev_page_size(nand) +
+			  nanddev_per_page_oobsize(nand),
+	};
+	struct spi_mem_dirmap_desc *desc;
 
-	for (i = 0; i < nops; i++) {
-		if (spi_mem_supports_op(spinand->slave, &ops[i]))
-			return &ops[i];
+	/* The plane number is passed in MSB just above the column address */
+	info.offset = plane << fls(nand->memorg.pagesize);
+
+	info.op_tmpl = *spinand->op_templates.update_cache;
+	desc = devm_spi_mem_dirmap_create(&spinand->spimem->spi->dev,
+					  spinand->spimem, &info);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	spinand->dirmaps[plane].wdesc = desc;
+
+	info.op_tmpl = *spinand->op_templates.read_cache;
+	desc = devm_spi_mem_dirmap_create(&spinand->spimem->spi->dev,
+					  spinand->spimem, &info);
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+
+	spinand->dirmaps[plane].rdesc = desc;
+
+	return 0;
+}
+
+static int spinand_create_dirmaps(struct spinand_device *spinand)
+{
+	struct nand_device *nand = spinand_to_nand(spinand);
+	int i, ret;
+
+	spinand->dirmaps = devm_kzalloc(&spinand->spimem->spi->dev,
+					sizeof(*spinand->dirmaps) *
+					nand->memorg.planes_per_lun,
+					GFP_KERNEL);
+	if (!spinand->dirmaps)
+		return -ENOMEM;
+
+	for (i = 0; i < nand->memorg.planes_per_lun; i++) {
+		ret = spinand_create_dirmap(spinand, i);
+		if (ret)
+			return ret;
 	}
 
-	return NULL;
+	return 0;
 }
 
 static const struct nand_ops spinand_ops = {
@@ -835,6 +757,8 @@ static const struct spinand_manufacturer *spinand_manufacturers[] = {
 	&gigadevice_spinand_manufacturer,
 	&macronix_spinand_manufacturer,
 	&micron_spinand_manufacturer,
+	&paragon_spinand_manufacturer,
+	&toshiba_spinand_manufacturer,
 	&winbond_spinand_manufacturer,
 };
 
@@ -888,11 +812,11 @@ spinand_select_op_variant(struct spinand_device *spinand,
 
 		while (nbytes) {
 			op.data.nbytes = nbytes;
-			ret = spi_mem_adjust_op_size(spinand->slave, &op);
+			ret = spi_mem_adjust_op_size(spinand->spimem, &op);
 			if (ret)
 				break;
 
-			if (!spi_mem_supports_op(spinand->slave, &op))
+			if (!spi_mem_supports_op(spinand->spimem, &op))
 				break;
 
 			nbytes -= op.data.nbytes;
@@ -922,7 +846,7 @@ spinand_select_op_variant(struct spinand_device *spinand,
  */
 int spinand_match_and_init(struct spinand_device *spinand,
 			   const struct spinand_info *table,
-			   unsigned int table_size, u8 devid)
+			   unsigned int table_size, u16 devid)
 {
 	struct nand_device *nand = spinand_to_nand(spinand);
 	unsigned int i;
@@ -966,6 +890,7 @@ int spinand_match_and_init(struct spinand_device *spinand,
 
 static int spinand_detect(struct spinand_device *spinand)
 {
+	struct device *dev = &spinand->spimem->spi->dev;
 	struct nand_device *nand = spinand_to_nand(spinand);
 	int ret;
 
@@ -992,9 +917,9 @@ static int spinand_detect(struct spinand_device *spinand)
 		return -EINVAL;
 	}
 
-	dev_info(spinand->slave->dev,
+	dev_info(&spinand->spimem->spi->dev,
 		 "%s SPI NAND was found.\n", spinand->manufacturer->name);
-	dev_info(spinand->slave->dev,
+	dev_info(&spinand->spimem->spi->dev,
 		 "%llu MiB, block size: %zu KiB, page size: %zu, OOB size: %u\n",
 		 nanddev_size(nand) >> 20, nanddev_eraseblock_size(nand) >> 10,
 		 nanddev_page_size(nand), nanddev_per_page_oobsize(nand));
@@ -1023,11 +948,12 @@ static int spinand_noecc_ooblayout_free(struct mtd_info *mtd, int section,
 
 static const struct mtd_ooblayout_ops spinand_noecc_ooblayout = {
 	.ecc = spinand_noecc_ooblayout_ecc,
-	.rfree = spinand_noecc_ooblayout_free,
+	.free = spinand_noecc_ooblayout_free,
 };
 
 static int spinand_init(struct spinand_device *spinand)
 {
+	struct device *dev = &spinand->spimem->spi->dev;
 	struct mtd_info *mtd = spinand_to_mtd(spinand);
 	struct nand_device *nand = mtd_to_nanddev(mtd);
 	int ret, i;
@@ -1079,15 +1005,23 @@ static int spinand_init(struct spinand_device *spinand)
 		goto err_free_bufs;
 	}
 
+	ret = spinand_create_dirmaps(spinand);
+	if (ret) {
+		dev_err(dev,
+			"Failed to create direct mappings for read/write operations (err = %d)\n",
+			ret);
+		goto err_manuf_cleanup;
+	}
+
 	/* After power up, all blocks are locked, so unlock them here. */
 	for (i = 0; i < nand->memorg.ntargets; i++) {
 		ret = spinand_select_target(spinand, i);
 		if (ret)
-			goto err_free_bufs;
+			goto err_manuf_cleanup;
 
 		ret = spinand_lock_block(spinand, BL_ALL_UNLOCKED);
 		if (ret)
-			goto err_free_bufs;
+			goto err_manuf_cleanup;
 	}
 
 	ret = nanddev_init(nand, &spinand_ops, THIS_MODULE);
@@ -1104,6 +1038,7 @@ static int spinand_init(struct spinand_device *spinand)
 	mtd->_block_markbad = spinand_mtd_block_markbad;
 	mtd->_block_isreserved = spinand_mtd_block_isreserved;
 	mtd->_erase = spinand_mtd_erase;
+	mtd->_max_bad_blocks = nanddev_mtd_max_bad_blocks;
 
 	if (spinand->eccinfo.ooblayout)
 		mtd_set_ooblayout(mtd, spinand->eccinfo.ooblayout);
@@ -1140,15 +1075,12 @@ static void spinand_cleanup(struct spinand_device *spinand)
 	kfree(spinand->scratchbuf);
 }
 
-static int spinand_probe(struct udevice *dev)
+static int spinand_probe(struct spi_mem *mem)
 {
-	struct spinand_device *spinand = dev_get_priv(dev);
-	struct spi_slave *slave = dev_get_parent_priv(dev);
-	struct mtd_info *mtd = dev_get_uclass_priv(dev);
-	struct nand_device *nand = spinand_to_nand(spinand);
+	struct spinand_device *spinand;
+	struct mtd_info *mtd;
 	int ret;
 
-#ifndef __UBOOT__
 	spinand = devm_kzalloc(&mem->spi->dev, sizeof(*spinand),
 			       GFP_KERNEL);
 	if (!spinand)
@@ -1158,30 +1090,14 @@ static int spinand_probe(struct udevice *dev)
 	spi_mem_set_drvdata(mem, spinand);
 	spinand_set_of_node(spinand, mem->spi->dev.of_node);
 	mutex_init(&spinand->lock);
-
 	mtd = spinand_to_mtd(spinand);
 	mtd->dev.parent = &mem->spi->dev;
-#else
-	nand->mtd = mtd;
-	mtd->priv = nand;
-	mtd->dev = dev;
-	mtd->name = malloc(20);
-	if (!mtd->name)
-		return -ENOMEM;
-	sprintf(mtd->name, "spi-nand%d", spi_nand_idx++);
-	spinand->slave = slave;
-	spinand_set_of_node(spinand, dev->node.np);
-#endif
 
 	ret = spinand_init(spinand);
 	if (ret)
 		return ret;
 
-#ifndef __UBOOT__
 	ret = mtd_device_register(mtd, NULL, 0);
-#else
-	ret = add_mtd_device(mtd);
-#endif
 	if (ret)
 		goto err_spinand_cleanup;
 
@@ -1193,16 +1109,14 @@ err_spinand_cleanup:
 	return ret;
 }
 
-#ifndef __UBOOT__
-static int spinand_remove(struct udevice *slave)
+static int spinand_remove(struct spi_mem *mem)
 {
 	struct spinand_device *spinand;
 	struct mtd_info *mtd;
 	int ret;
 
-	spinand = spi_mem_get_drvdata(slave);
+	spinand = spi_mem_get_drvdata(mem);
 	mtd = spinand_to_mtd(spinand);
-	free(mtd->name);
 
 	ret = mtd_device_unregister(mtd);
 	if (ret)
@@ -1241,17 +1155,3 @@ module_spi_mem_driver(spinand_drv);
 MODULE_DESCRIPTION("SPI NAND framework");
 MODULE_AUTHOR("Peter Pan<peterpandong@micron.com>");
 MODULE_LICENSE("GPL v2");
-#endif /* __UBOOT__ */
-
-static const struct udevice_id spinand_ids[] = {
-	{ .compatible = "spi-nand" },
-	{ /* sentinel */ },
-};
-
-U_BOOT_DRIVER(spinand) = {
-	.name = "spi_nand",
-	.id = UCLASS_MTD,
-	.of_match = spinand_ids,
-	.priv_auto_alloc_size = sizeof(struct spinand_device),
-	.probe = spinand_probe,
-};

@@ -1,21 +1,24 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * Copyright (c) 2011 The Chromium OS Authors.
+ * Cache operations
+ *
+ * Copyright (C) 2007-2009 Michal Simek <monstr@monstr.eu>
+ * Copyright (C) 2007-2009 PetaLogix
+ * Copyright (C) 2003 John Williams <jwilliams@itee.uq.edu.au>
+ *
+ * This file is subject to the terms and conditions of the GNU General
+ * Public License. See the file COPYING in the main directory of this
+ * archive for more details.
  */
 
-#ifndef __MICROBLAZE_CACHE_H__
-#define __MICROBLAZE_CACHE_H__
+#ifndef _ASM_MICROBLAZE_CACHE_H
+#define _ASM_MICROBLAZE_CACHE_H
 
-/*
- * The microblaze can have either a 4 or 16 byte cacheline depending on whether
- * you are using OPB(4) or CacheLink(16).  If the board config has not specified
- * a cacheline size we assume the larger value of 16 bytes for DMA buffer
- * alignment.
- */
-#ifdef CONFIG_SYS_CACHELINE_SIZE
-#define ARCH_DMA_MINALIGN	CONFIG_SYS_CACHELINE_SIZE
-#else
-#define ARCH_DMA_MINALIGN	16
-#endif
+#include <asm/registers.h>
 
-#endif /* __MICROBLAZE_CACHE_H__ */
+#define L1_CACHE_SHIFT 5
+/* word-granular cache in microblaze */
+#define L1_CACHE_BYTES	(1 << L1_CACHE_SHIFT)
+
+#define SMP_CACHE_BYTES	L1_CACHE_BYTES
+
+#endif /* _ASM_MICROBLAZE_CACHE_H */

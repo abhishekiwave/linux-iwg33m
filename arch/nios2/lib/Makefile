@@ -1,8 +1,9 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# (C) Copyright 2000-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for Nios2-specific library files.
+#
 
-obj-y	+= cache.o
-obj-$(CONFIG_CMD_BOOTM) += bootm.o
-obj-y	+= libgcc.o
+lib-y += delay.o
+lib-y += memcpy.o
+lib-y += memmove.o
+lib-y += memset.o

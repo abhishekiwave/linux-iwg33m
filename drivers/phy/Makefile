@@ -1,27 +1,32 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# Copyright (C) 2017 Texas Instruments Incorporated - http://www.ti.com/
-# Written by Jean-Jacques Hiblot  <jjhiblot@ti.com>
+# Makefile for the phy drivers.
+#
 
-obj-$(CONFIG_$(SPL_)PHY) += phy-uclass.o
-obj-$(CONFIG_$(SPL_)NOP_PHY) += nop-phy.o
-obj-$(CONFIG_BCM6318_USBH_PHY) += bcm6318-usbh-phy.o
-obj-$(CONFIG_BCM6348_USBH_PHY) += bcm6348-usbh-phy.o
-obj-$(CONFIG_BCM6358_USBH_PHY) += bcm6358-usbh-phy.o
-obj-$(CONFIG_BCM6368_USBH_PHY) += bcm6368-usbh-phy.o
-obj-$(CONFIG_PHY_SANDBOX) += sandbox-phy.o
-obj-$(CONFIG_$(SPL_)PIPE3_PHY) += ti-pipe3-phy.o
-obj-$(CONFIG_AM654_PHY) += phy-ti-am654.o
-obj-$(CONFIG_STI_USB_PHY) += sti_usb_phy.o
-obj-$(CONFIG_PHY_RCAR_GEN2) += phy-rcar-gen2.o
-obj-$(CONFIG_PHY_RCAR_GEN3) += phy-rcar-gen3.o
-obj-$(CONFIG_PHY_STM32_USBPHYC) += phy-stm32-usbphyc.o
-obj-$(CONFIG_MESON_GXL_USB_PHY) += meson-gxl-usb2.o meson-gxl-usb3.o
-obj-$(CONFIG_MESON_G12A_USB_PHY) += meson-g12a-usb2.o meson-g12a-usb3-pcie.o
-obj-$(CONFIG_MSM8916_USB_PHY) += msm8916-usbh-phy.o
-obj-$(CONFIG_OMAP_USB2_PHY) += omap-usb2-phy.o
-obj-$(CONFIG_KEYSTONE_USB_PHY) += keystone-usb-phy.o
-obj-$(CONFIG_MT76X8_USB_PHY) += mt76x8-usb-phy.o
-obj-$(CONFIG_CDNS3_USB_PHY) += cdns3-usb-phy.o
-obj-$(CONFIG_PHY_DA8XX_USB) += phy-da8xx-usb.o
-obj-$(CONFIG_PHY_MTK_TPHY) += phy-mtk-tphy.o
+obj-$(CONFIG_GENERIC_PHY)		+= phy-core.o
+obj-$(CONFIG_GENERIC_PHY_MIPI_DPHY)	+= phy-core-mipi-dphy.o
+obj-$(CONFIG_PHY_LPC18XX_USB_OTG)	+= phy-lpc18xx-usb-otg.o
+obj-$(CONFIG_PHY_XGENE)			+= phy-xgene.o
+obj-$(CONFIG_PHY_PISTACHIO_USB)		+= phy-pistachio-usb.o
+obj-$(CONFIG_PHY_MIXEL_LVDS)		+= phy-mixel-lvds.o
+obj-$(CONFIG_PHY_MIXEL_LVDS_COMBO)	+= phy-mixel-lvds-combo.o
+obj-$(CONFIG_ARCH_SUNXI)		+= allwinner/
+obj-$(CONFIG_ARCH_MESON)		+= amlogic/
+obj-$(CONFIG_ARCH_MEDIATEK)		+= mediatek/
+obj-$(CONFIG_ARCH_RENESAS)		+= renesas/
+obj-$(CONFIG_ARCH_ROCKCHIP)		+= rockchip/
+obj-$(CONFIG_ARCH_TEGRA)		+= tegra/
+obj-y					+= broadcom/	\
+					   cadence/	\
+					   freescale/	\
+					   hisilicon/	\
+					   lantiq/	\
+					   marvell/	\
+					   motorola/	\
+					   mscc/	\
+					   qualcomm/	\
+					   ralink/	\
+					   samsung/	\
+					   socionext/	\
+					   st/		\
+					   ti/

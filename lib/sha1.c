@@ -1,445 +1,202 @@
-// SPDX-License-Identifier: LGPL-2.1
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  Heiko Schocher, DENX Software Engineering, hs@denx.de.
- *  based on:
- *  FIPS-180-1 compliant SHA-1 implementation
+ * SHA1 routine optimized to do word accesses rather than byte accesses,
+ * and to avoid unnecessary copies into the context array.
  *
- *  Copyright (C) 2003-2006  Christophe Devine
+ * This was based on the git SHA1 implementation.
  */
+
+#include <linux/kernel.h>
+#include <linux/export.h>
+#include <linux/bitops.h>
+#include <linux/cryptohash.h>
+#include <asm/unaligned.h>
+
 /*
- *  The SHA-1 standard was published by NIST in 1993.
+ * If you have 32 registers or more, the compiler can (and should)
+ * try to change the array[] accesses into registers. However, on
+ * machines with less than ~25 registers, that won't really work,
+ * and at least gcc will make an unholy mess of it.
  *
- *  http://www.itl.nist.gov/fipspubs/fip180-1.htm
+ * So to avoid that mess which just slows things down, we force
+ * the stores to memory to actually happen (we might be better off
+ * with a 'W(t)=(val);asm("":"+m" (W(t))' there instead, as
+ * suggested by Artur Skawina - that will also make gcc unable to
+ * try to do the silly "optimize away loads" part because it won't
+ * see what the value will be).
+ *
+ * Ben Herrenschmidt reports that on PPC, the C version comes close
+ * to the optimized asm with this (ie on PPC you don't want that
+ * 'volatile', since there are lots of registers).
+ *
+ * On ARM we get the best code generation by forcing a full memory barrier
+ * between each SHA_ROUND, otherwise gcc happily get wild with spilling and
+ * the stack frame size simply explode and performance goes down the drain.
  */
 
-#ifndef _CRT_SECURE_NO_DEPRECATE
-#define _CRT_SECURE_NO_DEPRECATE 1
-#endif
-
-#ifndef USE_HOSTCC
-#include <common.h>
-#include <linux/string.h>
+#ifdef CONFIG_X86
+  #define setW(x, val) (*(volatile __u32 *)&W(x) = (val))
+#elif defined(CONFIG_ARM)
+  #define setW(x, val) do { W(x) = (val); __asm__("":::"memory"); } while (0)
 #else
-#include <string.h>
-#endif /* USE_HOSTCC */
-#include <watchdog.h>
-#include <u-boot/sha1.h>
-
-const uint8_t sha1_der_prefix[SHA1_DER_LEN] = {
-	0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
-	0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14
-};
-
-/*
- * 32-bit integer manipulation macros (big endian)
- */
-#ifndef GET_UINT32_BE
-#define GET_UINT32_BE(n,b,i) {				\
-	(n) = ( (unsigned long) (b)[(i)    ] << 24 )	\
-	    | ( (unsigned long) (b)[(i) + 1] << 16 )	\
-	    | ( (unsigned long) (b)[(i) + 2] <<  8 )	\
-	    | ( (unsigned long) (b)[(i) + 3]       );	\
-}
-#endif
-#ifndef PUT_UINT32_BE
-#define PUT_UINT32_BE(n,b,i) {				\
-	(b)[(i)    ] = (unsigned char) ( (n) >> 24 );	\
-	(b)[(i) + 1] = (unsigned char) ( (n) >> 16 );	\
-	(b)[(i) + 2] = (unsigned char) ( (n) >>  8 );	\
-	(b)[(i) + 3] = (unsigned char) ( (n)       );	\
-}
+  #define setW(x, val) (W(x) = (val))
 #endif
 
-/*
- * SHA-1 context setup
- */
-void sha1_starts (sha1_context * ctx)
-{
-	ctx->total[0] = 0;
-	ctx->total[1] = 0;
-
-	ctx->state[0] = 0x67452301;
-	ctx->state[1] = 0xEFCDAB89;
-	ctx->state[2] = 0x98BADCFE;
-	ctx->state[3] = 0x10325476;
-	ctx->state[4] = 0xC3D2E1F0;
-}
-
-static void sha1_process(sha1_context *ctx, const unsigned char data[64])
-{
-	unsigned long temp, W[16], A, B, C, D, E;
-
-	GET_UINT32_BE (W[0], data, 0);
-	GET_UINT32_BE (W[1], data, 4);
-	GET_UINT32_BE (W[2], data, 8);
-	GET_UINT32_BE (W[3], data, 12);
-	GET_UINT32_BE (W[4], data, 16);
-	GET_UINT32_BE (W[5], data, 20);
-	GET_UINT32_BE (W[6], data, 24);
-	GET_UINT32_BE (W[7], data, 28);
-	GET_UINT32_BE (W[8], data, 32);
-	GET_UINT32_BE (W[9], data, 36);
-	GET_UINT32_BE (W[10], data, 40);
-	GET_UINT32_BE (W[11], data, 44);
-	GET_UINT32_BE (W[12], data, 48);
-	GET_UINT32_BE (W[13], data, 52);
-	GET_UINT32_BE (W[14], data, 56);
-	GET_UINT32_BE (W[15], data, 60);
-
-#define S(x,n)	((x << n) | ((x & 0xFFFFFFFF) >> (32 - n)))
-
-#define R(t) (						\
-	temp = W[(t -  3) & 0x0F] ^ W[(t - 8) & 0x0F] ^	\
-	       W[(t - 14) & 0x0F] ^ W[ t      & 0x0F],	\
-	( W[t & 0x0F] = S(temp,1) )			\
-)
-
-#define P(a,b,c,d,e,x)	{				\
-	e += S(a,5) + F(b,c,d) + K + x; b = S(b,30);	\
-}
-
-	A = ctx->state[0];
-	B = ctx->state[1];
-	C = ctx->state[2];
-	D = ctx->state[3];
-	E = ctx->state[4];
-
-#define F(x,y,z) (z ^ (x & (y ^ z)))
-#define K 0x5A827999
-
-	P (A, B, C, D, E, W[0]);
-	P (E, A, B, C, D, W[1]);
-	P (D, E, A, B, C, W[2]);
-	P (C, D, E, A, B, W[3]);
-	P (B, C, D, E, A, W[4]);
-	P (A, B, C, D, E, W[5]);
-	P (E, A, B, C, D, W[6]);
-	P (D, E, A, B, C, W[7]);
-	P (C, D, E, A, B, W[8]);
-	P (B, C, D, E, A, W[9]);
-	P (A, B, C, D, E, W[10]);
-	P (E, A, B, C, D, W[11]);
-	P (D, E, A, B, C, W[12]);
-	P (C, D, E, A, B, W[13]);
-	P (B, C, D, E, A, W[14]);
-	P (A, B, C, D, E, W[15]);
-	P (E, A, B, C, D, R (16));
-	P (D, E, A, B, C, R (17));
-	P (C, D, E, A, B, R (18));
-	P (B, C, D, E, A, R (19));
-
-#undef K
-#undef F
-
-#define F(x,y,z) (x ^ y ^ z)
-#define K 0x6ED9EBA1
-
-	P (A, B, C, D, E, R (20));
-	P (E, A, B, C, D, R (21));
-	P (D, E, A, B, C, R (22));
-	P (C, D, E, A, B, R (23));
-	P (B, C, D, E, A, R (24));
-	P (A, B, C, D, E, R (25));
-	P (E, A, B, C, D, R (26));
-	P (D, E, A, B, C, R (27));
-	P (C, D, E, A, B, R (28));
-	P (B, C, D, E, A, R (29));
-	P (A, B, C, D, E, R (30));
-	P (E, A, B, C, D, R (31));
-	P (D, E, A, B, C, R (32));
-	P (C, D, E, A, B, R (33));
-	P (B, C, D, E, A, R (34));
-	P (A, B, C, D, E, R (35));
-	P (E, A, B, C, D, R (36));
-	P (D, E, A, B, C, R (37));
-	P (C, D, E, A, B, R (38));
-	P (B, C, D, E, A, R (39));
-
-#undef K
-#undef F
-
-#define F(x,y,z) ((x & y) | (z & (x | y)))
-#define K 0x8F1BBCDC
-
-	P (A, B, C, D, E, R (40));
-	P (E, A, B, C, D, R (41));
-	P (D, E, A, B, C, R (42));
-	P (C, D, E, A, B, R (43));
-	P (B, C, D, E, A, R (44));
-	P (A, B, C, D, E, R (45));
-	P (E, A, B, C, D, R (46));
-	P (D, E, A, B, C, R (47));
-	P (C, D, E, A, B, R (48));
-	P (B, C, D, E, A, R (49));
-	P (A, B, C, D, E, R (50));
-	P (E, A, B, C, D, R (51));
-	P (D, E, A, B, C, R (52));
-	P (C, D, E, A, B, R (53));
-	P (B, C, D, E, A, R (54));
-	P (A, B, C, D, E, R (55));
-	P (E, A, B, C, D, R (56));
-	P (D, E, A, B, C, R (57));
-	P (C, D, E, A, B, R (58));
-	P (B, C, D, E, A, R (59));
-
-#undef K
-#undef F
-
-#define F(x,y,z) (x ^ y ^ z)
-#define K 0xCA62C1D6
-
-	P (A, B, C, D, E, R (60));
-	P (E, A, B, C, D, R (61));
-	P (D, E, A, B, C, R (62));
-	P (C, D, E, A, B, R (63));
-	P (B, C, D, E, A, R (64));
-	P (A, B, C, D, E, R (65));
-	P (E, A, B, C, D, R (66));
-	P (D, E, A, B, C, R (67));
-	P (C, D, E, A, B, R (68));
-	P (B, C, D, E, A, R (69));
-	P (A, B, C, D, E, R (70));
-	P (E, A, B, C, D, R (71));
-	P (D, E, A, B, C, R (72));
-	P (C, D, E, A, B, R (73));
-	P (B, C, D, E, A, R (74));
-	P (A, B, C, D, E, R (75));
-	P (E, A, B, C, D, R (76));
-	P (D, E, A, B, C, R (77));
-	P (C, D, E, A, B, R (78));
-	P (B, C, D, E, A, R (79));
-
-#undef K
-#undef F
-
-	ctx->state[0] += A;
-	ctx->state[1] += B;
-	ctx->state[2] += C;
-	ctx->state[3] += D;
-	ctx->state[4] += E;
-}
+/* This "rolls" over the 512-bit array */
+#define W(x) (array[(x)&15])
 
 /*
- * SHA-1 process buffer
+ * Where do we get the source from? The first 16 iterations get it from
+ * the input data, the next mix it from the 512-bit array.
  */
-void sha1_update(sha1_context *ctx, const unsigned char *input,
-		 unsigned int ilen)
-{
-	int fill;
-	unsigned long left;
+#define SHA_SRC(t) get_unaligned_be32((__u32 *)data + t)
+#define SHA_MIX(t) rol32(W(t+13) ^ W(t+8) ^ W(t+2) ^ W(t), 1)
 
-	if (ilen <= 0)
-		return;
+#define SHA_ROUND(t, input, fn, constant, A, B, C, D, E) do { \
+	__u32 TEMP = input(t); setW(t, TEMP); \
+	E += TEMP + rol32(A,5) + (fn) + (constant); \
+	B = ror32(B, 2); } while (0)
 
-	left = ctx->total[0] & 0x3F;
-	fill = 64 - left;
+#define T_0_15(t, A, B, C, D, E)  SHA_ROUND(t, SHA_SRC, (((C^D)&B)^D) , 0x5a827999, A, B, C, D, E )
+#define T_16_19(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (((C^D)&B)^D) , 0x5a827999, A, B, C, D, E )
+#define T_20_39(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (B^C^D) , 0x6ed9eba1, A, B, C, D, E )
+#define T_40_59(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, ((B&C)+(D&(B^C))) , 0x8f1bbcdc, A, B, C, D, E )
+#define T_60_79(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (B^C^D) ,  0xca62c1d6, A, B, C, D, E )
 
-	ctx->total[0] += ilen;
-	ctx->total[0] &= 0xFFFFFFFF;
-
-	if (ctx->total[0] < (unsigned long) ilen)
-		ctx->total[1]++;
-
-	if (left && ilen >= fill) {
-		memcpy ((void *) (ctx->buffer + left), (void *) input, fill);
-		sha1_process (ctx, ctx->buffer);
-		input += fill;
-		ilen -= fill;
-		left = 0;
-	}
-
-	while (ilen >= 64) {
-		sha1_process (ctx, input);
-		input += 64;
-		ilen -= 64;
-	}
-
-	if (ilen > 0) {
-		memcpy ((void *) (ctx->buffer + left), (void *) input, ilen);
-	}
-}
-
-static const unsigned char sha1_padding[64] = {
-	0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-};
-
-/*
- * SHA-1 final digest
+/**
+ * sha_transform - single block SHA1 transform
+ *
+ * @digest: 160 bit digest to update
+ * @data:   512 bits of data to hash
+ * @array:  16 words of workspace (see note)
+ *
+ * This function generates a SHA1 digest for a single 512-bit block.
+ * Be warned, it does not handle padding and message digest, do not
+ * confuse it with the full FIPS 180-1 digest algorithm for variable
+ * length messages.
+ *
+ * Note: If the hash is security sensitive, the caller should be sure
+ * to clear the workspace. This is left to the caller to avoid
+ * unnecessary clears between chained hashing operations.
  */
-void sha1_finish (sha1_context * ctx, unsigned char output[20])
+void sha_transform(__u32 *digest, const char *data, __u32 *array)
 {
-	unsigned long last, padn;
-	unsigned long high, low;
-	unsigned char msglen[8];
+	__u32 A, B, C, D, E;
 
-	high = (ctx->total[0] >> 29)
-		| (ctx->total[1] << 3);
-	low = (ctx->total[0] << 3);
+	A = digest[0];
+	B = digest[1];
+	C = digest[2];
+	D = digest[3];
+	E = digest[4];
 
-	PUT_UINT32_BE (high, msglen, 0);
-	PUT_UINT32_BE (low, msglen, 4);
+	/* Round 1 - iterations 0-16 take their input from 'data' */
+	T_0_15( 0, A, B, C, D, E);
+	T_0_15( 1, E, A, B, C, D);
+	T_0_15( 2, D, E, A, B, C);
+	T_0_15( 3, C, D, E, A, B);
+	T_0_15( 4, B, C, D, E, A);
+	T_0_15( 5, A, B, C, D, E);
+	T_0_15( 6, E, A, B, C, D);
+	T_0_15( 7, D, E, A, B, C);
+	T_0_15( 8, C, D, E, A, B);
+	T_0_15( 9, B, C, D, E, A);
+	T_0_15(10, A, B, C, D, E);
+	T_0_15(11, E, A, B, C, D);
+	T_0_15(12, D, E, A, B, C);
+	T_0_15(13, C, D, E, A, B);
+	T_0_15(14, B, C, D, E, A);
+	T_0_15(15, A, B, C, D, E);
 
-	last = ctx->total[0] & 0x3F;
-	padn = (last < 56) ? (56 - last) : (120 - last);
+	/* Round 1 - tail. Input from 512-bit mixing array */
+	T_16_19(16, E, A, B, C, D);
+	T_16_19(17, D, E, A, B, C);
+	T_16_19(18, C, D, E, A, B);
+	T_16_19(19, B, C, D, E, A);
 
-	sha1_update (ctx, (unsigned char *) sha1_padding, padn);
-	sha1_update (ctx, msglen, 8);
+	/* Round 2 */
+	T_20_39(20, A, B, C, D, E);
+	T_20_39(21, E, A, B, C, D);
+	T_20_39(22, D, E, A, B, C);
+	T_20_39(23, C, D, E, A, B);
+	T_20_39(24, B, C, D, E, A);
+	T_20_39(25, A, B, C, D, E);
+	T_20_39(26, E, A, B, C, D);
+	T_20_39(27, D, E, A, B, C);
+	T_20_39(28, C, D, E, A, B);
+	T_20_39(29, B, C, D, E, A);
+	T_20_39(30, A, B, C, D, E);
+	T_20_39(31, E, A, B, C, D);
+	T_20_39(32, D, E, A, B, C);
+	T_20_39(33, C, D, E, A, B);
+	T_20_39(34, B, C, D, E, A);
+	T_20_39(35, A, B, C, D, E);
+	T_20_39(36, E, A, B, C, D);
+	T_20_39(37, D, E, A, B, C);
+	T_20_39(38, C, D, E, A, B);
+	T_20_39(39, B, C, D, E, A);
 
-	PUT_UINT32_BE (ctx->state[0], output, 0);
-	PUT_UINT32_BE (ctx->state[1], output, 4);
-	PUT_UINT32_BE (ctx->state[2], output, 8);
-	PUT_UINT32_BE (ctx->state[3], output, 12);
-	PUT_UINT32_BE (ctx->state[4], output, 16);
+	/* Round 3 */
+	T_40_59(40, A, B, C, D, E);
+	T_40_59(41, E, A, B, C, D);
+	T_40_59(42, D, E, A, B, C);
+	T_40_59(43, C, D, E, A, B);
+	T_40_59(44, B, C, D, E, A);
+	T_40_59(45, A, B, C, D, E);
+	T_40_59(46, E, A, B, C, D);
+	T_40_59(47, D, E, A, B, C);
+	T_40_59(48, C, D, E, A, B);
+	T_40_59(49, B, C, D, E, A);
+	T_40_59(50, A, B, C, D, E);
+	T_40_59(51, E, A, B, C, D);
+	T_40_59(52, D, E, A, B, C);
+	T_40_59(53, C, D, E, A, B);
+	T_40_59(54, B, C, D, E, A);
+	T_40_59(55, A, B, C, D, E);
+	T_40_59(56, E, A, B, C, D);
+	T_40_59(57, D, E, A, B, C);
+	T_40_59(58, C, D, E, A, B);
+	T_40_59(59, B, C, D, E, A);
+
+	/* Round 4 */
+	T_60_79(60, A, B, C, D, E);
+	T_60_79(61, E, A, B, C, D);
+	T_60_79(62, D, E, A, B, C);
+	T_60_79(63, C, D, E, A, B);
+	T_60_79(64, B, C, D, E, A);
+	T_60_79(65, A, B, C, D, E);
+	T_60_79(66, E, A, B, C, D);
+	T_60_79(67, D, E, A, B, C);
+	T_60_79(68, C, D, E, A, B);
+	T_60_79(69, B, C, D, E, A);
+	T_60_79(70, A, B, C, D, E);
+	T_60_79(71, E, A, B, C, D);
+	T_60_79(72, D, E, A, B, C);
+	T_60_79(73, C, D, E, A, B);
+	T_60_79(74, B, C, D, E, A);
+	T_60_79(75, A, B, C, D, E);
+	T_60_79(76, E, A, B, C, D);
+	T_60_79(77, D, E, A, B, C);
+	T_60_79(78, C, D, E, A, B);
+	T_60_79(79, B, C, D, E, A);
+
+	digest[0] += A;
+	digest[1] += B;
+	digest[2] += C;
+	digest[3] += D;
+	digest[4] += E;
 }
+EXPORT_SYMBOL(sha_transform);
 
-/*
- * Output = SHA-1( input buffer )
+/**
+ * sha_init - initialize the vectors for a SHA1 digest
+ * @buf: vector to initialize
  */
-void sha1_csum(const unsigned char *input, unsigned int ilen,
-	       unsigned char *output)
+void sha_init(__u32 *buf)
 {
-	sha1_context ctx;
-
-	sha1_starts (&ctx);
-	sha1_update (&ctx, input, ilen);
-	sha1_finish (&ctx, output);
+	buf[0] = 0x67452301;
+	buf[1] = 0xefcdab89;
+	buf[2] = 0x98badcfe;
+	buf[3] = 0x10325476;
+	buf[4] = 0xc3d2e1f0;
 }
-
-/*
- * Output = SHA-1( input buffer ). Trigger the watchdog every 'chunk_sz'
- * bytes of input processed.
- */
-void sha1_csum_wd(const unsigned char *input, unsigned int ilen,
-		  unsigned char *output, unsigned int chunk_sz)
-{
-	sha1_context ctx;
-#if defined(CONFIG_HW_WATCHDOG) || defined(CONFIG_WATCHDOG)
-	const unsigned char *end, *curr;
-	int chunk;
-#endif
-
-	sha1_starts (&ctx);
-
-#if defined(CONFIG_HW_WATCHDOG) || defined(CONFIG_WATCHDOG)
-	curr = input;
-	end = input + ilen;
-	while (curr < end) {
-		chunk = end - curr;
-		if (chunk > chunk_sz)
-			chunk = chunk_sz;
-		sha1_update (&ctx, curr, chunk);
-		curr += chunk;
-		WATCHDOG_RESET ();
-	}
-#else
-	sha1_update (&ctx, input, ilen);
-#endif
-
-	sha1_finish (&ctx, output);
-}
-
-/*
- * Output = HMAC-SHA-1( input buffer, hmac key )
- */
-void sha1_hmac(const unsigned char *key, int keylen,
-	       const unsigned char *input, unsigned int ilen,
-	       unsigned char *output)
-{
-	int i;
-	sha1_context ctx;
-	unsigned char k_ipad[64];
-	unsigned char k_opad[64];
-	unsigned char tmpbuf[20];
-
-	memset (k_ipad, 0x36, 64);
-	memset (k_opad, 0x5C, 64);
-
-	for (i = 0; i < keylen; i++) {
-		if (i >= 64)
-			break;
-
-		k_ipad[i] ^= key[i];
-		k_opad[i] ^= key[i];
-	}
-
-	sha1_starts (&ctx);
-	sha1_update (&ctx, k_ipad, 64);
-	sha1_update (&ctx, input, ilen);
-	sha1_finish (&ctx, tmpbuf);
-
-	sha1_starts (&ctx);
-	sha1_update (&ctx, k_opad, 64);
-	sha1_update (&ctx, tmpbuf, 20);
-	sha1_finish (&ctx, output);
-
-	memset (k_ipad, 0, 64);
-	memset (k_opad, 0, 64);
-	memset (tmpbuf, 0, 20);
-	memset (&ctx, 0, sizeof (sha1_context));
-}
-
-#ifdef SELF_TEST
-/*
- * FIPS-180-1 test vectors
- */
-static const char sha1_test_str[3][57] = {
-	{"abc"},
-	{"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"},
-	{""}
-};
-
-static const unsigned char sha1_test_sum[3][20] = {
-	{0xA9, 0x99, 0x3E, 0x36, 0x47, 0x06, 0x81, 0x6A, 0xBA, 0x3E,
-	 0x25, 0x71, 0x78, 0x50, 0xC2, 0x6C, 0x9C, 0xD0, 0xD8, 0x9D},
-	{0x84, 0x98, 0x3E, 0x44, 0x1C, 0x3B, 0xD2, 0x6E, 0xBA, 0xAE,
-	 0x4A, 0xA1, 0xF9, 0x51, 0x29, 0xE5, 0xE5, 0x46, 0x70, 0xF1},
-	{0x34, 0xAA, 0x97, 0x3C, 0xD4, 0xC4, 0xDA, 0xA4, 0xF6, 0x1E,
-	 0xEB, 0x2B, 0xDB, 0xAD, 0x27, 0x31, 0x65, 0x34, 0x01, 0x6F}
-};
-
-/*
- * Checkup routine
- */
-int sha1_self_test (void)
-{
-	int i, j;
-	unsigned char buf[1000];
-	unsigned char sha1sum[20];
-	sha1_context ctx;
-
-	for (i = 0; i < 3; i++) {
-		printf ("  SHA-1 test #%d: ", i + 1);
-
-		sha1_starts (&ctx);
-
-		if (i < 2)
-			sha1_update (&ctx, (unsigned char *) sha1_test_str[i],
-				     strlen (sha1_test_str[i]));
-		else {
-			memset (buf, 'a', 1000);
-			for (j = 0; j < 1000; j++)
-				sha1_update (&ctx, buf, 1000);
-		}
-
-		sha1_finish (&ctx, sha1sum);
-
-		if (memcmp (sha1sum, sha1_test_sum[i], 20) != 0) {
-			printf ("failed\n");
-			return (1);
-		}
-
-		printf ("passed\n");
-	}
-
-	printf ("\n");
-	return (0);
-}
-#else
-int sha1_self_test (void)
-{
-	return (0);
-}
-#endif
+EXPORT_SYMBOL(sha_init);

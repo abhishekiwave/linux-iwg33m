@@ -1,11 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Texas Instruments System Control Interface Protocol
- * Based on include/linux/soc/ti/ti_sci_protocol.h from Linux.
  *
- * Copyright (C) 2018 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Nishanth Menon
- *	Lokesh Vutla <lokeshvutla@ti.com>
  */
 
 #ifndef __TISCI_PROTOCOL_H
@@ -30,31 +28,13 @@ struct ti_sci_version_info {
 struct ti_sci_handle;
 
 /**
- * struct ti_sci_board_ops - Board config operations
- * @board_config: Command to set the board configuration
- *		  Returns 0 for successful exclusive request, else returns
- *		  corresponding error message.
- * @board_config_rm: Command to set the board resource management
- *		  configuration
- *		  Returns 0 for successful exclusive request, else returns
- *		  corresponding error message.
- * @board_config_security: Command to set the board security configuration
- *		  Returns 0 for successful exclusive request, else returns
- *		  corresponding error message.
- * @board_config_pm: Command to trigger and set the board power and clock
- *		  management related configuration
- *		  Returns 0 for successful exclusive request, else returns
- *		  corresponding error message.
+ * struct ti_sci_core_ops - SoC Core Operations
+ * @reboot_device: Reboot the SoC
+ *		Returns 0 for successful request(ideally should never return),
+ *		else returns corresponding error value.
  */
-struct ti_sci_board_ops {
-	int (*board_config)(const struct ti_sci_handle *handle,
-			    u64 addr, u32 size);
-	int (*board_config_rm)(const struct ti_sci_handle *handle,
-			       u64 addr, u32 size);
-	int (*board_config_security)(const struct ti_sci_handle *handle,
-				     u64 addr, u32 size);
-	int (*board_config_pm)(const struct ti_sci_handle *handle,
-			       u64 addr, u32 size);
+struct ti_sci_core_ops {
+	int (*reboot_device)(const struct ti_sci_handle *handle);
 };
 
 /**
@@ -105,9 +85,6 @@ struct ti_sci_board_ops {
  *		-reset_state: pointer to u32 which will retrieve resets
  *		Returns 0 for successful request, else returns
  *		corresponding error message.
- * @release_exclusive_devices: Command to release all the exclusive devices
- *		attached to this host. This should be used very carefully
- *		and only at the end of execution of your software.
  *
  * NOTE: for all these functions, the following parameters are generic in
  * nature:
@@ -140,7 +117,6 @@ struct ti_sci_dev_ops {
 				 u32 reset_state);
 	int (*get_device_resets)(const struct ti_sci_handle *handle, u32 id,
 				 u32 *reset_state);
-	int (*release_exclusive_devices)(const struct ti_sci_handle *handle);
 };
 
 /**
@@ -193,29 +169,29 @@ struct ti_sci_dev_ops {
  * managed by driver for that purpose.
  */
 struct ti_sci_clk_ops {
-	int (*get_clock)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*get_clock)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 			 bool needs_ssc, bool can_change_freq,
 			 bool enable_input_term);
-	int (*idle_clock)(const struct ti_sci_handle *handle, u32 did, u8 cid);
-	int (*put_clock)(const struct ti_sci_handle *handle, u32 did, u8 cid);
-	int (*is_auto)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*idle_clock)(const struct ti_sci_handle *handle, u32 did, u32 cid);
+	int (*put_clock)(const struct ti_sci_handle *handle, u32 did, u32 cid);
+	int (*is_auto)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 		       bool *req_state);
-	int (*is_on)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*is_on)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 		     bool *req_state, bool *current_state);
-	int (*is_off)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*is_off)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 		      bool *req_state, bool *current_state);
-	int (*set_parent)(const struct ti_sci_handle *handle, u32 did, u8 cid,
-			  u8 parent_id);
-	int (*get_parent)(const struct ti_sci_handle *handle, u32 did, u8 cid,
-			  u8 *parent_id);
+	int (*set_parent)(const struct ti_sci_handle *handle, u32 did, u32 cid,
+			  u32 parent_id);
+	int (*get_parent)(const struct ti_sci_handle *handle, u32 did, u32 cid,
+			  u32 *parent_id);
 	int (*get_num_parents)(const struct ti_sci_handle *handle, u32 did,
-			       u8 cid, u8 *num_parents);
+			       u32 cid, u32 *num_parents);
 	int (*get_best_match_freq)(const struct ti_sci_handle *handle, u32 did,
-				   u8 cid, u64 min_freq, u64 target_freq,
+				   u32 cid, u64 min_freq, u64 target_freq,
 				   u64 max_freq, u64 *match_freq);
-	int (*set_freq)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*set_freq)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 			u64 min_freq, u64 target_freq, u64 max_freq);
-	int (*get_freq)(const struct ti_sci_handle *handle, u32 did, u8 cid,
+	int (*get_freq)(const struct ti_sci_handle *handle, u32 did, u32 cid,
 			u64 *current_freq);
 };
 
@@ -245,64 +221,28 @@ struct ti_sci_rm_core_ops {
 };
 
 /**
- * struct ti_sci_core_ops - SoC Core Operations
- * @reboot_device: Reboot the SoC
- *		Returns 0 for successful request(ideally should never return),
- *		else returns corresponding error value.
- * @query_msmc: Query the size of available msmc
- *		Return 0 for successful query else appropriate error value.
+ * struct ti_sci_rm_irq_ops: IRQ management operations
+ * @set_irq:		Set an IRQ route between the requested source
+ *			and destination
+ * @set_event_map:	Set an Event based peripheral irq to Interrupt
+ *			Aggregator.
+ * @free_irq:		Free an an IRQ route between the requested source
+ *			destination.
+ * @free_event_map:	Free an event based peripheral irq to Interrupt
+ *			Aggregator.
  */
-struct ti_sci_core_ops {
-	int (*reboot_device)(const struct ti_sci_handle *handle);
-	int (*query_msmc)(const struct ti_sci_handle *handle,
-			  u64 *msmc_start, u64 *msmc_end);
+struct ti_sci_rm_irq_ops {
+	int (*set_irq)(const struct ti_sci_handle *handle, u16 src_id,
+		       u16 src_index, u16 dst_id, u16 dst_host_irq);
+	int (*set_event_map)(const struct ti_sci_handle *handle, u16 src_id,
+			     u16 src_index, u16 ia_id, u16 vint,
+			     u16 global_event, u8 vint_status_bit);
+	int (*free_irq)(const struct ti_sci_handle *handle, u16 src_id,
+			u16 src_index, u16 dst_id, u16 dst_host_irq);
+	int (*free_event_map)(const struct ti_sci_handle *handle, u16 src_id,
+			      u16 src_index, u16 ia_id, u16 vint,
+			      u16 global_event, u8 vint_status_bit);
 };
-
-/**
- * struct ti_sci_proc_ops - Processor specific operations.
- *
- * @proc_request: Request for controlling a physical processor.
- *		The requesting host should be in the processor access list.
- * @proc_release: Relinquish a physical processor control
- * @proc_handover: Handover a physical processor control to another host
- *		   in the permitted list.
- * @set_proc_boot_cfg: Base configuration of the processor
- * @set_proc_boot_ctrl: Setup limited control flags in specific cases.
- * @proc_auth_boot_image:
- * @get_proc_boot_status: Get the state of physical processor
- * @proc_shutdown_no_wait: Shutdown a core without requesting or waiting for a
- *			   response.
- *
- * NOTE: for all these functions, the following parameters are generic in
- * nature:
- * -handle:	Pointer to TISCI handle as retrieved by *ti_sci_get_handle
- * -pid:	Processor ID
- *
- */
-struct ti_sci_proc_ops {
-	int (*proc_request)(const struct ti_sci_handle *handle, u8 pid);
-	int (*proc_release)(const struct ti_sci_handle *handle, u8 pid);
-	int (*proc_handover)(const struct ti_sci_handle *handle, u8 pid,
-			     u8 hid);
-	int (*set_proc_boot_cfg)(const struct ti_sci_handle *handle, u8 pid,
-				 u64 bv, u32 cfg_set, u32 cfg_clr);
-	int (*set_proc_boot_ctrl)(const struct ti_sci_handle *handle, u8 pid,
-				  u32 ctrl_set, u32 ctrl_clr);
-	int (*proc_auth_boot_image)(const struct ti_sci_handle *handle,
-				    u64 *image_addr, u32 *image_size);
-	int (*get_proc_boot_status)(const struct ti_sci_handle *handle, u8 pid,
-				    u64 *bv, u32 *cfg_flags, u32 *ctrl_flags,
-				    u32 *sts_flags);
-	int (*proc_shutdown_no_wait)(const struct ti_sci_handle *handle,
-				     u8 pid);
-};
-
-#define TI_SCI_RING_MODE_RING			(0)
-#define TI_SCI_RING_MODE_MESSAGE		(1)
-#define TI_SCI_RING_MODE_CREDENTIALS		(2)
-#define TI_SCI_RING_MODE_QM			(3)
-
-#define TI_SCI_MSG_UNUSED_SECONDARY_HOST TI_SCI_RM_NULL_U8
 
 /* RA config.addr_lo parameter is valid for RM ring configure TI_SCI message */
 #define TI_SCI_MSG_VALUE_RM_RING_ADDR_LO_VALID	BIT(0)
@@ -370,19 +310,12 @@ struct ti_sci_rm_psil_ops {
 #define TI_SCI_RM_UDMAP_CHAN_TYPE_3RDP_BCOPY_PBRR	12
 #define TI_SCI_RM_UDMAP_CHAN_TYPE_3RDP_BCOPY_PBVR	13
 
-/* UDMAP channel atypes */
-#define TI_SCI_RM_UDMAP_ATYPE_PHYS			0
-#define TI_SCI_RM_UDMAP_ATYPE_INTERMEDIATE		1
-#define TI_SCI_RM_UDMAP_ATYPE_VIRTUAL			2
-
-/* UDMAP channel scheduling priorities */
-#define TI_SCI_RM_UDMAP_SCHED_PRIOR_HIGH		0
-#define TI_SCI_RM_UDMAP_SCHED_PRIOR_MEDHIGH		1
-#define TI_SCI_RM_UDMAP_SCHED_PRIOR_MEDLOW		2
-#define TI_SCI_RM_UDMAP_SCHED_PRIOR_LOW			3
-
 #define TI_SCI_RM_UDMAP_RX_FLOW_DESC_HOST		0
 #define TI_SCI_RM_UDMAP_RX_FLOW_DESC_MONO		2
+
+#define TI_SCI_RM_UDMAP_CHAN_BURST_SIZE_64_BYTES	1
+#define TI_SCI_RM_UDMAP_CHAN_BURST_SIZE_128_BYTES	2
+#define TI_SCI_RM_UDMAP_CHAN_BURST_SIZE_256_BYTES	3
 
 /* UDMAP TX/RX channel valid_params common declarations */
 #define TI_SCI_MSG_VALUE_RM_UDMAP_CH_PAUSE_ON_ERR_VALID		BIT(0)
@@ -394,6 +327,7 @@ struct ti_sci_rm_psil_ops {
 #define TI_SCI_MSG_VALUE_RM_UDMAP_CH_QOS_VALID                  BIT(6)
 #define TI_SCI_MSG_VALUE_RM_UDMAP_CH_ORDER_ID_VALID             BIT(7)
 #define TI_SCI_MSG_VALUE_RM_UDMAP_CH_SCHED_PRIORITY_VALID       BIT(8)
+#define TI_SCI_MSG_VALUE_RM_UDMAP_CH_BURST_SIZE_VALID		BIT(14)
 
 /**
  * Configures a Navigator Subsystem UDMAP transmit channel
@@ -424,6 +358,7 @@ struct ti_sci_msg_rm_udmap_tx_ch_cfg {
 	u8 tx_orderid;
 	u16 fdepth;
 	u8 tx_sched_priority;
+	u8 tx_burst_size;
 };
 
 /**
@@ -453,6 +388,7 @@ struct ti_sci_msg_rm_udmap_rx_ch_cfg {
 	u8 rx_chan_type;
 	u8 rx_ignore_short;
 	u8 rx_ignore_long;
+	u8 rx_burst_size;
 };
 
 /**
@@ -509,111 +445,74 @@ struct ti_sci_msg_rm_udmap_flow_cfg {
  * struct ti_sci_rm_udmap_ops - UDMA Management operations
  * @tx_ch_cfg: configure SoC Navigator Subsystem UDMA transmit channel.
  * @rx_ch_cfg: configure SoC Navigator Subsystem UDMA receive channel.
- * @rx_flow_cfg: configure SoC Navigator Subsystem UDMA receive flow.
+ * @rx_flow_cfg1: configure SoC Navigator Subsystem UDMA receive flow.
  */
 struct ti_sci_rm_udmap_ops {
 	int (*tx_ch_cfg)(const struct ti_sci_handle *handle,
 			 const struct ti_sci_msg_rm_udmap_tx_ch_cfg *params);
 	int (*rx_ch_cfg)(const struct ti_sci_handle *handle,
 			 const struct ti_sci_msg_rm_udmap_rx_ch_cfg *params);
-	int (*rx_flow_cfg)(
-		const struct ti_sci_handle *handle,
-		const struct ti_sci_msg_rm_udmap_flow_cfg *params);
+	int (*rx_flow_cfg)(const struct ti_sci_handle *handle,
+			   const struct ti_sci_msg_rm_udmap_flow_cfg *params);
 };
 
 /**
- * struct ti_sci_msg_fwl_region_cfg - Request and Response for firewalls settings
+ * struct ti_sci_proc_ops - Processor Control operations
+ * @request:	Request to control a physical processor. The requesting host
+ *		should be in the processor access list
+ * @release:	Relinquish a physical processor control
+ * @handover:	Handover a physical processor control to another host
+ *		in the permitted list
+ * @set_config:	Set base configuration of a processor
+ * @set_control: Setup limited control flags in specific cases
+ * @get_status: Get the state of physical processor
  *
- * @fwl_id:		Firewall ID in question
- * @region:		Region or channel number to set config info
- *			This field is unused in case of a simple firewall  and must be initialized
- *			to zero.  In case of a region based firewall, this field indicates the
- *			region in question. (index starting from 0) In case of a channel based
- *			firewall, this field indicates the channel in question (index starting
- *			from 0)
- * @n_permission_regs:	Number of permission registers to set
- * @control:		Contents of the firewall CONTROL register to set
- * @permissions:	Contents of the firewall PERMISSION register to set
- * @start_address:	Contents of the firewall START_ADDRESS register to set
- * @end_address:	Contents of the firewall END_ADDRESS register to set
+ * NOTE: The following paramteres are generic in nature for all these ops,
+ * -handle:	Pointer to TI SCI handle as retrieved by *ti_sci_get_handle
+ * -pid:	Processor ID
+ * -hid:	Host ID
  */
-struct ti_sci_msg_fwl_region {
-	u16 fwl_id;
-	u16 region;
-	u32 n_permission_regs;
-	u32 control;
-	u32 permissions[3];
-	u64 start_address;
-	u64 end_address;
-} __packed;
-
-/**
- * \brief Request and Response for firewall owner change
- *
- * @fwl_id:		Firewall ID in question
- * @region:		Region or channel number to set config info
- *			This field is unused in case of a simple firewall  and must be initialized
- *			to zero.  In case of a region based firewall, this field indicates the
- *			region in question. (index starting from 0) In case of a channel based
- *			firewall, this field indicates the channel in question (index starting
- *			from 0)
- * @n_permission_regs:	Number of permission registers <= 3
- * @control:		Control register value for this region
- * @owner_index:	New owner index to change to. Owner indexes are setup in DMSC firmware boot configuration data
- * @owner_privid:	New owner priv-id, used to lookup owner_index is not known, must be set to zero otherwise
- * @owner_permission_bits: New owner permission bits
- */
-struct ti_sci_msg_fwl_owner {
-	u16 fwl_id;
-	u16 region;
-	u8 owner_index;
-	u8 owner_privid;
-	u16 owner_permission_bits;
-} __packed;
-
-/**
- * struct ti_sci_fwl_ops - Firewall specific operations
- * @set_fwl_region: Request for configuring the firewall permissions.
- * @get_fwl_region: Request for retrieving the firewall permissions.
- * @change_fwl_owner: Request for a change of firewall owner.
- */
-struct ti_sci_fwl_ops {
-	int (*set_fwl_region)(const struct ti_sci_handle *handle, const struct ti_sci_msg_fwl_region *region);
-	int (*get_fwl_region)(const struct ti_sci_handle *handle, struct ti_sci_msg_fwl_region *region);
-	int (*change_fwl_owner)(const struct ti_sci_handle *handle, struct ti_sci_msg_fwl_owner *owner);
+struct ti_sci_proc_ops {
+	int (*request)(const struct ti_sci_handle *handle, u8 pid);
+	int (*release)(const struct ti_sci_handle *handle, u8 pid);
+	int (*handover)(const struct ti_sci_handle *handle, u8 pid, u8 hid);
+	int (*set_config)(const struct ti_sci_handle *handle, u8 pid,
+			  u64 boot_vector, u32 cfg_set, u32 cfg_clr);
+	int (*set_control)(const struct ti_sci_handle *handle, u8 pid,
+			   u32 ctrl_set, u32 ctrl_clr);
+	int (*get_status)(const struct ti_sci_handle *handle, u8 pid,
+			  u64 *boot_vector, u32 *cfg_flags, u32 *ctrl_flags,
+			  u32 *status_flags);
 };
 
 /**
  * struct ti_sci_ops - Function support for TI SCI
- * @board_ops:	Miscellaneous operations
  * @dev_ops:	Device specific operations
  * @clk_ops:	Clock specific operations
- * @core_ops:	Core specific operations
- * @proc_ops:	Processor specific operations
- * @ring_ops: Ring Accelerator Management operations
- * @fw_ops:	Firewall specific operations
+ * @rm_core_ops:	Resource management core operations.
+ * @rm_irq_ops:		IRQ management specific operations
+ * @proc_ops:	Processor Control specific operations
  */
 struct ti_sci_ops {
-	struct ti_sci_board_ops board_ops;
+	struct ti_sci_core_ops core_ops;
 	struct ti_sci_dev_ops dev_ops;
 	struct ti_sci_clk_ops clk_ops;
-	struct ti_sci_core_ops core_ops;
-	struct ti_sci_proc_ops proc_ops;
 	struct ti_sci_rm_core_ops rm_core_ops;
+	struct ti_sci_rm_irq_ops rm_irq_ops;
 	struct ti_sci_rm_ringacc_ops rm_ring_ops;
 	struct ti_sci_rm_psil_ops rm_psil_ops;
 	struct ti_sci_rm_udmap_ops rm_udmap_ops;
-	struct ti_sci_fwl_ops fwl_ops;
+	struct ti_sci_proc_ops proc_ops;
 };
 
 /**
  * struct ti_sci_handle - Handle returned to TI SCI clients for usage.
- * @ops:	operations that are made available to TI SCI clients
  * @version:	structure containing version information
+ * @ops:	operations that are made available to TI SCI clients
  */
 struct ti_sci_handle {
-	struct ti_sci_ops ops;
 	struct ti_sci_version_info version;
+	struct ti_sci_ops ops;
 };
 
 #define TI_SCI_RESOURCE_NULL	0xffff
@@ -634,41 +533,58 @@ struct ti_sci_resource_desc {
  * struct ti_sci_resource - Structure representing a resource assigned
  *			    to a device.
  * @sets:	Number of sets available from this resource type
+ * @lock:	Lock to guard the res map in each set.
  * @desc:	Array of resource descriptors.
  */
 struct ti_sci_resource {
 	u16 sets;
+	raw_spinlock_t lock;
 	struct ti_sci_resource_desc *desc;
 };
 
 #if IS_ENABLED(CONFIG_TI_SCI_PROTOCOL)
-
-const struct ti_sci_handle *ti_sci_get_handle_from_sysfw(struct udevice *dev);
-const struct ti_sci_handle *ti_sci_get_handle(struct udevice *dev);
-const struct ti_sci_handle *ti_sci_get_by_phandle(struct udevice *dev,
+const struct ti_sci_handle *ti_sci_get_handle(struct device *dev);
+int ti_sci_put_handle(const struct ti_sci_handle *handle);
+const struct ti_sci_handle *devm_ti_sci_get_handle(struct device *dev);
+const struct ti_sci_handle *ti_sci_get_by_phandle(struct device_node *np,
 						  const char *property);
+const struct ti_sci_handle *devm_ti_sci_get_by_phandle(struct device *dev,
+						       const char *property);
 u16 ti_sci_get_free_resource(struct ti_sci_resource *res);
 void ti_sci_release_resource(struct ti_sci_resource *res, u16 id);
+u32 ti_sci_get_num_resources(struct ti_sci_resource *res);
 struct ti_sci_resource *
 devm_ti_sci_get_of_resource(const struct ti_sci_handle *handle,
-			    struct udevice *dev, u32 dev_id, char *of_prop);
+			    struct device *dev, u32 dev_id, char *of_prop);
 
 #else	/* CONFIG_TI_SCI_PROTOCOL */
 
-static inline
-const struct ti_sci_handle *ti_sci_get_handle_from_sysfw(struct udevice *dev)
+static inline const struct ti_sci_handle *ti_sci_get_handle(struct device *dev)
 {
 	return ERR_PTR(-EINVAL);
 }
 
-static inline const struct ti_sci_handle *ti_sci_get_handle(struct udevice *dev)
+static inline int ti_sci_put_handle(const struct ti_sci_handle *handle)
+{
+	return -EINVAL;
+}
+
+static inline
+const struct ti_sci_handle *devm_ti_sci_get_handle(struct device *dev)
 {
 	return ERR_PTR(-EINVAL);
 }
 
 static inline
-const struct ti_sci_handle *ti_sci_get_by_phandle(struct udevice *dev,
+const struct ti_sci_handle *ti_sci_get_by_phandle(struct device_node *np,
 						  const char *property)
+{
+	return ERR_PTR(-EINVAL);
+}
+
+static inline
+const struct ti_sci_handle *devm_ti_sci_get_by_phandle(struct device *dev,
+						       const char *property)
 {
 	return ERR_PTR(-EINVAL);
 }
@@ -682,9 +598,14 @@ static inline void ti_sci_release_resource(struct ti_sci_resource *res, u16 id)
 {
 }
 
+static inline u32 ti_sci_get_num_resources(struct ti_sci_resource *res)
+{
+	return 0;
+}
+
 static inline struct ti_sci_resource *
 devm_ti_sci_get_of_resource(const struct ti_sci_handle *handle,
-			    struct udevice *dev, u32 dev_id, char *of_prop)
+			    struct device *dev, u32 dev_id, char *of_prop)
 {
 	return ERR_PTR(-EINVAL);
 }

@@ -1,15 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright 2019 NXP
+ * Cadence USBSS DRD Driver - Gadget Export APIs.
+ *
+ * Copyright (C) 2017-2019 NXP
+ *
+ * Authors: Peter Chen <peter.chen@nxp.com>
  */
-
-#ifndef __CDNS3_GADGET_EXPORT_H
-#define __CDNS3_GADGET_EXPORT_H
+#ifndef __LINUX_CDNS3_GADGET_EXPORT
+#define __LINUX_CDNS3_GADGET_EXPORT
 
 #ifdef CONFIG_USB_CDNS3_GADGET
 
 int cdns3_gadget_init(struct cdns3 *cdns);
-void cdns3_gadget_remove(struct cdns3 *cdns);
+void cdns3_gadget_exit(struct cdns3 *cdns);
 #else
 
 static inline int cdns3_gadget_init(struct cdns3 *cdns)
@@ -17,10 +20,8 @@ static inline int cdns3_gadget_init(struct cdns3 *cdns)
 	return -ENXIO;
 }
 
-static inline void cdns3_gadget_remove(struct cdns3 *cdns)
-{
-}
+static inline void cdns3_gadget_exit(struct cdns3 *cdns) { }
 
 #endif
 
-#endif /* __CDNS3_GADGET_EXPORT_H */
+#endif /* __LINUX_CDNS3_GADGET_EXPORT */

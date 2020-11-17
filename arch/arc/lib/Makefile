@@ -1,17 +1,15 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# Copyright (C) 2013-2014 Synopsys, Inc. All rights reserved.
+# Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
+#
 
-extra-y	= start.o
-head-y := start.o
-obj-y += cache.o
-obj-y += cpu.o
-obj-y += interrupts.o
-obj-y += relocate.o
-obj-y += reset.o
-obj-y += ints_low.o
-obj-y += init_helpers.o
+lib-y	:= strchr-700.o strcpy-700.o strlen.o memcmp.o
 
-obj-$(CONFIG_CMD_BOOTM) += bootm.o
+lib-$(CONFIG_ISA_ARCOMPACT)	+= memcpy-700.o memset.o strcmp.o
+lib-$(CONFIG_ISA_ARCV2)		+= memset-archs.o strcmp-archs.o
 
-lib-$(CONFIG_USE_PRIVATE_LIBGCC) += _millicodethunk.o libgcc2.o
+ifdef CONFIG_ARC_USE_UNALIGNED_MEM_ACCESS
+lib-$(CONFIG_ISA_ARCV2)		+=memcpy-archs-unaligned.o
+else
+lib-$(CONFIG_ISA_ARCV2)		+=memcpy-archs.o
+endif

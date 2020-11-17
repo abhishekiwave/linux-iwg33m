@@ -1,41 +1,28 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
-
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _M68K_PTRACE_H
 #define _M68K_PTRACE_H
 
-/*
- * This struct defines the way the registers are stored on the
- * kernel stack during an exception.
- */
+#include <uapi/asm/ptrace.h>
+
 #ifndef __ASSEMBLY__
 
-struct pt_regs {
-	ulong d0;
-	ulong d1;
-	ulong d2;
-	ulong d3;
-	ulong d4;
-	ulong d5;
-	ulong d6;
-	ulong d7;
-	ulong a0;
-	ulong a1;
-	ulong a2;
-	ulong a3;
-	ulong a4;
-	ulong a5;
-	ulong a6;
-#if defined(__M68K__)
-	unsigned format:4;	/* frame format specifier */
-	unsigned vector:12;	/* vector offset */
-	unsigned short sr;
-	unsigned long pc;
-#else
-	unsigned short sr;
-	unsigned long pc;
+#ifndef PS_S
+#define PS_S  (0x2000)
+#define PS_M  (0x1000)
 #endif
-};
 
-#endif				/* #ifndef __ASSEMBLY__ */
+#define user_mode(regs) (!((regs)->sr & PS_S))
+#define instruction_pointer(regs) ((regs)->pc)
+#define profile_pc(regs) instruction_pointer(regs)
+#define current_pt_regs() \
+	(struct pt_regs *)((char *)current_thread_info() + THREAD_SIZE) - 1
+#define current_user_stack_pointer() rdusp()
 
-#endif				/* #ifndef _M68K_PTRACE_H */
+#define arch_has_single_step()	(1)
+
+#ifdef CONFIG_MMU
+#define arch_has_block_step()	(1)
+#endif
+
+#endif /* __ASSEMBLY__ */
+#endif /* _M68K_PTRACE_H */

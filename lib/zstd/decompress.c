@@ -1,7 +1,17 @@
-// SPDX-License-Identifier: (GPL-2.0 or BSD-3-Clause-Clear)
 /**
  * Copyright (c) 2016-present, Yann Collet, Facebook, Inc.
  * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of https://github.com/facebook/zstd.
+ * An additional grant of patent rights can be found in the PATENTS file in the
+ * same directory.
+ *
+ * This program is free software; you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License version 2 as published by the
+ * Free Software Foundation. This program is dual-licensed; you may select
+ * either version 2 of the GNU General Public License ("GPL") or BSD license
+ * ("BSD").
  */
 
 /* ***************************************************************
@@ -23,9 +33,8 @@
 #include "huf.h"
 #include "mem.h" /* low level memory routines */
 #include "zstd_internal.h"
-#include <malloc.h>
 #include <linux/kernel.h>
-#include <linux/compat.h>
+#include <linux/module.h>
 #include <linux/string.h> /* memcpy, memmove, memset */
 
 #define ZSTD_PREFETCH(ptr) __builtin_prefetch(ptr, 0, 0)
@@ -1759,6 +1768,7 @@ size_t ZSTD_decompressContinue(ZSTD_DCtx *dctx, void *dst, size_t dstCapacity, c
 			return 0;
 		}
 		dctx->expected = 0; /* not necessary to copy more */
+		/* fall through */
 
 	case ZSTDds_decodeFrameHeader:
 		memcpy(dctx->headerBuffer + ZSTD_frameHeaderSize_prefix, src, dctx->expected);
@@ -2366,7 +2376,7 @@ size_t ZSTD_decompressStream(ZSTD_DStream *zds, ZSTD_outBuffer *output, ZSTD_inB
 			}
 			zds->stage = zdss_read;
 		}
-		/* pass-through */
+		/* fall through */
 
 		case zdss_read: {
 			size_t const neededInSize = ZSTD_nextSrcSizeToDecompress(zds->dctx);
@@ -2395,6 +2405,7 @@ size_t ZSTD_decompressStream(ZSTD_DStream *zds, ZSTD_outBuffer *output, ZSTD_inB
 			zds->stage = zdss_load;
 			/* pass-through */
 		}
+		/* fall through */
 
 		case zdss_load: {
 			size_t const neededInSize = ZSTD_nextSrcSizeToDecompress(zds->dctx);
@@ -2427,6 +2438,7 @@ size_t ZSTD_decompressStream(ZSTD_DStream *zds, ZSTD_outBuffer *output, ZSTD_inB
 				/* pass-through */
 			}
 		}
+		/* fall through */
 
 		case zdss_flush: {
 			size_t const toFlushSize = zds->outEnd - zds->outStart;
@@ -2514,3 +2526,6 @@ EXPORT_SYMBOL(ZSTD_nextInputType);
 
 EXPORT_SYMBOL(ZSTD_decompressBlock);
 EXPORT_SYMBOL(ZSTD_insertBlock);
+
+MODULE_LICENSE("Dual BSD/GPL");
+MODULE_DESCRIPTION("Zstd Decompressor");

@@ -1,249 +1,212 @@
 // SPDX-License-Identifier: GPL-2.0+
 /*
+ * Copyright (c) 2008 Sascha Hauer <s.hauer@pengutronix.de>, Pengutronix
  * Copyright (c) 2009 Daniel Mack <daniel@caiaq.de>
  */
 
-
-#include <common.h>
-#include <usb.h>
-#include <asm/io.h>
-#include <asm/arch/imx-regs.h>
-#include <usb/ehci-ci.h>
-#include <errno.h>
-
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/io.h>
+#include <linux/platform_device.h>
+#include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/usb/otg.h>
+#include <linux/usb/ulpi.h>
+#include <linux/slab.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
+#include <linux/platform_data/usb-ehci-mxc.h>
 #include "ehci.h"
 
-#define USBCTRL_OTGBASE_OFFSET	0x600
+#define DRIVER_DESC "Freescale On-Chip EHCI Host driver"
 
-#define MX25_OTG_SIC_SHIFT	29
-#define MX25_OTG_SIC_MASK	(0x3 << MX25_OTG_SIC_SHIFT)
-#define MX25_OTG_PM_BIT		(1 << 24)
-#define MX25_OTG_PP_BIT		(1 << 11)
-#define MX25_OTG_OCPOL_BIT	(1 << 3)
+static const char hcd_name[] = "ehci-mxc";
 
-#define MX25_H1_SIC_SHIFT	21
-#define MX25_H1_SIC_MASK	(0x3 << MX25_H1_SIC_SHIFT)
-#define MX25_H1_PP_BIT		(1 << 18)
-#define MX25_H1_PM_BIT		(1 << 16)
-#define MX25_H1_IPPUE_UP_BIT	(1 << 7)
-#define MX25_H1_IPPUE_DOWN_BIT	(1 << 6)
-#define MX25_H1_TLL_BIT		(1 << 5)
-#define MX25_H1_USBTE_BIT	(1 << 4)
-#define MX25_H1_OCPOL_BIT	(1 << 2)
+#define ULPI_VIEWPORT_OFFSET	0x170
 
-#define MX31_OTG_SIC_SHIFT	29
-#define MX31_OTG_SIC_MASK	(0x3 << MX31_OTG_SIC_SHIFT)
-#define MX31_OTG_PM_BIT		(1 << 24)
+struct ehci_mxc_priv {
+	struct clk *usbclk, *ahbclk, *phyclk;
+};
 
-#define MX31_H2_SIC_SHIFT	21
-#define MX31_H2_SIC_MASK	(0x3 << MX31_H2_SIC_SHIFT)
-#define MX31_H2_PM_BIT		(1 << 16)
-#define MX31_H2_DT_BIT		(1 << 5)
+static struct hc_driver __read_mostly ehci_mxc_hc_driver;
 
-#define MX31_H1_SIC_SHIFT	13
-#define MX31_H1_SIC_MASK	(0x3 << MX31_H1_SIC_SHIFT)
-#define MX31_H1_PM_BIT		(1 << 8)
-#define MX31_H1_DT_BIT		(1 << 4)
+static const struct ehci_driver_overrides ehci_mxc_overrides __initconst = {
+	.extra_priv_size =	sizeof(struct ehci_mxc_priv),
+};
 
-#define MX35_OTG_SIC_SHIFT	29
-#define MX35_OTG_SIC_MASK	(0x3 << MX35_OTG_SIC_SHIFT)
-#define MX35_OTG_PM_BIT		(1 << 24)
-#define MX35_OTG_PP_BIT		(1 << 11)
-#define MX35_OTG_OCPOL_BIT	(1 << 3)
-
-#define MX35_H1_SIC_SHIFT	21
-#define MX35_H1_SIC_MASK	(0x3 << MX35_H1_SIC_SHIFT)
-#define MX35_H1_PP_BIT		(1 << 18)
-#define MX35_H1_PM_BIT		(1 << 16)
-#define MX35_H1_IPPUE_UP_BIT	(1 << 7)
-#define MX35_H1_IPPUE_DOWN_BIT	(1 << 6)
-#define MX35_H1_TLL_BIT		(1 << 5)
-#define MX35_H1_USBTE_BIT	(1 << 4)
-#define MX35_H1_OCPOL_BIT	(1 << 2)
-
-static int mxc_set_usbcontrol(int port, unsigned int flags)
+static int ehci_mxc_drv_probe(struct platform_device *pdev)
 {
-	unsigned int v;
+	struct mxc_usbh_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct usb_hcd *hcd;
+	struct resource *res;
+	int irq, ret;
+	struct ehci_mxc_priv *priv;
+	struct device *dev = &pdev->dev;
+	struct ehci_hcd *ehci;
 
-	v = readl(IMX_USB_BASE + USBCTRL_OTGBASE_OFFSET);
-#if defined(CONFIG_MX25)
-	switch (port) {
-	case 0:	/* OTG port */
-		v &= ~(MX25_OTG_SIC_MASK | MX25_OTG_PM_BIT | MX25_OTG_PP_BIT |
-				MX25_OTG_OCPOL_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX25_OTG_SIC_SHIFT;
-
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX25_OTG_PM_BIT;
-
-		if (flags & MXC_EHCI_PWR_PIN_ACTIVE_HIGH)
-			v |= MX25_OTG_PP_BIT;
-
-		if (!(flags & MXC_EHCI_OC_PIN_ACTIVE_LOW))
-			v |= MX25_OTG_OCPOL_BIT;
-
-		break;
-	case 1: /* H1 port */
-		v &= ~(MX25_H1_SIC_MASK | MX25_H1_PM_BIT | MX25_H1_PP_BIT |
-				MX25_H1_OCPOL_BIT | MX25_H1_TLL_BIT |
-				MX25_H1_USBTE_BIT | MX25_H1_IPPUE_DOWN_BIT |
-				MX25_H1_IPPUE_UP_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX25_H1_SIC_SHIFT;
-
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX25_H1_PM_BIT;
-
-		if (flags & MXC_EHCI_PWR_PIN_ACTIVE_HIGH)
-			v |= MX25_H1_PP_BIT;
-
-		if (!(flags & MXC_EHCI_OC_PIN_ACTIVE_LOW))
-			v |= MX25_H1_OCPOL_BIT;
-
-		if (!(flags & MXC_EHCI_TTL_ENABLED))
-			v |= MX25_H1_TLL_BIT;
-
-		if (flags & MXC_EHCI_INTERNAL_PHY)
-			v |= MX25_H1_USBTE_BIT;
-
-		if (flags & MXC_EHCI_IPPUE_DOWN)
-			v |= MX25_H1_IPPUE_DOWN_BIT;
-
-		if (flags & MXC_EHCI_IPPUE_UP)
-			v |= MX25_H1_IPPUE_UP_BIT;
-
-		break;
-	default:
+	if (!pdata) {
+		dev_err(dev, "No platform data given, bailing out.\n");
 		return -EINVAL;
 	}
-#elif defined(CONFIG_MX31)
-	switch (port) {
-	case 0:	/* OTG port */
-		v &= ~(MX31_OTG_SIC_MASK | MX31_OTG_PM_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX31_OTG_SIC_SHIFT;
 
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX31_OTG_PM_BIT;
+	irq = platform_get_irq(pdev, 0);
 
-		break;
-	case 1: /* H1 port */
-		v &= ~(MX31_H1_SIC_MASK | MX31_H1_PM_BIT | MX31_H1_DT_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX31_H1_SIC_SHIFT;
+	hcd = usb_create_hcd(&ehci_mxc_hc_driver, dev, dev_name(dev));
+	if (!hcd)
+		return -ENOMEM;
 
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX31_H1_PM_BIT;
-
-		if (!(flags & MXC_EHCI_TTL_ENABLED))
-			v |= MX31_H1_DT_BIT;
-
-		break;
-	case 2:	/* H2 port */
-		v &= ~(MX31_H2_SIC_MASK | MX31_H2_PM_BIT | MX31_H2_DT_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX31_H2_SIC_SHIFT;
-
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX31_H2_PM_BIT;
-
-		if (!(flags & MXC_EHCI_TTL_ENABLED))
-			v |= MX31_H2_DT_BIT;
-
-		break;
-	default:
-		return -EINVAL;
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(hcd->regs)) {
+		ret = PTR_ERR(hcd->regs);
+		goto err_alloc;
 	}
-#elif defined(CONFIG_MX35)
-	switch (port) {
-	case 0:	/* OTG port */
-		v &= ~(MX35_OTG_SIC_MASK | MX35_OTG_PM_BIT | MX35_OTG_PP_BIT |
-				MX35_OTG_OCPOL_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX35_OTG_SIC_SHIFT;
+	hcd->rsrc_start = res->start;
+	hcd->rsrc_len = resource_size(res);
 
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX35_OTG_PM_BIT;
+	hcd->has_tt = 1;
+	ehci = hcd_to_ehci(hcd);
+	priv = (struct ehci_mxc_priv *) ehci->priv;
 
-		if (flags & MXC_EHCI_PWR_PIN_ACTIVE_HIGH)
-			v |= MX35_OTG_PP_BIT;
-
-		if (!(flags & MXC_EHCI_OC_PIN_ACTIVE_LOW))
-			v |= MX35_OTG_OCPOL_BIT;
-
-		break;
-	case 1: /* H1 port */
-		v &= ~(MX35_H1_SIC_MASK | MX35_H1_PM_BIT | MX35_H1_PP_BIT |
-				MX35_H1_OCPOL_BIT | MX35_H1_TLL_BIT |
-				MX35_H1_USBTE_BIT | MX35_H1_IPPUE_DOWN_BIT |
-				MX35_H1_IPPUE_UP_BIT);
-		v |= (flags & MXC_EHCI_INTERFACE_MASK) << MX35_H1_SIC_SHIFT;
-
-		if (!(flags & MXC_EHCI_POWER_PINS_ENABLED))
-			v |= MX35_H1_PM_BIT;
-
-		if (flags & MXC_EHCI_PWR_PIN_ACTIVE_HIGH)
-			v |= MX35_H1_PP_BIT;
-
-		if (!(flags & MXC_EHCI_OC_PIN_ACTIVE_LOW))
-			v |= MX35_H1_OCPOL_BIT;
-
-		if (!(flags & MXC_EHCI_TTL_ENABLED))
-			v |= MX35_H1_TLL_BIT;
-
-		if (flags & MXC_EHCI_INTERNAL_PHY)
-			v |= MX35_H1_USBTE_BIT;
-
-		if (flags & MXC_EHCI_IPPUE_DOWN)
-			v |= MX35_H1_IPPUE_DOWN_BIT;
-
-		if (flags & MXC_EHCI_IPPUE_UP)
-			v |= MX35_H1_IPPUE_UP_BIT;
-
-		break;
-	default:
-		return -EINVAL;
+	/* enable clocks */
+	priv->usbclk = devm_clk_get(&pdev->dev, "ipg");
+	if (IS_ERR(priv->usbclk)) {
+		ret = PTR_ERR(priv->usbclk);
+		goto err_alloc;
 	}
-#else
-#error MXC EHCI USB driver not supported on this platform
-#endif
-	writel(v, IMX_USB_BASE + USBCTRL_OTGBASE_OFFSET);
+	clk_prepare_enable(priv->usbclk);
 
+	priv->ahbclk = devm_clk_get(&pdev->dev, "ahb");
+	if (IS_ERR(priv->ahbclk)) {
+		ret = PTR_ERR(priv->ahbclk);
+		goto err_clk_ahb;
+	}
+	clk_prepare_enable(priv->ahbclk);
+
+	/* "dr" device has its own clock on i.MX51 */
+	priv->phyclk = devm_clk_get(&pdev->dev, "phy");
+	if (IS_ERR(priv->phyclk))
+		priv->phyclk = NULL;
+	if (priv->phyclk)
+		clk_prepare_enable(priv->phyclk);
+
+
+	/* call platform specific init function */
+	if (pdata->init) {
+		ret = pdata->init(pdev);
+		if (ret) {
+			dev_err(dev, "platform init failed\n");
+			goto err_init;
+		}
+		/* platforms need some time to settle changed IO settings */
+		mdelay(10);
+	}
+
+	/* EHCI registers start at offset 0x100 */
+	ehci->caps = hcd->regs + 0x100;
+	ehci->regs = hcd->regs + 0x100 +
+		HC_LENGTH(ehci, ehci_readl(ehci, &ehci->caps->hc_capbase));
+
+	/* set up the PORTSCx register */
+	ehci_writel(ehci, pdata->portsc, &ehci->regs->port_status[0]);
+
+	/* is this really needed? */
+	msleep(10);
+
+	/* Initialize the transceiver */
+	if (pdata->otg) {
+		pdata->otg->io_priv = hcd->regs + ULPI_VIEWPORT_OFFSET;
+		ret = usb_phy_init(pdata->otg);
+		if (ret) {
+			dev_err(dev, "unable to init transceiver, probably missing\n");
+			ret = -ENODEV;
+			goto err_add;
+		}
+		ret = otg_set_vbus(pdata->otg->otg, 1);
+		if (ret) {
+			dev_err(dev, "unable to enable vbus on transceiver\n");
+			goto err_add;
+		}
+	}
+
+	platform_set_drvdata(pdev, hcd);
+
+	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
+	if (ret)
+		goto err_add;
+
+	device_wakeup_enable(hcd->self.controller);
+	return 0;
+
+err_add:
+	if (pdata && pdata->exit)
+		pdata->exit(pdev);
+err_init:
+	if (priv->phyclk)
+		clk_disable_unprepare(priv->phyclk);
+
+	clk_disable_unprepare(priv->ahbclk);
+err_clk_ahb:
+	clk_disable_unprepare(priv->usbclk);
+err_alloc:
+	usb_put_hcd(hcd);
+	return ret;
+}
+
+static int ehci_mxc_drv_remove(struct platform_device *pdev)
+{
+	struct mxc_usbh_platform_data *pdata = dev_get_platdata(&pdev->dev);
+	struct usb_hcd *hcd = platform_get_drvdata(pdev);
+	struct ehci_hcd *ehci = hcd_to_ehci(hcd);
+	struct ehci_mxc_priv *priv = (struct ehci_mxc_priv *) ehci->priv;
+
+	usb_remove_hcd(hcd);
+
+	if (pdata && pdata->exit)
+		pdata->exit(pdev);
+
+	if (pdata && pdata->otg)
+		usb_phy_shutdown(pdata->otg);
+
+	clk_disable_unprepare(priv->usbclk);
+	clk_disable_unprepare(priv->ahbclk);
+
+	if (priv->phyclk)
+		clk_disable_unprepare(priv->phyclk);
+
+	usb_put_hcd(hcd);
 	return 0;
 }
 
-int ehci_hcd_init(int index, enum usb_init_type init,
-		struct ehci_hccr **hccr, struct ehci_hcor **hcor)
+MODULE_ALIAS("platform:mxc-ehci");
+
+static struct platform_driver ehci_mxc_driver = {
+	.probe = ehci_mxc_drv_probe,
+	.remove = ehci_mxc_drv_remove,
+	.shutdown = usb_hcd_platform_shutdown,
+	.driver = {
+		   .name = "mxc-ehci",
+	},
+};
+
+static int __init ehci_mxc_init(void)
 {
-	struct usb_ehci *ehci;
-#ifdef CONFIG_MX31
-	struct clock_control_regs *sc_regs =
-		(struct clock_control_regs *)CCM_BASE;
+	if (usb_disabled())
+		return -ENODEV;
 
-	__raw_readl(&sc_regs->ccmr);
-	__raw_writel(__raw_readl(&sc_regs->ccmr) | (1 << 9), &sc_regs->ccmr) ;
-#endif
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
 
-	udelay(80);
-
-	ehci = (struct usb_ehci *)(IMX_USB_BASE +
-			IMX_USB_PORT_OFFSET * CONFIG_MXC_USB_PORT);
-	*hccr = (struct ehci_hccr *)((uint32_t)&ehci->caplength);
-	*hcor = (struct ehci_hcor *)((uint32_t) *hccr +
-			HC_LENGTH(ehci_readl(&(*hccr)->cr_capbase)));
-	setbits_le32(&ehci->usbmode, CM_HOST);
-	__raw_writel(CONFIG_MXC_USB_PORTSC, &ehci->portsc);
-	mxc_set_usbcontrol(CONFIG_MXC_USB_PORT, CONFIG_MXC_USB_FLAGS);
-#ifdef CONFIG_MX35
-	/* Workaround for ENGcm11601 */
-	__raw_writel(0, &ehci->sbuscfg);
-#endif
-
-	udelay(10000);
-
-	return 0;
+	ehci_init_driver(&ehci_mxc_hc_driver, &ehci_mxc_overrides);
+	return platform_driver_register(&ehci_mxc_driver);
 }
+module_init(ehci_mxc_init);
 
-/*
- * Destroy the appropriate control structures corresponding
- * the the EHCI host controller.
- */
-int ehci_hcd_stop(int index)
+static void __exit ehci_mxc_cleanup(void)
 {
-	return 0;
+	platform_driver_unregister(&ehci_mxc_driver);
 }
+module_exit(ehci_mxc_cleanup);
+
+MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_AUTHOR("Sascha Hauer");
+MODULE_LICENSE("GPL");

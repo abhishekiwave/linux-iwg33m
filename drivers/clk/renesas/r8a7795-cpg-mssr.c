@@ -3,15 +3,18 @@
  * r8a7795 Clock Pulse Generator / Module Standby and Software Reset
  *
  * Copyright (C) 2015 Glider bvba
+ * Copyright (C) 2018-2019 Renesas Electronics Corp.
  *
  * Based on clk-rcar-gen3.c
  *
  * Copyright (C) 2015 Renesas Electronics Corp.
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
+#include <linux/device.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/soc/renesas/rcar-rst.h>
+#include <linux/sys_soc.h>
 
 #include <dt-bindings/clock/r8a7795-cpg-mssr.h>
 
@@ -40,7 +43,6 @@ enum clk_ids {
 	CLK_S2,
 	CLK_S3,
 	CLK_SDSRC,
-	CLK_RPCSRC,
 	CLK_SSPSRC,
 	CLK_RINT,
 
@@ -48,7 +50,7 @@ enum clk_ids {
 	MOD_CLK_BASE
 };
 
-static const struct cpg_core_clk r8a7795_core_clks[] = {
+static struct cpg_core_clk r8a7795_core_clks[] __initdata = {
 	/* External Clock Inputs */
 	DEF_INPUT("extal",      CLK_EXTAL),
 	DEF_INPUT("extalr",     CLK_EXTALR),
@@ -68,13 +70,12 @@ static const struct cpg_core_clk r8a7795_core_clks[] = {
 	DEF_FIXED(".s2",        CLK_S2,            CLK_PLL1_DIV2,  4, 1),
 	DEF_FIXED(".s3",        CLK_S3,            CLK_PLL1_DIV2,  6, 1),
 	DEF_FIXED(".sdsrc",     CLK_SDSRC,         CLK_PLL1_DIV2,  2, 1),
-	DEF_FIXED(".rpcsrc",    CLK_RPCSRC,        CLK_PLL1,       2, 1),
 
 	DEF_GEN3_OSC(".r",      CLK_RINT,          CLK_EXTAL,      32),
 
 	/* Core Clock Outputs */
-	DEF_BASE("z",           R8A7795_CLK_Z,     CLK_TYPE_GEN3_Z, CLK_PLL0),
-	DEF_BASE("z2",          R8A7795_CLK_Z2,    CLK_TYPE_GEN3_Z2, CLK_PLL2),
+	DEF_GEN3_Z("z",         R8A7795_CLK_Z,     CLK_TYPE_GEN3_Z,  CLK_PLL0, 2, 8),
+	DEF_GEN3_Z("z2",        R8A7795_CLK_Z2,    CLK_TYPE_GEN3_Z,  CLK_PLL2, 2, 0),
 	DEF_FIXED("ztr",        R8A7795_CLK_ZTR,   CLK_PLL1_DIV2,  6, 1),
 	DEF_FIXED("ztrd2",      R8A7795_CLK_ZTRD2, CLK_PLL1_DIV2, 12, 1),
 	DEF_FIXED("zt",         R8A7795_CLK_ZT,    CLK_PLL1_DIV2,  4, 1),
@@ -101,8 +102,6 @@ static const struct cpg_core_clk r8a7795_core_clks[] = {
 	DEF_GEN3_SD("sd2",      R8A7795_CLK_SD2,   CLK_SDSRC,     0x268),
 	DEF_GEN3_SD("sd3",      R8A7795_CLK_SD3,   CLK_SDSRC,     0x26c),
 
-	DEF_GEN3_RPC("rpc",     R8A7795_CLK_RPC,   CLK_RPCSRC,    0x238),
-
 	DEF_FIXED("cl",         R8A7795_CLK_CL,    CLK_PLL1_DIV2, 48, 1),
 	DEF_FIXED("cr",         R8A7795_CLK_CR,    CLK_PLL1_DIV4,  2, 1),
 	DEF_FIXED("cp",         R8A7795_CLK_CP,    CLK_EXTAL,      2, 1),
@@ -118,7 +117,7 @@ static const struct cpg_core_clk r8a7795_core_clks[] = {
 	DEF_BASE("r",           R8A7795_CLK_R,     CLK_TYPE_GEN3_R, CLK_RINT),
 };
 
-static const struct mssr_mod_clk r8a7795_mod_clks[] = {
+static struct mssr_mod_clk r8a7795_mod_clks[] __initdata = {
 	DEF_MOD("fdp1-2",		 117,	R8A7795_CLK_S2D1), /* ES1.x */
 	DEF_MOD("fdp1-1",		 118,	R8A7795_CLK_S0D1),
 	DEF_MOD("fdp1-0",		 119,	R8A7795_CLK_S0D1),
@@ -131,14 +130,15 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 	DEF_MOD("msiof2",		 209,	R8A7795_CLK_MSO),
 	DEF_MOD("msiof1",		 210,	R8A7795_CLK_MSO),
 	DEF_MOD("msiof0",		 211,	R8A7795_CLK_MSO),
-	DEF_MOD("sys-dmac2",		 217,	R8A7795_CLK_S0D3),
-	DEF_MOD("sys-dmac1",		 218,	R8A7795_CLK_S0D3),
+	DEF_MOD("sys-dmac2",		 217,	R8A7795_CLK_S3D1),
+	DEF_MOD("sys-dmac1",		 218,	R8A7795_CLK_S3D1),
 	DEF_MOD("sys-dmac0",		 219,	R8A7795_CLK_S0D3),
 	DEF_MOD("sceg-pub",		 229,	R8A7795_CLK_CR),
 	DEF_MOD("cmt3",			 300,	R8A7795_CLK_R),
 	DEF_MOD("cmt2",			 301,	R8A7795_CLK_R),
 	DEF_MOD("cmt1",			 302,	R8A7795_CLK_R),
 	DEF_MOD("cmt0",			 303,	R8A7795_CLK_R),
+	DEF_MOD("tpu0",			 304,	R8A7795_CLK_S3D4),
 	DEF_MOD("scif2",		 310,	R8A7795_CLK_S3D4),
 	DEF_MOD("sdif3",		 311,	R8A7795_CLK_SD3),
 	DEF_MOD("sdif2",		 312,	R8A7795_CLK_SD2),
@@ -155,16 +155,16 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 	DEF_MOD("rwdt",			 402,	R8A7795_CLK_R),
 	DEF_MOD("intc-ex",		 407,	R8A7795_CLK_CP),
 	DEF_MOD("intc-ap",		 408,	R8A7795_CLK_S0D3),
-	DEF_MOD("audmac1",		 501,	R8A7795_CLK_S0D3),
-	DEF_MOD("audmac0",		 502,	R8A7795_CLK_S0D3),
-	DEF_MOD("drif7",		 508,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif6",		 509,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif5",		 510,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif4",		 511,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif3",		 512,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif2",		 513,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif1",		 514,	R8A7795_CLK_S3D2),
-	DEF_MOD("drif0",		 515,	R8A7795_CLK_S3D2),
+	DEF_MOD("audmac1",		 501,	R8A7795_CLK_S1D2),
+	DEF_MOD("audmac0",		 502,	R8A7795_CLK_S1D2),
+	DEF_MOD("drif31",		 508,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif30",		 509,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif21",		 510,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif20",		 511,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif11",		 512,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif10",		 513,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif01",		 514,	R8A7795_CLK_S3D2),
+	DEF_MOD("drif00",		 515,	R8A7795_CLK_S3D2),
 	DEF_MOD("hscif4",		 516,	R8A7795_CLK_S3D1),
 	DEF_MOD("hscif3",		 517,	R8A7795_CLK_S3D1),
 	DEF_MOD("hscif2",		 518,	R8A7795_CLK_S3D1),
@@ -196,12 +196,16 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 	DEF_MOD("vspi2",		 629,	R8A7795_CLK_S2D1), /* ES1.x */
 	DEF_MOD("vspi1",		 630,	R8A7795_CLK_S0D1),
 	DEF_MOD("vspi0",		 631,	R8A7795_CLK_S0D1),
-	DEF_MOD("ehci3",		 700,	R8A7795_CLK_S3D4),
-	DEF_MOD("ehci2",		 701,	R8A7795_CLK_S3D4),
-	DEF_MOD("ehci1",		 702,	R8A7795_CLK_S3D4),
-	DEF_MOD("ehci0",		 703,	R8A7795_CLK_S3D4),
-	DEF_MOD("hsusb",		 704,	R8A7795_CLK_S3D4),
-	DEF_MOD("hsusb3",		 705,	R8A7795_CLK_S3D4),
+	DEF_MOD("ehci3",		 700,	R8A7795_CLK_S3D2),
+	DEF_MOD("ehci2",		 701,	R8A7795_CLK_S3D2),
+	DEF_MOD("ehci1",		 702,	R8A7795_CLK_S3D2),
+	DEF_MOD("ehci0",		 703,	R8A7795_CLK_S3D2),
+	DEF_MOD("hsusb",		 704,	R8A7795_CLK_S3D2),
+	DEF_MOD("hsusb3",		 705,	R8A7795_CLK_S3D2),
+	DEF_MOD("cmm3",			 708,	R8A7795_CLK_S2D1),
+	DEF_MOD("cmm2",			 709,	R8A7795_CLK_S2D1),
+	DEF_MOD("cmm1",			 710,	R8A7795_CLK_S2D1),
+	DEF_MOD("cmm0",			 711,	R8A7795_CLK_S2D1),
 	DEF_MOD("csi21",		 713,	R8A7795_CLK_CSI0), /* ES1.x */
 	DEF_MOD("csi20",		 714,	R8A7795_CLK_CSI0),
 	DEF_MOD("csi41",		 715,	R8A7795_CLK_CSI0),
@@ -238,7 +242,6 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 	DEF_MOD("can-fd",		 914,	R8A7795_CLK_S3D2),
 	DEF_MOD("can-if1",		 915,	R8A7795_CLK_S3D4),
 	DEF_MOD("can-if0",		 916,	R8A7795_CLK_S3D4),
-	DEF_MOD("rpc",			 917,	R8A7795_CLK_RPC),
 	DEF_MOD("i2c6",			 918,	R8A7795_CLK_S0D6),
 	DEF_MOD("i2c5",			 919,	R8A7795_CLK_S0D6),
 	DEF_MOD("i2c-dvfs",		 926,	R8A7795_CLK_CP),
@@ -275,6 +278,11 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 	DEF_MOD("scu-src0",		1031,	MOD_CLK_ID(1017)),
 };
 
+static const unsigned int r8a7795_crit_mod_clks[] __initconst = {
+	MOD_CLK_ID(408),	/* INTC-AP (GIC) */
+};
+
+
 /*
  * CPG Clock Data
  */
@@ -305,7 +313,7 @@ static const struct mssr_mod_clk r8a7795_mod_clks[] = {
 					 (((md) & BIT(19)) >> 18) | \
 					 (((md) & BIT(17)) >> 17))
 
-static const struct rcar_gen3_cpg_pll_config cpg_pll_configs[16] = {
+static const struct rcar_gen3_cpg_pll_config cpg_pll_configs[16] __initconst = {
 	/* EXTAL div	PLL1 mult/div	PLL3 mult/div	OSC prediv */
 	{ 1,		192,	1,	192,	1,	16,	},
 	{ 1,		192,	1,	128,	1,	16,	},
@@ -325,55 +333,151 @@ static const struct rcar_gen3_cpg_pll_config cpg_pll_configs[16] = {
 	{ 2,		192,	1,	192,	1,	32,	},
 };
 
-static const struct mstp_stop_table r8a7795_mstp_table[] = {
-	{ 0x00640800, 0x0, 0x00640800, 0 },
-	{ 0xF3EE9390, 0x0, 0xF3EE9390, 0 },
-	{ 0x340FAFDC, 0x2040, 0x340FAFDC, 0 },
-	{ 0xD80C7CDF, 0x400, 0xD80C7CDF, 0 },
-	{ 0x80000184, 0x180, 0x80000184, 0 },
-	{ 0x40BFFF46, 0x0, 0x40BFFF46, 0 },
-	{ 0xE5FBEECF, 0x0, 0xE5FBEECF, 0 },
-	{ 0x39FFFF0E, 0x0, 0x39FFFF0E, 0 },
-	{ 0x01F19FF4, 0x0, 0x01F19FF4, 0 },
-	{ 0xFFDFFFFF, 0x0, 0xFFDFFFFF, 0 },
-	{ 0xFFFEFFE0, 0x0, 0xFFFEFFE0, 0 },
-	{ 0x00000000, 0x0, 0x00000000, 0 },
+static const struct soc_device_attribute r8a7795es1[] __initconst = {
+	{ .soc_id = "r8a7795", .revision = "ES1.*" },
+	{ /* sentinel */ }
 };
 
-static const void *r8a7795_get_pll_config(const u32 cpg_mode)
+
+	/*
+	 * Fixups for R-Car H3 ES1.x
+	 */
+
+static const unsigned int r8a7795es1_mod_nullify[] __initconst = {
+	MOD_CLK_ID(326),			/* USB-DMAC3-0 */
+	MOD_CLK_ID(329),			/* USB-DMAC3-1 */
+	MOD_CLK_ID(700),			/* EHCI/OHCI3 */
+	MOD_CLK_ID(705),			/* HS-USB-IF3 */
+
+};
+
+static const struct mssr_mod_reparent r8a7795es1_mod_reparent[] __initconst = {
+	{ MOD_CLK_ID(118), R8A7795_CLK_S2D1 },	/* FDP1-1 */
+	{ MOD_CLK_ID(119), R8A7795_CLK_S2D1 },	/* FDP1-0 */
+	{ MOD_CLK_ID(217), R8A7795_CLK_S3D1 },	/* SYS-DMAC2 */
+	{ MOD_CLK_ID(218), R8A7795_CLK_S3D1 },	/* SYS-DMAC1 */
+	{ MOD_CLK_ID(219), R8A7795_CLK_S3D1 },	/* SYS-DMAC0 */
+	{ MOD_CLK_ID(408), R8A7795_CLK_S3D1 },	/* INTC-AP */
+	{ MOD_CLK_ID(501), R8A7795_CLK_S3D1 },	/* AUDMAC1 */
+	{ MOD_CLK_ID(502), R8A7795_CLK_S3D1 },	/* AUDMAC0 */
+	{ MOD_CLK_ID(523), R8A7795_CLK_S3D4 },	/* PWM */
+	{ MOD_CLK_ID(601), R8A7795_CLK_S2D1 },	/* FCPVD2 */
+	{ MOD_CLK_ID(602), R8A7795_CLK_S2D1 },	/* FCPVD1 */
+	{ MOD_CLK_ID(603), R8A7795_CLK_S2D1 },	/* FCPVD0 */
+	{ MOD_CLK_ID(606), R8A7795_CLK_S2D1 },	/* FCPVB1 */
+	{ MOD_CLK_ID(607), R8A7795_CLK_S2D1 },	/* FCPVB0 */
+	{ MOD_CLK_ID(610), R8A7795_CLK_S2D1 },	/* FCPVI1 */
+	{ MOD_CLK_ID(611), R8A7795_CLK_S2D1 },	/* FCPVI0 */
+	{ MOD_CLK_ID(614), R8A7795_CLK_S2D1 },	/* FCPF1 */
+	{ MOD_CLK_ID(615), R8A7795_CLK_S2D1 },	/* FCPF0 */
+	{ MOD_CLK_ID(619), R8A7795_CLK_S2D1 },	/* FCPCS */
+	{ MOD_CLK_ID(621), R8A7795_CLK_S2D1 },	/* VSPD2 */
+	{ MOD_CLK_ID(622), R8A7795_CLK_S2D1 },	/* VSPD1 */
+	{ MOD_CLK_ID(623), R8A7795_CLK_S2D1 },	/* VSPD0 */
+	{ MOD_CLK_ID(624), R8A7795_CLK_S2D1 },	/* VSPBC */
+	{ MOD_CLK_ID(626), R8A7795_CLK_S2D1 },	/* VSPBD */
+	{ MOD_CLK_ID(630), R8A7795_CLK_S2D1 },	/* VSPI1 */
+	{ MOD_CLK_ID(631), R8A7795_CLK_S2D1 },	/* VSPI0 */
+	{ MOD_CLK_ID(804), R8A7795_CLK_S2D1 },	/* VIN7 */
+	{ MOD_CLK_ID(805), R8A7795_CLK_S2D1 },	/* VIN6 */
+	{ MOD_CLK_ID(806), R8A7795_CLK_S2D1 },	/* VIN5 */
+	{ MOD_CLK_ID(807), R8A7795_CLK_S2D1 },	/* VIN4 */
+	{ MOD_CLK_ID(808), R8A7795_CLK_S2D1 },	/* VIN3 */
+	{ MOD_CLK_ID(809), R8A7795_CLK_S2D1 },	/* VIN2 */
+	{ MOD_CLK_ID(810), R8A7795_CLK_S2D1 },	/* VIN1 */
+	{ MOD_CLK_ID(811), R8A7795_CLK_S2D1 },	/* VIN0 */
+	{ MOD_CLK_ID(812), R8A7795_CLK_S3D2 },	/* EAVB-IF */
+	{ MOD_CLK_ID(820), R8A7795_CLK_S2D1 },	/* IMR3 */
+	{ MOD_CLK_ID(821), R8A7795_CLK_S2D1 },	/* IMR2 */
+	{ MOD_CLK_ID(822), R8A7795_CLK_S2D1 },	/* IMR1 */
+	{ MOD_CLK_ID(823), R8A7795_CLK_S2D1 },	/* IMR0 */
+	{ MOD_CLK_ID(905), R8A7795_CLK_CP },	/* GPIO7 */
+	{ MOD_CLK_ID(906), R8A7795_CLK_CP },	/* GPIO6 */
+	{ MOD_CLK_ID(907), R8A7795_CLK_CP },	/* GPIO5 */
+	{ MOD_CLK_ID(908), R8A7795_CLK_CP },	/* GPIO4 */
+	{ MOD_CLK_ID(909), R8A7795_CLK_CP },	/* GPIO3 */
+	{ MOD_CLK_ID(910), R8A7795_CLK_CP },	/* GPIO2 */
+	{ MOD_CLK_ID(911), R8A7795_CLK_CP },	/* GPIO1 */
+	{ MOD_CLK_ID(912), R8A7795_CLK_CP },	/* GPIO0 */
+	{ MOD_CLK_ID(918), R8A7795_CLK_S3D2 },	/* I2C6 */
+	{ MOD_CLK_ID(919), R8A7795_CLK_S3D2 },	/* I2C5 */
+	{ MOD_CLK_ID(927), R8A7795_CLK_S3D2 },	/* I2C4 */
+	{ MOD_CLK_ID(928), R8A7795_CLK_S3D2 },	/* I2C3 */
+};
+
+
+	/*
+	 * Fixups for R-Car H3 ES2.x
+	 */
+
+static const unsigned int r8a7795es2_mod_nullify[] __initconst = {
+	MOD_CLK_ID(117),			/* FDP1-2 */
+	MOD_CLK_ID(327),			/* USB3-IF1 */
+	MOD_CLK_ID(600),			/* FCPVD3 */
+	MOD_CLK_ID(609),			/* FCPVI2 */
+	MOD_CLK_ID(613),			/* FCPF2 */
+	MOD_CLK_ID(616),			/* FCPCI1 */
+	MOD_CLK_ID(617),			/* FCPCI0 */
+	MOD_CLK_ID(620),			/* VSPD3 */
+	MOD_CLK_ID(629),			/* VSPI2 */
+	MOD_CLK_ID(713),			/* CSI21 */
+};
+
+static int __init r8a7795_cpg_mssr_init(struct device *dev)
 {
-	return &cpg_pll_configs[CPG_PLL_CONFIG_INDEX(cpg_mode)];
+	const struct rcar_gen3_cpg_pll_config *cpg_pll_config;
+	u32 cpg_mode;
+	int error;
+
+	error = rcar_rst_read_mode_pins(&cpg_mode);
+	if (error)
+		return error;
+
+	cpg_pll_config = &cpg_pll_configs[CPG_PLL_CONFIG_INDEX(cpg_mode)];
+	if (!cpg_pll_config->extal_div) {
+		dev_err(dev, "Prohibited setting (cpg_mode=0x%x)\n", cpg_mode);
+		return -EINVAL;
+	}
+
+	if (soc_device_match(r8a7795es1)) {
+		cpg_core_nullify_range(r8a7795_core_clks,
+				       ARRAY_SIZE(r8a7795_core_clks),
+				       R8A7795_CLK_S0D2, R8A7795_CLK_S0D12);
+		mssr_mod_nullify(r8a7795_mod_clks,
+				 ARRAY_SIZE(r8a7795_mod_clks),
+				 r8a7795es1_mod_nullify,
+				 ARRAY_SIZE(r8a7795es1_mod_nullify));
+		mssr_mod_reparent(r8a7795_mod_clks,
+				  ARRAY_SIZE(r8a7795_mod_clks),
+				  r8a7795es1_mod_reparent,
+				  ARRAY_SIZE(r8a7795es1_mod_reparent));
+	} else {
+		mssr_mod_nullify(r8a7795_mod_clks,
+				 ARRAY_SIZE(r8a7795_mod_clks),
+				 r8a7795es2_mod_nullify,
+				 ARRAY_SIZE(r8a7795es2_mod_nullify));
+	}
+
+	return rcar_gen3_cpg_init(cpg_pll_config, CLK_EXTALR, cpg_mode);
 }
 
-static const struct cpg_mssr_info r8a7795_cpg_mssr_info = {
-	.core_clk		= r8a7795_core_clks,
-	.core_clk_size		= ARRAY_SIZE(r8a7795_core_clks),
-	.mod_clk		= r8a7795_mod_clks,
-	.mod_clk_size		= ARRAY_SIZE(r8a7795_mod_clks),
-	.mstp_table		= r8a7795_mstp_table,
-	.mstp_table_size	= ARRAY_SIZE(r8a7795_mstp_table),
-	.reset_node		= "renesas,r8a7795-rst",
-	.extalr_node		= "extalr",
-	.mod_clk_base		= MOD_CLK_BASE,
-	.clk_extal_id		= CLK_EXTAL,
-	.clk_extalr_id		= CLK_EXTALR,
-	.get_pll_config		= r8a7795_get_pll_config,
-};
+const struct cpg_mssr_info r8a7795_cpg_mssr_info __initconst = {
+	/* Core Clocks */
+	.core_clks = r8a7795_core_clks,
+	.num_core_clks = ARRAY_SIZE(r8a7795_core_clks),
+	.last_dt_core_clk = LAST_DT_CORE_CLK,
+	.num_total_core_clks = MOD_CLK_BASE,
 
-static const struct udevice_id r8a7795_clk_ids[] = {
-	{
-		.compatible	= "renesas,r8a7795-cpg-mssr",
-		.data		= (ulong)&r8a7795_cpg_mssr_info
-	},
-	{ }
-};
+	/* Module Clocks */
+	.mod_clks = r8a7795_mod_clks,
+	.num_mod_clks = ARRAY_SIZE(r8a7795_mod_clks),
+	.num_hw_mod_clks = 12 * 32,
 
-U_BOOT_DRIVER(clk_r8a7795) = {
-	.name		= "clk_r8a7795",
-	.id		= UCLASS_CLK,
-	.of_match	= r8a7795_clk_ids,
-	.priv_auto_alloc_size = sizeof(struct gen3_clk_priv),
-	.ops		= &gen3_clk_ops,
-	.probe		= gen3_clk_probe,
-	.remove		= gen3_clk_remove,
+	/* Critical Module Clocks */
+	.crit_mod_clks = r8a7795_crit_mod_clks,
+	.num_crit_mod_clks = ARRAY_SIZE(r8a7795_crit_mod_clks),
+
+	/* Callbacks */
+	.init = r8a7795_cpg_mssr_init,
+	.cpg_clk_register = rcar_gen3_cpg_clk_register,
 };

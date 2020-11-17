@@ -1,8 +1,7 @@
-/* SPDX-License-Identifier: BSD-2-Clause */
+/* SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause) */
 /*
- * Copyright (c) 2015-2018, Linaro Limited
+ * Copyright (c) 2015-2019, Linaro Limited
  */
-
 #ifndef _OPTEE_MSG_H
 #define _OPTEE_MSG_H
 
@@ -10,10 +9,8 @@
 #include <linux/types.h>
 
 /*
- * This file defines the OP-TEE message protocol used to communicate with
- * an instance of OP-TEE running in secure world. This file is based on
- * https://github.com/OP-TEE/optee_os/blob/master/core/include/optee_msg.h
- * and may need to be updated when introducing new features.
+ * This file defines the OP-TEE message protocol used to communicate
+ * with an instance of OP-TEE running in secure world.
  *
  * This file is divided into three sections.
  * 1. Formatting of messages.

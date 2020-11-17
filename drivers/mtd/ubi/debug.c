@@ -1,20 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
  *
  * Author: Artem Bityutskiy (Битюцкий Артём)
  */
 
-#include <hexdump.h>
-#include <malloc.h>
-#include <ubi_uboot.h>
 #include "ubi.h"
-#ifndef __UBOOT__
 #include <linux/debugfs.h>
-#include <linux/err.h>
 #include <linux/uaccess.h>
 #include <linux/module.h>
-#endif
+#include <linux/seq_file.h>
+
 
 /**
  * ubi_dump_flash - dump a region of flash.
@@ -42,7 +38,7 @@ void ubi_dump_flash(struct ubi_device *ubi, int pnum, int offset, int len)
 
 	ubi_msg(ubi, "dumping %d bytes of data from PEB %d, offset %d",
 		len, pnum, offset);
-	print_hex_dump("", DUMP_PREFIX_OFFSET, 32, 1, buf, len, 1);
+	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_OFFSET, 32, 1, buf, len, 1);
 out:
 	vfree(buf);
 	return;
@@ -63,7 +59,7 @@ void ubi_dump_ec_hdr(const struct ubi_ec_hdr *ec_hdr)
 	pr_err("\timage_seq      %d\n", be32_to_cpu(ec_hdr->image_seq));
 	pr_err("\thdr_crc        %#08x\n", be32_to_cpu(ec_hdr->hdr_crc));
 	pr_err("erase counter header hexdump:\n");
-	print_hex_dump("", DUMP_PREFIX_OFFSET, 32, 1,
+	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_OFFSET, 32, 1,
 		       ec_hdr, UBI_EC_HDR_SIZE, 1);
 }
 
@@ -88,7 +84,7 @@ void ubi_dump_vid_hdr(const struct ubi_vid_hdr *vid_hdr)
 		(unsigned long long)be64_to_cpu(vid_hdr->sqnum));
 	pr_err("\thdr_crc   %08x\n", be32_to_cpu(vid_hdr->hdr_crc));
 	pr_err("Volume identifier header hexdump:\n");
-	print_hex_dump("", DUMP_PREFIX_OFFSET, 32, 1,
+	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_OFFSET, 32, 1,
 		       vid_hdr, UBI_VID_HDR_SIZE, 1);
 }
 
@@ -98,26 +94,25 @@ void ubi_dump_vid_hdr(const struct ubi_vid_hdr *vid_hdr)
  */
 void ubi_dump_vol_info(const struct ubi_volume *vol)
 {
-	printf("Volume information dump:\n");
-	printf("\tvol_id          %d\n", vol->vol_id);
-	printf("\treserved_pebs   %d\n", vol->reserved_pebs);
-	printf("\talignment       %d\n", vol->alignment);
-	printf("\tdata_pad        %d\n", vol->data_pad);
-	printf("\tvol_type        %d\n", vol->vol_type);
-	printf("\tname_len        %d\n", vol->name_len);
-	printf("\tusable_leb_size %d\n", vol->usable_leb_size);
-	printf("\tused_ebs        %d\n", vol->used_ebs);
-	printf("\tused_bytes      %lld\n", vol->used_bytes);
-	printf("\tlast_eb_bytes   %d\n", vol->last_eb_bytes);
-	printf("\tcorrupted       %d\n", vol->corrupted);
-	printf("\tupd_marker      %d\n", vol->upd_marker);
-	printf("\tskip_check      %d\n", vol->skip_check);
+	pr_err("Volume information dump:\n");
+	pr_err("\tvol_id          %d\n", vol->vol_id);
+	pr_err("\treserved_pebs   %d\n", vol->reserved_pebs);
+	pr_err("\talignment       %d\n", vol->alignment);
+	pr_err("\tdata_pad        %d\n", vol->data_pad);
+	pr_err("\tvol_type        %d\n", vol->vol_type);
+	pr_err("\tname_len        %d\n", vol->name_len);
+	pr_err("\tusable_leb_size %d\n", vol->usable_leb_size);
+	pr_err("\tused_ebs        %d\n", vol->used_ebs);
+	pr_err("\tused_bytes      %lld\n", vol->used_bytes);
+	pr_err("\tlast_eb_bytes   %d\n", vol->last_eb_bytes);
+	pr_err("\tcorrupted       %d\n", vol->corrupted);
+	pr_err("\tupd_marker      %d\n", vol->upd_marker);
 
 	if (vol->name_len <= UBI_VOL_NAME_MAX &&
 	    strnlen(vol->name, vol->name_len + 1) == vol->name_len) {
-		printf("\tname            %s\n", vol->name);
+		pr_err("\tname            %s\n", vol->name);
 	} else {
-		printf("\t1st 5 characters of name: %c%c%c%c%c\n",
+		pr_err("\t1st 5 characters of name: %c%c%c%c%c\n",
 		       vol->name[0], vol->name[1], vol->name[2],
 		       vol->name[3], vol->name[4]);
 	}
@@ -210,7 +205,6 @@ void ubi_dump_mkvol_req(const struct ubi_mkvol_req *req)
 	pr_err("\t1st 16 characters of name: %s\n", nm);
 }
 
-#ifndef __UBOOT__
 /*
  * Root directory for UBI stuff in debugfs. Contains sub-directories which
  * contain the stuff specific to particular UBI devices.
@@ -230,7 +224,7 @@ int ubi_debugfs_init(void)
 
 	dfs_rootdir = debugfs_create_dir("ubi", NULL);
 	if (IS_ERR_OR_NULL(dfs_rootdir)) {
-		int err = dfs_rootdir ? -ENODEV : PTR_ERR(dfs_rootdir);
+		int err = dfs_rootdir ? PTR_ERR(dfs_rootdir) : -ENODEV;
 
 		pr_err("UBI error: cannot create \"ubi\" debugfs directory, error %d\n",
 		       err);
@@ -346,7 +340,8 @@ static ssize_t dfs_file_write(struct file *file, const char __user *user_buf,
 	} else if (dent == d->dfs_emulate_power_cut) {
 		if (kstrtoint(buf, 0, &val) != 0)
 			count = -EINVAL;
-		d->emulate_power_cut = val;
+		else
+			d->emulate_power_cut = val;
 		goto out;
 	}
 
@@ -379,13 +374,130 @@ out:
 	return count;
 }
 
-/* File operations for all UBI debugfs files */
+/* File operations for all UBI debugfs files except
+ * detailed_erase_block_info
+ */
 static const struct file_operations dfs_fops = {
 	.read   = dfs_file_read,
 	.write  = dfs_file_write,
 	.open	= simple_open,
 	.llseek = no_llseek,
 	.owner  = THIS_MODULE,
+};
+
+/* As long as the position is less then that total number of erase blocks,
+ * we still have more to print.
+ */
+static void *eraseblk_count_seq_start(struct seq_file *s, loff_t *pos)
+{
+	struct ubi_device *ubi = s->private;
+
+	if (*pos == 0)
+		return SEQ_START_TOKEN;
+
+	if (*pos < ubi->peb_count)
+		return pos;
+
+	return NULL;
+}
+
+/* Since we are using the position as the iterator, we just need to check if we
+ * are done and increment the position.
+ */
+static void *eraseblk_count_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+	struct ubi_device *ubi = s->private;
+
+	if (v == SEQ_START_TOKEN)
+		return pos;
+	(*pos)++;
+
+	if (*pos < ubi->peb_count)
+		return pos;
+
+	return NULL;
+}
+
+static void eraseblk_count_seq_stop(struct seq_file *s, void *v)
+{
+}
+
+static int eraseblk_count_seq_show(struct seq_file *s, void *iter)
+{
+	struct ubi_device *ubi = s->private;
+	struct ubi_wl_entry *wl;
+	int *block_number = iter;
+	int erase_count = -1;
+	int err;
+
+	/* If this is the start, print a header */
+	if (iter == SEQ_START_TOKEN) {
+		seq_puts(s,
+			 "physical_block_number\terase_count\tblock_status\tread_status\n");
+		return 0;
+	}
+
+	err = ubi_io_is_bad(ubi, *block_number);
+	if (err)
+		return err;
+
+	spin_lock(&ubi->wl_lock);
+
+	wl = ubi->lookuptbl[*block_number];
+	if (wl)
+		erase_count = wl->ec;
+
+	spin_unlock(&ubi->wl_lock);
+
+	if (erase_count < 0)
+		return 0;
+
+	seq_printf(s, "%-22d\t%-11d\n", *block_number, erase_count);
+
+	return 0;
+}
+
+static const struct seq_operations eraseblk_count_seq_ops = {
+	.start = eraseblk_count_seq_start,
+	.next = eraseblk_count_seq_next,
+	.stop = eraseblk_count_seq_stop,
+	.show = eraseblk_count_seq_show
+};
+
+static int eraseblk_count_open(struct inode *inode, struct file *f)
+{
+	struct seq_file *s;
+	int err;
+
+	err = seq_open(f, &eraseblk_count_seq_ops);
+	if (err)
+		return err;
+
+	s = f->private_data;
+	s->private = ubi_get_device((unsigned long)inode->i_private);
+
+	if (!s->private)
+		return -ENODEV;
+	else
+		return 0;
+}
+
+static int eraseblk_count_release(struct inode *inode, struct file *f)
+{
+	struct seq_file *s = f->private_data;
+	struct ubi_device *ubi = s->private;
+
+	ubi_put_device(ubi);
+
+	return seq_release(inode, f);
+}
+
+static const struct file_operations eraseblk_count_fops = {
+	.owner = THIS_MODULE,
+	.open = eraseblk_count_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = eraseblk_count_release,
 };
 
 /**
@@ -484,6 +596,12 @@ int ubi_debugfs_init_dev(struct ubi_device *ubi)
 		goto out_remove;
 	d->dfs_power_cut_max = dent;
 
+	fname = "detailed_erase_block_info";
+	dent = debugfs_create_file(fname, S_IRUSR, d->dfs_dir, (void *)ubi_num,
+				   &eraseblk_count_fops);
+	if (IS_ERR_OR_NULL(dent))
+		goto out_remove;
+
 	return 0;
 
 out_remove:
@@ -537,27 +655,3 @@ int ubi_dbg_power_cut(struct ubi_device *ubi, int caller)
 	ubi_ro_mode(ubi);
 	return 1;
 }
-#else
-int ubi_debugfs_init(void)
-{
-	return 0;
-}
-
-void ubi_debugfs_exit(void)
-{
-}
-
-int ubi_debugfs_init_dev(struct ubi_device *ubi)
-{
-	return 0;
-}
-
-void ubi_debugfs_exit_dev(struct ubi_device *ubi)
-{
-}
-
-int ubi_dbg_power_cut(struct ubi_device *ubi, int caller)
-{
-	return 0;
-}
-#endif

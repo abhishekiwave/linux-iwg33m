@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Copyright 2020 iWave Systems Technologies
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/usb/pd.h>
+#include "imx8mq-iwg33m.dtsi"
+
+&irqsteer {
+	status = "disabled";
+};
+
+&dcss {
+	status = "disabled";
+
+	port@0 {
+		dcss_out: endpoint {
+			  remote-endpoint = <&hdmi_in>;
+		};
+	};
+};
+
+&hdmi {
+	compatible = "cdn,imx8mq-hdmi";
+	lane-mapping = <0xe4>;
+	status = "disabled";
+	port@1 {
+		hdmi_in: endpoint {
+			remote-endpoint = <&dcss_out>;
+		};
+	};
+};
+
+&lcdif {
+	status = "okay";
+	max-memory-bandwidth = <497829888>; /* 1920x1080-32@60.02 */
+
+	assigned-clocks = <&clk IMX8MQ_CLK_LCDIF_PIXEL>,
+			  <&clk IMX8MQ_VIDEO_PLL1_BYPASS>,
+			  <&clk IMX8MQ_VIDEO_PLL1_REF_SEL>,
+			  <&clk IMX8MQ_VIDEO_PLL1>;
+	assigned-clock-parents = <&clk IMX8MQ_VIDEO_PLL1_OUT>,
+				 <&clk IMX8MQ_VIDEO_PLL1>,
+				 <&clk IMX8MQ_CLK_27M>;
+	assigned-clock-rate = <126000000>, <0>, <0>, <1134000000>;
+
+	port@0 {
+		lcdif_mipi_dsi: endpoint {
+			remote-endpoint = <&mipi_dsi_in>;
+		};
+	};
+};
+
+&mipi_dsi {
+	status = "okay";
+	fsl,clock-drop-level = <2>;
+
+	panel@0 {
+		compatible = "raydium,rm67198";
+		reg = <0>;
+		pinctrl-0 = <&pinctrl_mipi_dsi_en>;
+		pinctrl-names = "default";
+		v3p3-supply = <&reg_3p3v>;
+		v1p8-supply = <&reg_1p8v>;
+		reset-gpios = <&gpio1 3 GPIO_ACTIVE_LOW>;
+		dsi-lanes = <4>;
+		video-mode = <2>;
+		width-mm = <68>;
+		height-mm = <121>;
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mipi_dsi_out>;
+			};
+		};
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			mipi_dsi_in: endpoint {
+				remote-endpoint = <&lcdif_mipi_dsi>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			mipi_dsi_out: endpoint {
+				remote-endpoint = <&panel_in>;
+			};
+		};
+	};
+};
+
+&dphy {
+	status = "okay";
+};

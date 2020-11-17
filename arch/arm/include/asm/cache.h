@@ -1,52 +1,29 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * (C) Copyright 2009
- * Marvell Semiconductor <www.marvell.com>
- * Written-by: Prafulla Wadaskar <prafulla@marvell.com>
+ *  arch/arm/include/asm/cache.h
  */
+#ifndef __ASMARM_CACHE_H
+#define __ASMARM_CACHE_H
 
-#ifndef _ASM_CACHE_H
-#define _ASM_CACHE_H
-
-#include <asm/system.h>
-
-#ifndef CONFIG_ARM64
+#define L1_CACHE_SHIFT		CONFIG_ARM_L1_CACHE_SHIFT
+#define L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
 
 /*
- * Invalidate L2 Cache using co-proc instruction
+ * Memory returned by kmalloc() may be used for DMA, so we must make
+ * sure that all such allocations are cache aligned. Otherwise,
+ * unrelated code may cause parts of the buffer to be read into the
+ * cache before the transfer is done, causing old data to be seen by
+ * the CPU.
  */
-#if CONFIG_IS_ENABLED(SYS_THUMB_BUILD)
-void invalidate_l2_cache(void);
-#else
-static inline void invalidate_l2_cache(void)
-{
-	unsigned int val=0;
+#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
 
-	asm volatile("mcr p15, 1, %0, c15, c11, 0 @ invl l2 cache"
-		: : "r" (val) : "cc");
-	isb();
-}
+/*
+ * With EABI on ARMv5 and above we must have 64-bit aligned slab pointers.
+ */
+#if defined(CONFIG_AEABI) && (__LINUX_ARM_ARCH__ >= 5)
+#define ARCH_SLAB_MINALIGN 8
 #endif
 
-int check_cache_range(unsigned long start, unsigned long stop);
-
-void l2_cache_enable(void);
-void l2_cache_disable(void);
-void set_section_dcache(int section, enum dcache_option option);
-
-void arm_init_before_mmu(void);
-void arm_init_domains(void);
-void cpu_cache_initialization(void);
-void dram_bank_mmu_setup(int bank);
+#define __read_mostly __attribute__((__section__(".data..read_mostly")))
 
 #endif
-
-/*
- * The value of the largest data cache relevant to DMA operations shall be set
- * for us in CONFIG_SYS_CACHELINE_SIZE.  In some cases this may be a larger
- * value than found in the L1 cache but this is OK to use in terms of
- * alignment.
- */
-#define ARCH_DMA_MINALIGN	CONFIG_SYS_CACHELINE_SIZE
-
-#endif /* _ASM_CACHE_H */

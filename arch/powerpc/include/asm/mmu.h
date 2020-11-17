@@ -1,588 +1,379 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _ASM_POWERPC_MMU_H_
+#define _ASM_POWERPC_MMU_H_
+#ifdef __KERNEL__
+
+#include <linux/types.h>
+
+#include <asm/asm-const.h>
+
 /*
- * PowerPC memory management structures
+ * MMU features bit definitions
  */
 
-#ifndef _PPC_MMU_H_
-#define _PPC_MMU_H_
+/*
+ * MMU families
+ */
+#define MMU_FTR_HPTE_TABLE		ASM_CONST(0x00000001)
+#define MMU_FTR_TYPE_8xx		ASM_CONST(0x00000002)
+#define MMU_FTR_TYPE_40x		ASM_CONST(0x00000004)
+#define MMU_FTR_TYPE_44x		ASM_CONST(0x00000008)
+#define MMU_FTR_TYPE_FSL_E		ASM_CONST(0x00000010)
+#define MMU_FTR_TYPE_47x		ASM_CONST(0x00000020)
 
+/* Radix page table supported and enabled */
+#define MMU_FTR_TYPE_RADIX		ASM_CONST(0x00000040)
+
+/*
+ * Individual features below.
+ */
+
+/*
+ * Support for 68 bit VA space. We added that from ISA 2.05
+ */
+#define MMU_FTR_68_BIT_VA		ASM_CONST(0x00002000)
+/*
+ * Kernel read only support.
+ * We added the ppp value 0b110 in ISA 2.04.
+ */
+#define MMU_FTR_KERNEL_RO		ASM_CONST(0x00004000)
+
+/*
+ * We need to clear top 16bits of va (from the remaining 64 bits )in
+ * tlbie* instructions
+ */
+#define MMU_FTR_TLBIE_CROP_VA		ASM_CONST(0x00008000)
+
+/* Enable use of high BAT registers */
+#define MMU_FTR_USE_HIGH_BATS		ASM_CONST(0x00010000)
+
+/* Enable >32-bit physical addresses on 32-bit processor, only used
+ * by CONFIG_PPC_BOOK3S_32 currently as BookE supports that from day 1
+ */
+#define MMU_FTR_BIG_PHYS		ASM_CONST(0x00020000)
+
+/* Enable use of broadcast TLB invalidations. We don't always set it
+ * on processors that support it due to other constraints with the
+ * use of such invalidations
+ */
+#define MMU_FTR_USE_TLBIVAX_BCAST	ASM_CONST(0x00040000)
+
+/* Enable use of tlbilx invalidate instructions.
+ */
+#define MMU_FTR_USE_TLBILX		ASM_CONST(0x00080000)
+
+/* This indicates that the processor cannot handle multiple outstanding
+ * broadcast tlbivax or tlbsync. This makes the code use a spinlock
+ * around such invalidate forms.
+ */
+#define MMU_FTR_LOCK_BCAST_INVAL	ASM_CONST(0x00100000)
+
+/* This indicates that the processor doesn't handle way selection
+ * properly and needs SW to track and update the LRU state.  This
+ * is specific to an errata on e300c2/c3/c4 class parts
+ */
+#define MMU_FTR_NEED_DTLB_SW_LRU	ASM_CONST(0x00200000)
+
+/* Enable use of TLB reservation.  Processor should support tlbsrx.
+ * instruction and MAS0[WQ].
+ */
+#define MMU_FTR_USE_TLBRSRV		ASM_CONST(0x00800000)
+
+/* Use paired MAS registers (MAS7||MAS3, etc.)
+ */
+#define MMU_FTR_USE_PAIRED_MAS		ASM_CONST(0x01000000)
+
+/* Doesn't support the B bit (1T segment) in SLBIE
+ */
+#define MMU_FTR_NO_SLBIE_B		ASM_CONST(0x02000000)
+
+/* Support 16M large pages
+ */
+#define MMU_FTR_16M_PAGE		ASM_CONST(0x04000000)
+
+/* Supports TLBIEL variant
+ */
+#define MMU_FTR_TLBIEL			ASM_CONST(0x08000000)
+
+/* Supports tlbies w/o locking
+ */
+#define MMU_FTR_LOCKLESS_TLBIE		ASM_CONST(0x10000000)
+
+/* Large pages can be marked CI
+ */
+#define MMU_FTR_CI_LARGE_PAGE		ASM_CONST(0x20000000)
+
+/* 1T segments available
+ */
+#define MMU_FTR_1T_SEGMENT		ASM_CONST(0x40000000)
+
+/*
+ * Supports KUAP (key 0 controlling userspace addresses) on radix
+ */
+#define MMU_FTR_RADIX_KUAP		ASM_CONST(0x80000000)
+
+/* MMU feature bit sets for various CPUs */
+#define MMU_FTRS_DEFAULT_HPTE_ARCH_V2	\
+	MMU_FTR_HPTE_TABLE | MMU_FTR_PPCAS_ARCH_V2
+#define MMU_FTRS_POWER		MMU_FTRS_DEFAULT_HPTE_ARCH_V2
+#define MMU_FTRS_PPC970		MMU_FTRS_POWER | MMU_FTR_TLBIE_CROP_VA
+#define MMU_FTRS_POWER5		MMU_FTRS_POWER | MMU_FTR_LOCKLESS_TLBIE
+#define MMU_FTRS_POWER6		MMU_FTRS_POWER5 | MMU_FTR_KERNEL_RO | MMU_FTR_68_BIT_VA
+#define MMU_FTRS_POWER7		MMU_FTRS_POWER6
+#define MMU_FTRS_POWER8		MMU_FTRS_POWER6
+#define MMU_FTRS_POWER9		MMU_FTRS_POWER6
+#define MMU_FTRS_CELL		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
+				MMU_FTR_CI_LARGE_PAGE
+#define MMU_FTRS_PA6T		MMU_FTRS_DEFAULT_HPTE_ARCH_V2 | \
+				MMU_FTR_CI_LARGE_PAGE | MMU_FTR_NO_SLBIE_B
 #ifndef __ASSEMBLY__
-/* Hardware Page Table Entry */
-typedef struct _PTE {
-#ifdef CONFIG_PPC64BRIDGE
-	unsigned long long vsid:52;
-	unsigned long api:5;
-	unsigned long :5;
-	unsigned long h:1;
-	unsigned long v:1;
-	unsigned long long rpn:52;
-#else /* CONFIG_PPC64BRIDGE */
-	unsigned long v:1;	/* Entry is valid */
-	unsigned long vsid:24;	/* Virtual segment identifier */
-	unsigned long h:1;	/* Hash algorithm indicator */
-	unsigned long api:6;	/* Abbreviated page index */
-	unsigned long rpn:20;	/* Real (physical) page number */
-#endif /* CONFIG_PPC64BRIDGE */
-	unsigned long    :3;	/* Unused */
-	unsigned long r:1;	/* Referenced */
-	unsigned long c:1;	/* Changed */
-	unsigned long w:1;	/* Write-thru cache mode */
-	unsigned long i:1;	/* Cache inhibited */
-	unsigned long m:1;	/* Memory coherence */
-	unsigned long g:1;	/* Guarded */
-	unsigned long  :1;	/* Unused */
-	unsigned long pp:2;	/* Page protection */
-} PTE;
+#include <linux/bug.h>
+#include <asm/cputable.h>
+#include <asm/page.h>
 
-/* Values for PP (assumes Ks=0, Kp=1) */
-#define PP_RWXX	0	/* Supervisor read/write, User none */
-#define PP_RWRX 1	/* Supervisor read/write, User read */
-#define PP_RWRW 2	/* Supervisor read/write, User read/write */
-#define PP_RXRX 3	/* Supervisor read,       User read */
+typedef pte_t *pgtable_t;
 
-/* Segment Register */
-typedef struct _SEGREG {
-	unsigned long t:1;	/* Normal or I/O  type */
-	unsigned long ks:1;	/* Supervisor 'key' (normally 0) */
-	unsigned long kp:1;	/* User 'key' (normally 1) */
-	unsigned long n:1;	/* No-execute */
-	unsigned long :4;	/* Unused */
-	unsigned long vsid:24;	/* Virtual Segment Identifier */
-} SEGREG;
-
-/* Block Address Translation (BAT) Registers */
-typedef struct _P601_BATU {	/* Upper part of BAT for 601 processor */
-	unsigned long bepi:15;	/* Effective page index (virtual address) */
-	unsigned long :8;	/* unused */
-	unsigned long w:1;
-	unsigned long i:1;	/* Cache inhibit */
-	unsigned long m:1;	/* Memory coherence */
-	unsigned long ks:1;	/* Supervisor key (normally 0) */
-	unsigned long kp:1;	/* User key (normally 1) */
-	unsigned long pp:2;	/* Page access protections */
-} P601_BATU;
-
-typedef struct _BATU {		/* Upper part of BAT (all except 601) */
-#ifdef CONFIG_PPC64BRIDGE
-	unsigned long long bepi:47;
-#else /* CONFIG_PPC64BRIDGE */
-	unsigned long bepi:15;	/* Effective page index (virtual address) */
-#endif /* CONFIG_PPC64BRIDGE */
-	unsigned long :4;	/* Unused */
-	unsigned long bl:11;	/* Block size mask */
-	unsigned long vs:1;	/* Supervisor valid */
-	unsigned long vp:1;	/* User valid */
-} BATU;
-
-typedef struct _P601_BATL {	/* Lower part of BAT for 601 processor */
-	unsigned long brpn:15;	/* Real page index (physical address) */
-	unsigned long :10;	/* Unused */
-	unsigned long v:1;	/* Valid bit */
-	unsigned long bl:6;	/* Block size mask */
-} P601_BATL;
-
-typedef struct _BATL {		/* Lower part of BAT (all except 601) */
-#ifdef CONFIG_PPC64BRIDGE
-	unsigned long long brpn:47;
-#else /* CONFIG_PPC64BRIDGE */
-	unsigned long brpn:15;	/* Real page index (physical address) */
-#endif /* CONFIG_PPC64BRIDGE */
-	unsigned long :10;	/* Unused */
-	unsigned long w:1;	/* Write-thru cache */
-	unsigned long i:1;	/* Cache inhibit */
-	unsigned long m:1;	/* Memory coherence */
-	unsigned long g:1;	/* Guarded (MBZ in IBAT) */
-	unsigned long :1;	/* Unused */
-	unsigned long pp:2;	/* Page access protections */
-} BATL;
-
-typedef struct _BAT {
-	BATU batu;		/* Upper register */
-	BATL batl;		/* Lower register */
-} BAT;
-
-typedef struct _P601_BAT {
-	P601_BATU batu;		/* Upper register */
-	P601_BATL batl;		/* Lower register */
-} P601_BAT;
-
-/*
- * Simulated two-level MMU.  This structure is used by the kernel
- * to keep track of MMU mappings and is used to update/maintain
- * the hardware HASH table which is really a cache of mappings.
- *
- * The simulated structures mimic the hardware available on other
- * platforms, notably the 80x86 and 680x0.
- */
-
-typedef struct _pte {
-	unsigned long page_num:20;
-	unsigned long flags:12;		/* Page flags (some unused bits) */
-} pte;
-
-#define PD_SHIFT (10+12)		/* Page directory */
-#define PD_MASK  0x02FF
-#define PT_SHIFT (12)			/* Page Table */
-#define PT_MASK  0x02FF
-#define PG_SHIFT (12)			/* Page Entry */
-
-
-/* MMU context */
-
-typedef struct _MMU_context {
-	SEGREG	segs[16];	/* Segment registers */
-	pte	**pmap;		/* Two-level page-map structure */
-} MMU_context;
-
-extern void _tlbie(unsigned long va);	/* invalidate a TLB entry */
-extern void _tlbia(void);		/* invalidate all TLB entries */
-
-#ifdef CONFIG_ADDR_MAP
-extern void init_addr_map(void);
+#ifdef CONFIG_PPC_FSL_BOOK3E
+#include <asm/percpu.h>
+DECLARE_PER_CPU(int, next_tlbcam_idx);
 #endif
 
-typedef enum {
-	IBAT0 = 0, IBAT1, IBAT2, IBAT3,
-	DBAT0, DBAT1, DBAT2, DBAT3,
-#ifdef CONFIG_HIGH_BATS
-	IBAT4, IBAT5, IBAT6, IBAT7,
-	DBAT4, DBAT5, DBAT6, DBAT7
+enum {
+	MMU_FTRS_POSSIBLE =
+#ifdef CONFIG_PPC_BOOK3S
+		MMU_FTR_HPTE_TABLE |
 #endif
-} ppc_bat_t;
+#ifdef CONFIG_PPC_8xx
+		MMU_FTR_TYPE_8xx |
+#endif
+#ifdef CONFIG_40x
+		MMU_FTR_TYPE_40x |
+#endif
+#ifdef CONFIG_44x
+		MMU_FTR_TYPE_44x |
+#endif
+#if defined(CONFIG_E200) || defined(CONFIG_E500)
+		MMU_FTR_TYPE_FSL_E | MMU_FTR_BIG_PHYS | MMU_FTR_USE_TLBILX |
+#endif
+#ifdef CONFIG_PPC_47x
+		MMU_FTR_TYPE_47x | MMU_FTR_USE_TLBIVAX_BCAST | MMU_FTR_LOCK_BCAST_INVAL |
+#endif
+#ifdef CONFIG_PPC_BOOK3S_32
+		MMU_FTR_USE_HIGH_BATS | MMU_FTR_NEED_DTLB_SW_LRU |
+#endif
+#ifdef CONFIG_PPC_BOOK3E_64
+		MMU_FTR_USE_TLBRSRV | MMU_FTR_USE_PAIRED_MAS |
+#endif
+#ifdef CONFIG_PPC_BOOK3S_64
+		MMU_FTR_NO_SLBIE_B | MMU_FTR_16M_PAGE | MMU_FTR_TLBIEL |
+		MMU_FTR_LOCKLESS_TLBIE | MMU_FTR_CI_LARGE_PAGE |
+		MMU_FTR_1T_SEGMENT | MMU_FTR_TLBIE_CROP_VA |
+		MMU_FTR_KERNEL_RO | MMU_FTR_68_BIT_VA |
+#endif
+#ifdef CONFIG_PPC_RADIX_MMU
+		MMU_FTR_TYPE_RADIX |
+#ifdef CONFIG_PPC_KUAP
+		MMU_FTR_RADIX_KUAP |
+#endif /* CONFIG_PPC_KUAP */
+#endif /* CONFIG_PPC_RADIX_MMU */
+		0,
+};
 
-extern int read_bat(ppc_bat_t bat, unsigned long *upper, unsigned long *lower);
-extern int write_bat(ppc_bat_t bat, unsigned long upper, unsigned long lower);
-extern void print_bats(void);
+static inline bool early_mmu_has_feature(unsigned long feature)
+{
+	return !!(MMU_FTRS_POSSIBLE & cur_cpu_spec->mmu_features & feature);
+}
 
-#endif /* __ASSEMBLY__ */
+#ifdef CONFIG_JUMP_LABEL_FEATURE_CHECKS
+#include <linux/jump_label.h>
 
-#define BATU_VS                 0x00000002
-#define BATU_VP                 0x00000001
-#define BATU_INVALID            0x00000000
+#define NUM_MMU_FTR_KEYS	32
 
-#define BATL_WRITETHROUGH       0x00000040
-#define BATL_CACHEINHIBIT       0x00000020
-#define BATL_MEMCOHERENCE	0x00000010
-#define BATL_GUARDEDSTORAGE     0x00000008
-#define BATL_NO_ACCESS		0x00000000
+extern struct static_key_true mmu_feature_keys[NUM_MMU_FTR_KEYS];
 
-#define BATL_PP_MSK		0x00000003
-#define BATL_PP_00		0x00000000 /* No access */
-#define BATL_PP_01		0x00000001 /* Read-only */
-#define BATL_PP_10		0x00000002 /* Read-write */
-#define BATL_PP_11		0x00000003
+extern void mmu_feature_keys_init(void);
 
-#define BATL_PP_NO_ACCESS	BATL_PP_00
-#define BATL_PP_RO		BATL_PP_01
-#define BATL_PP_RW		BATL_PP_10
+static __always_inline bool mmu_has_feature(unsigned long feature)
+{
+	int i;
 
-/* BAT Block size values */
-#define BATU_BL_128K            0x00000000
-#define BATU_BL_256K            0x00000004
-#define BATU_BL_512K            0x0000000c
-#define BATU_BL_1M              0x0000001c
-#define BATU_BL_2M              0x0000003c
-#define BATU_BL_4M              0x0000007c
-#define BATU_BL_8M              0x000000fc
-#define BATU_BL_16M             0x000001fc
-#define BATU_BL_32M             0x000003fc
-#define BATU_BL_64M             0x000007fc
-#define BATU_BL_128M            0x00000ffc
-#define BATU_BL_256M            0x00001ffc
+#ifndef __clang__ /* clang can't cope with this */
+	BUILD_BUG_ON(!__builtin_constant_p(feature));
+#endif
 
-/* Block lengths for processors that support extended block length */
-#ifdef HID0_XBSEN
-#define BATU_BL_512M            0x00003ffc
-#define BATU_BL_1G              0x00007ffc
-#define BATU_BL_2G              0x0000fffc
-#define BATU_BL_4G              0x0001fffc
-#define BATU_BL_MAX		BATU_BL_4G
+#ifdef CONFIG_JUMP_LABEL_FEATURE_CHECK_DEBUG
+	if (!static_key_initialized) {
+		printk("Warning! mmu_has_feature() used prior to jump label init!\n");
+		dump_stack();
+		return early_mmu_has_feature(feature);
+	}
+#endif
+
+	if (!(MMU_FTRS_POSSIBLE & feature))
+		return false;
+
+	i = __builtin_ctzl(feature);
+	return static_branch_likely(&mmu_feature_keys[i]);
+}
+
+static inline void mmu_clear_feature(unsigned long feature)
+{
+	int i;
+
+	i = __builtin_ctzl(feature);
+	cur_cpu_spec->mmu_features &= ~feature;
+	static_branch_disable(&mmu_feature_keys[i]);
+}
 #else
-#define BATU_BL_MAX		BATU_BL_256M
+
+static inline void mmu_feature_keys_init(void)
+{
+
+}
+
+static inline bool mmu_has_feature(unsigned long feature)
+{
+	return early_mmu_has_feature(feature);
+}
+
+static inline void mmu_clear_feature(unsigned long feature)
+{
+	cur_cpu_spec->mmu_features &= ~feature;
+}
+#endif /* CONFIG_JUMP_LABEL */
+
+extern unsigned int __start___mmu_ftr_fixup, __stop___mmu_ftr_fixup;
+
+#ifdef CONFIG_PPC64
+/* This is our real memory area size on ppc64 server, on embedded, we
+ * make it match the size our of bolted TLB area
+ */
+extern u64 ppc64_rma_size;
+
+/* Cleanup function used by kexec */
+extern void mmu_cleanup_all(void);
+extern void radix__mmu_cleanup_all(void);
+
+/* Functions for creating and updating partition table on POWER9 */
+extern void mmu_partition_table_init(void);
+extern void mmu_partition_table_set_entry(unsigned int lpid, unsigned long dw0,
+					  unsigned long dw1, bool flush);
+#endif /* CONFIG_PPC64 */
+
+struct mm_struct;
+#ifdef CONFIG_DEBUG_VM
+extern void assert_pte_locked(struct mm_struct *mm, unsigned long addr);
+#else /* CONFIG_DEBUG_VM */
+static inline void assert_pte_locked(struct mm_struct *mm, unsigned long addr)
+{
+}
+#endif /* !CONFIG_DEBUG_VM */
+
+#ifdef CONFIG_PPC_RADIX_MMU
+static inline bool radix_enabled(void)
+{
+	return mmu_has_feature(MMU_FTR_TYPE_RADIX);
+}
+
+static inline bool early_radix_enabled(void)
+{
+	return early_mmu_has_feature(MMU_FTR_TYPE_RADIX);
+}
+#else
+static inline bool radix_enabled(void)
+{
+	return false;
+}
+
+static inline bool early_radix_enabled(void)
+{
+	return false;
+}
 #endif
 
-/* BAT Access Protection */
-#define BPP_XX	0x00		/* No access */
-#define BPP_RX	0x01		/* Read only */
-#define BPP_RW	0x02		/* Read/write */
+#ifdef CONFIG_PPC_MEM_KEYS
+extern u16 get_mm_addr_key(struct mm_struct *mm, unsigned long address);
+#else
+static inline u16 get_mm_addr_key(struct mm_struct *mm, unsigned long address)
+{
+	return 0;
+}
+#endif /* CONFIG_PPC_MEM_KEYS */
 
-/* Macros to get values from BATs, once data is in the BAT register format */
-#define BATU_VALID(x) (x & 0x3)
-#define BATU_VADDR(x) (x & 0xfffe0000)
-#define BATL_PADDR(x) ((phys_addr_t)((x & 0xfffe0000)		\
-				     | ((x & 0x0e00ULL) << 24)	\
-				     | ((x & 0x04ULL) << 30)))
-#define BATU_SIZE(x) (1ULL << (fls((x & BATU_BL_MAX) >> 2) + 17))
+#ifdef CONFIG_STRICT_KERNEL_RWX
+static inline bool strict_kernel_rwx_enabled(void)
+{
+	return rodata_enabled;
+}
+#else
+static inline bool strict_kernel_rwx_enabled(void)
+{
+	return false;
+}
+#endif
+#endif /* !__ASSEMBLY__ */
 
-/* bytes into BATU_BL */
-#define TO_BATU_BL(x) \
-	(u32)((((1ull << __ilog2_u64((u64)x)) / (128 * 1024)) - 1) * 4)
-
-/* Used to set up SDR1 register */
-#define HASH_TABLE_SIZE_64K	0x00010000
-#define HASH_TABLE_SIZE_128K	0x00020000
-#define HASH_TABLE_SIZE_256K	0x00040000
-#define HASH_TABLE_SIZE_512K	0x00080000
-#define HASH_TABLE_SIZE_1M	0x00100000
-#define HASH_TABLE_SIZE_2M	0x00200000
-#define HASH_TABLE_SIZE_4M	0x00400000
-#define HASH_TABLE_MASK_64K	0x000
-#define HASH_TABLE_MASK_128K	0x001
-#define HASH_TABLE_MASK_256K	0x003
-#define HASH_TABLE_MASK_512K	0x007
-#define HASH_TABLE_MASK_1M	0x00F
-#define HASH_TABLE_MASK_2M	0x01F
-#define HASH_TABLE_MASK_4M	0x03F
-
-/* Control/status registers for the MPC8xx.
- * A write operation to these registers causes serialized access.
- * During software tablewalk, the registers used perform mask/shift-add
- * operations when written/read.  A TLB entry is created when the Mx_RPN
- * is written, and the contents of several registers are used to
- * create the entry.
- */
-#define MI_CTR		784	/* Instruction TLB control register */
-#define MI_GPM		0x80000000	/* Set domain manager mode */
-#define MI_PPM		0x40000000	/* Set subpage protection */
-#define MI_CIDEF	0x20000000	/* Set cache inhibit when MMU dis */
-#define MI_RSV4I	0x08000000	/* Reserve 4 TLB entries */
-#define MI_PPCS		0x02000000	/* Use MI_RPN prob/priv state */
-#define MI_IDXMASK	0x00001f00	/* TLB index to be loaded */
-#define MI_RESETVAL	0x00000000	/* Value of register at reset */
-
-/* These are the Ks and Kp from the PowerPC books.  For proper operation,
- * Ks = 0, Kp = 1.
- */
-#define MI_AP		786
-#define MI_Ks		0x80000000	/* Should not be set */
-#define MI_Kp		0x40000000	/* Should always be set */
-
-/* The effective page number register.  When read, contains the information
- * about the last instruction TLB miss.  When MI_RPN is written, bits in
- * this register are used to create the TLB entry.
- */
-#define MI_EPN		787
-#define MI_EPNMASK	0xfffff000	/* Effective page number for entry */
-#define MI_EVALID	0x00000200	/* Entry is valid */
-#define MI_ASIDMASK	0x0000000f	/* ASID match value */
-					/* Reset value is undefined */
-
-/* A "level 1" or "segment" or whatever you want to call it register.
- * For the instruction TLB, it contains bits that get loaded into the
- * TLB entry when the MI_RPN is written.
- */
-#define MI_TWC		789
-#define MI_APG		0x000001e0	/* Access protection group (0) */
-#define MI_GUARDED	0x00000010	/* Guarded storage */
-#define MI_PSMASK	0x0000000c	/* Mask of page size bits */
-#define MI_PS8MEG	0x0000000c	/* 8M page size */
-#define MI_PS512K	0x00000004	/* 512K page size */
-#define MI_PS4K_16K	0x00000000	/* 4K or 16K page size */
-#define MI_SVALID	0x00000001	/* Segment entry is valid */
-					/* Reset value is undefined */
-
-/* Real page number.  Defined by the pte.  Writing this register
- * causes a TLB entry to be created for the instruction TLB, using
- * additional information from the MI_EPN, and MI_TWC registers.
- */
-#define MI_RPN		790
-
-/* Define an RPN value for mapping kernel memory to large virtual
- * pages for boot initialization.  This has real page number of 0,
- * large page size, shared page, cache enabled, and valid.
- * Also mark all subpages valid and write access.
- */
-#define MI_BOOTINIT	0x000001fd
-
-#define MD_CTR		792	/* Data TLB control register */
-#define MD_GPM		0x80000000	/* Set domain manager mode */
-#define MD_PPM		0x40000000	/* Set subpage protection */
-#define MD_CIDEF	0x20000000	/* Set cache inhibit when MMU dis */
-#define MD_WTDEF	0x10000000	/* Set writethrough when MMU dis */
-#define MD_RSV4I	0x08000000	/* Reserve 4 TLB entries */
-#define MD_TWAM		0x04000000	/* Use 4K page hardware assist */
-#define MD_PPCS		0x02000000	/* Use MI_RPN prob/priv state */
-#define MD_IDXMASK	0x00001f00	/* TLB index to be loaded */
-#define MD_RESETVAL	0x04000000	/* Value of register at reset */
-
-#define M_CASID		793	/* Address space ID (context) to match */
-#define MC_ASIDMASK	0x0000000f	/* Bits used for ASID value */
-
-
-/* These are the Ks and Kp from the PowerPC books.  For proper operation,
- * Ks = 0, Kp = 1.
- */
-#define MD_AP		794
-#define MD_Ks		0x80000000	/* Should not be set */
-#define MD_Kp		0x40000000	/* Should always be set */
-
-/* The effective page number register.  When read, contains the information
- * about the last instruction TLB miss.  When MD_RPN is written, bits in
- * this register are used to create the TLB entry.
- */
-#define MD_EPN		795
-#define MD_EPNMASK	0xfffff000	/* Effective page number for entry */
-#define MD_EVALID	0x00000200	/* Entry is valid */
-#define MD_ASIDMASK	0x0000000f	/* ASID match value */
-					/* Reset value is undefined */
-
-/* The pointer to the base address of the first level page table.
- * During a software tablewalk, reading this register provides the address
- * of the entry associated with MD_EPN.
- */
-#define M_TWB		796
-#define	M_L1TB		0xfffff000	/* Level 1 table base address */
-#define M_L1INDX	0x00000ffc	/* Level 1 index, when read */
-					/* Reset value is undefined */
-
-/* A "level 1" or "segment" or whatever you want to call it register.
- * For the data TLB, it contains bits that get loaded into the TLB entry
- * when the MD_RPN is written.  It is also provides the hardware assist
- * for finding the PTE address during software tablewalk.
- */
-#define MD_TWC		797
-#define MD_L2TB		0xfffff000	/* Level 2 table base address */
-#define MD_L2INDX	0xfffffe00	/* Level 2 index (*pte), when read */
-#define MD_APG		0x000001e0	/* Access protection group (0) */
-#define MD_GUARDED	0x00000010	/* Guarded storage */
-#define MD_PSMASK	0x0000000c	/* Mask of page size bits */
-#define MD_PS8MEG	0x0000000c	/* 8M page size */
-#define MD_PS512K	0x00000004	/* 512K page size */
-#define MD_PS4K_16K	0x00000000	/* 4K or 16K page size */
-#define MD_WT		0x00000002	/* Use writethrough page attribute */
-#define MD_SVALID	0x00000001	/* Segment entry is valid */
-					/* Reset value is undefined */
-
-
-/* Real page number.  Defined by the pte.  Writing this register
- * causes a TLB entry to be created for the data TLB, using
- * additional information from the MD_EPN, and MD_TWC registers.
- */
-#define MD_RPN		798
-
-/* This is a temporary storage register that could be used to save
- * a processor working register during a tablewalk.
- */
-#define M_TW		799
-
-/*
- * At present, all PowerPC 400-class processors share a similar TLB
- * architecture. The instruction and data sides share a unified,
- * 64-entry, fully-associative TLB which is maintained totally under
- * software control. In addition, the instruction side has a
- * hardware-managed, 4-entry, fully- associative TLB which serves as a
- * first level to the shared TLB. These two TLBs are known as the UTLB
- * and ITLB, respectively.
- */
-
-#define        PPC4XX_TLB_SIZE 64
-
-/*
- * TLB entries are defined by a "high" tag portion and a "low" data
- * portion.  On all architectures, the data portion is 32-bits.
+/* The kernel use the constants below to index in the page sizes array.
+ * The use of fixed constants for this purpose is better for performances
+ * of the low level hash refill handlers.
  *
- * TLB entries are managed entirely under software control by reading,
- * writing, and searchoing using the 4xx-specific tlbre, tlbwr, and tlbsx
- * instructions.
+ * A non supported page size has a "shift" field set to 0
+ *
+ * Any new page size being implemented can get a new entry in here. Whether
+ * the kernel will use it or not is a different matter though. The actual page
+ * size used by hugetlbfs is not defined here and may be made variable
+ *
+ * Note: This array ended up being a false good idea as it's growing to the
+ * point where I wonder if we should replace it with something different,
+ * to think about, feedback welcome. --BenH.
  */
+
+/* These are #defines as they have to be used in assembly */
+#define MMU_PAGE_4K	0
+#define MMU_PAGE_16K	1
+#define MMU_PAGE_64K	2
+#define MMU_PAGE_64K_AP	3	/* "Admixed pages" (hash64 only) */
+#define MMU_PAGE_256K	4
+#define MMU_PAGE_512K	5
+#define MMU_PAGE_1M	6
+#define MMU_PAGE_2M	7
+#define MMU_PAGE_4M	8
+#define MMU_PAGE_8M	9
+#define MMU_PAGE_16M	10
+#define MMU_PAGE_64M	11
+#define MMU_PAGE_256M	12
+#define MMU_PAGE_1G	13
+#define MMU_PAGE_16G	14
+#define MMU_PAGE_64G	15
 
 /*
- * FSL Book-E support
+ * N.B. we need to change the type of hpte_page_sizes if this gets to be > 16
+ * Also we need to change he type of mm_context.low/high_slices_psize.
  */
+#define MMU_PAGE_COUNT	16
 
-#define MAS0_TLBSEL_MSK	0x30000000
-#define MAS0_TLBSEL(x)	(((x) << 28) & MAS0_TLBSEL_MSK)
-#define MAS0_ESEL_MSK	0x0FFF0000
-#define MAS0_ESEL(x)	(((x) << 16) & MAS0_ESEL_MSK)
-#define MAS0_NV(x)	((x) & 0x00000FFF)
+#ifdef CONFIG_PPC_BOOK3S_64
+#include <asm/book3s/64/mmu.h>
+#else /* CONFIG_PPC_BOOK3S_64 */
 
-#define MAS1_VALID	0x80000000
-#define MAS1_IPROT	0x40000000
-#define MAS1_TID(x)	(((x) << 16) & 0x3FFF0000)
-#define MAS1_TS		0x00001000
-#define MAS1_TSIZE(x)	(((x) << 7) & 0x00000F80)
-#define TSIZE_TO_BYTES(x) (1ULL << ((x) + 10))
-
-#define MAS2_EPN	0xFFFFF000
-#define MAS2_X0		0x00000040
-#define MAS2_X1		0x00000020
-#define MAS2_W		0x00000010
-#define MAS2_I		0x00000008
-#define MAS2_M		0x00000004
-#define MAS2_G		0x00000002
-#define MAS2_E		0x00000001
-
-#define MAS3_RPN	0xFFFFF000
-#define MAS3_U0		0x00000200
-#define MAS3_U1		0x00000100
-#define MAS3_U2		0x00000080
-#define MAS3_U3		0x00000040
-#define MAS3_UX		0x00000020
-#define MAS3_SX		0x00000010
-#define MAS3_UW		0x00000008
-#define MAS3_SW		0x00000004
-#define MAS3_UR		0x00000002
-#define MAS3_SR		0x00000001
-
-#define MAS4_TLBSELD(x) MAS0_TLBSEL(x)
-#define MAS4_TIDDSEL	0x000F0000
-#define MAS4_TSIZED(x)	MAS1_TSIZE(x)
-#define MAS4_X0D	0x00000040
-#define MAS4_X1D	0x00000020
-#define MAS4_WD		0x00000010
-#define MAS4_ID		0x00000008
-#define MAS4_MD		0x00000004
-#define MAS4_GD		0x00000002
-#define MAS4_ED		0x00000001
-
-#define MAS6_SPID0	0x3FFF0000
-#define MAS6_SPID1	0x00007FFE
-#define MAS6_SAS	0x00000001
-#define MAS6_SPID	MAS6_SPID0
-
-#define MAS7_RPN	0xFFFFFFFF
-
-#define FSL_BOOKE_MAS0(tlbsel,esel,nv) \
-		(MAS0_TLBSEL(tlbsel) | MAS0_ESEL(esel) | MAS0_NV(nv))
-#define FSL_BOOKE_MAS1(v,iprot,tid,ts,tsize) \
-		((((v) << 31) & MAS1_VALID)             |\
-		(((iprot) << 30) & MAS1_IPROT)          |\
-		(MAS1_TID(tid))				|\
-		(((ts) << 12) & MAS1_TS)                |\
-		(MAS1_TSIZE(tsize)))
-#define FSL_BOOKE_MAS2(epn, wimge) \
-		(((epn) & MAS3_RPN) | (wimge))
-#define FSL_BOOKE_MAS3(rpn, user, perms) \
-		(((rpn) & MAS3_RPN) | (user) | (perms))
-#define FSL_BOOKE_MAS7(rpn) \
-		(((u64)(rpn)) >> 32)
-
-#define BOOKE_PAGESZ_1K		0
-#define BOOKE_PAGESZ_2K		1
-#define BOOKE_PAGESZ_4K		2
-#define BOOKE_PAGESZ_8K		3
-#define BOOKE_PAGESZ_16K	4
-#define BOOKE_PAGESZ_32K	5
-#define BOOKE_PAGESZ_64K	6
-#define BOOKE_PAGESZ_128K	7
-#define BOOKE_PAGESZ_256K	8
-#define BOOKE_PAGESZ_512K	9
-#define BOOKE_PAGESZ_1M		10
-#define BOOKE_PAGESZ_2M		11
-#define BOOKE_PAGESZ_4M		12
-#define BOOKE_PAGESZ_8M		13
-#define BOOKE_PAGESZ_16M	14
-#define BOOKE_PAGESZ_32M	15
-#define BOOKE_PAGESZ_64M	16
-#define BOOKE_PAGESZ_128M	17
-#define BOOKE_PAGESZ_256M	18
-#define BOOKE_PAGESZ_512M	19
-#define BOOKE_PAGESZ_1G		20
-#define BOOKE_PAGESZ_2G		21
-#define BOOKE_PAGESZ_4G		22
-#define BOOKE_PAGESZ_8G		23
-#define BOOKE_PAGESZ_16GB	24
-#define BOOKE_PAGESZ_32GB	25
-#define BOOKE_PAGESZ_64GB	26
-#define BOOKE_PAGESZ_128GB	27
-#define BOOKE_PAGESZ_256GB	28
-#define BOOKE_PAGESZ_512GB	29
-#define BOOKE_PAGESZ_1TB	30
-#define BOOKE_PAGESZ_2TB	31
-
-#define TLBIVAX_ALL		4
-#define TLBIVAX_TLB0		0
-#define TLBIVAX_TLB1		8
-
-#ifdef CONFIG_E500
 #ifndef __ASSEMBLY__
-extern void set_tlb(u8 tlb, u32 epn, u64 rpn,
-		    u8 perms, u8 wimge,
-		    u8 ts, u8 esel, u8 tsize, u8 iprot);
-extern void disable_tlb(u8 esel);
-extern void invalidate_tlb(u8 tlb);
-extern void init_tlbs(void);
-extern int find_tlb_idx(void *addr, u8 tlbsel);
-extern void init_used_tlb_cams(void);
-extern int find_free_tlbcam(void);
-extern void print_tlbcam(void);
+/* MMU initialization */
+extern void early_init_mmu(void);
+extern void early_init_mmu_secondary(void);
+extern void setup_initial_memory_limit(phys_addr_t first_memblock_base,
+				       phys_addr_t first_memblock_size);
+static inline void mmu_early_init_devtree(void) { }
 
-extern unsigned int setup_ddr_tlbs(unsigned int memsize_in_meg);
-extern void clear_ddr_tlbs(unsigned int memsize_in_meg);
-
-enum tlb_map_type {
-	TLB_MAP_RAM,
-	TLB_MAP_IO,
-};
-
-extern uint64_t tlb_map_range(ulong v_addr, phys_addr_t p_addr, uint64_t size,
-			      enum tlb_map_type map_type);
-
-extern void write_tlb(u32 _mas0, u32 _mas1, u32 _mas2, u32 _mas3, u32 _mas7);
-
-#define SET_TLB_ENTRY(_tlb, _epn, _rpn, _perms, _wimge, _ts, _esel, _sz, _iprot) \
-	{ .mas0 = FSL_BOOKE_MAS0(_tlb, _esel, 0), \
-	  .mas1 = FSL_BOOKE_MAS1(1, _iprot, 0, _ts, _sz), \
-	  .mas2 = FSL_BOOKE_MAS2(_epn, _wimge), \
-	  .mas3 = FSL_BOOKE_MAS3(_rpn, 0, _perms), \
-	  .mas7 = FSL_BOOKE_MAS7(_rpn), }
-
-struct fsl_e_tlb_entry {
-	u32	mas0;
-	u32	mas1;
-	u32	mas2;
-	u32	mas3;
-	u32	mas7;
-};
-
-extern struct fsl_e_tlb_entry tlb_table[];
-extern int num_tlb_entries;
-#endif
+extern void *abatron_pteptrs[2];
+#endif /* __ASSEMBLY__ */
 #endif
 
-#ifdef CONFIG_E300
-#define LAWAR_EN		0x80000000
-#define LAWAR_SIZE		0x0000003F
-
-#define LAWAR_TRGT_IF_PCI	0x00000000
-#define LAWAR_TRGT_IF_PCI1	0x00000000
-#define LAWAR_TRGT_IF_PCIX	0x00000000
-#define LAWAR_TRGT_IF_PCI2	0x00100000
-#define LAWAR_TRGT_IF_PCIE1	0x00200000
-#define LAWAR_TRGT_IF_PCIE2	0x00100000
-#define LAWAR_TRGT_IF_PCIE3	0x00300000
-#define LAWAR_TRGT_IF_LBC	0x00400000
-#define LAWAR_TRGT_IF_CCSR	0x00800000
-#define LAWAR_TRGT_IF_DDR_INTERLEAVED 0x00B00000
-#define LAWAR_TRGT_IF_RIO	0x00c00000
-#define LAWAR_TRGT_IF_DDR	0x00f00000
-#define LAWAR_TRGT_IF_DDR1	0x00f00000
-#define LAWAR_TRGT_IF_DDR2	0x01600000
-
-#define LAWAR_SIZE_BASE		0xa
-#define LAWAR_SIZE_4K		(LAWAR_SIZE_BASE+1)
-#define LAWAR_SIZE_8K		(LAWAR_SIZE_BASE+2)
-#define LAWAR_SIZE_16K		(LAWAR_SIZE_BASE+3)
-#define LAWAR_SIZE_32K		(LAWAR_SIZE_BASE+4)
-#define LAWAR_SIZE_64K		(LAWAR_SIZE_BASE+5)
-#define LAWAR_SIZE_128K		(LAWAR_SIZE_BASE+6)
-#define LAWAR_SIZE_256K		(LAWAR_SIZE_BASE+7)
-#define LAWAR_SIZE_512K		(LAWAR_SIZE_BASE+8)
-#define LAWAR_SIZE_1M		(LAWAR_SIZE_BASE+9)
-#define LAWAR_SIZE_2M		(LAWAR_SIZE_BASE+10)
-#define LAWAR_SIZE_4M		(LAWAR_SIZE_BASE+11)
-#define LAWAR_SIZE_8M		(LAWAR_SIZE_BASE+12)
-#define LAWAR_SIZE_16M		(LAWAR_SIZE_BASE+13)
-#define LAWAR_SIZE_32M		(LAWAR_SIZE_BASE+14)
-#define LAWAR_SIZE_64M		(LAWAR_SIZE_BASE+15)
-#define LAWAR_SIZE_128M		(LAWAR_SIZE_BASE+16)
-#define LAWAR_SIZE_256M		(LAWAR_SIZE_BASE+17)
-#define LAWAR_SIZE_512M		(LAWAR_SIZE_BASE+18)
-#define LAWAR_SIZE_1G		(LAWAR_SIZE_BASE+19)
-#define LAWAR_SIZE_2G		(LAWAR_SIZE_BASE+20)
-#define LAWAR_SIZE_4G		(LAWAR_SIZE_BASE+21)
-#define LAWAR_SIZE_8G		(LAWAR_SIZE_BASE+22)
-#define LAWAR_SIZE_16G		(LAWAR_SIZE_BASE+23)
-#define LAWAR_SIZE_32G		(LAWAR_SIZE_BASE+24)
+#if defined(CONFIG_PPC_BOOK3S_32)
+/* 32-bit classic hash table MMU */
+#include <asm/book3s/32/mmu-hash.h>
+#elif defined(CONFIG_PPC_MMU_NOHASH)
+#include <asm/nohash/mmu.h>
 #endif
 
-#endif /* _PPC_MMU_H_ */
+#endif /* __KERNEL__ */
+#endif /* _ASM_POWERPC_MMU_H_ */

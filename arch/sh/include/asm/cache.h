@@ -1,29 +1,48 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* $Id: cache.h,v 1.6 2004/03/11 18:08:05 lethal Exp $
+ *
+ * include/asm-sh/cache.h
+ *
+ * Copyright 1999 (C) Niibe Yutaka
+ * Copyright 2002, 2003 (C) Paul Mundt
+ */
 #ifndef __ASM_SH_CACHE_H
 #define __ASM_SH_CACHE_H
+#ifdef __KERNEL__
 
-#if defined(CONFIG_CPU_SH4)
+#include <linux/init.h>
+#include <cpu/cache.h>
 
-#define L1_CACHE_BYTES 32
+#define L1_CACHE_BYTES		(1 << L1_CACHE_SHIFT)
 
-struct __large_struct { unsigned long buf[100]; };
-#define __m(x) (*(struct __large_struct *)(x))
+#define __read_mostly __attribute__((__section__(".data..read_mostly")))
 
-#else
+#ifndef __ASSEMBLY__
+struct cache_info {
+	unsigned int ways;		/* Number of cache ways */
+	unsigned int sets;		/* Number of cache sets */
+	unsigned int linesz;		/* Cache line size (bytes) */
 
-/*
- * 32-bytes is the largest L1 data cache line size for SH the architecture.  So
- * it is a safe default for DMA alignment.
- */
-#define ARCH_DMA_MINALIGN	32
+	unsigned int way_size;		/* sets * line size */
 
-#endif /* CONFIG_CPU_SH4 */
+	/*
+	 * way_incr is the address offset for accessing the next way
+	 * in memory mapped cache array ops.
+	 */
+	unsigned int way_incr;
+	unsigned int entry_shift;
+	unsigned int entry_mask;
 
-/*
- * Use the L1 data cache line size value for the minimum DMA buffer alignment
- * on SH.
- */
-#ifndef ARCH_DMA_MINALIGN
-#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
-#endif
+	/*
+	 * Compute a mask which selects the address bits which overlap between
+	 * 1. those used to select the cache set during indexing
+	 * 2. those in the physical page number.
+	 */
+	unsigned int alias_mask;
+	unsigned int n_aliases;		/* Number of aliases */
 
-#endif	/* __ASM_SH_CACHE_H */
+	unsigned long flags;
+};
+#endif /* __ASSEMBLY__ */
+#endif /* __KERNEL__ */
+#endif /* __ASM_SH_CACHE_H */

@@ -1,157 +1,252 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Watchdog driver for MediaTek SoCs
+ * Mediatek Watchdog Driver
  *
- * Copyright (C) 2018 MediaTek Inc.
- * Author: Ryder Lee <ryder.lee@mediatek.com>
+ * Copyright (C) 2014 Matthias Brugger
+ *
+ * Matthias Brugger <matthias.bgg@gmail.com>
+ *
+ * Based on sunxi_wdt.c
  */
 
-#include <common.h>
-#include <dm.h>
-#include <hang.h>
-#include <wdt.h>
-#include <asm/io.h>
+#include <linux/err.h>
+#include <linux/init.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/types.h>
+#include <linux/watchdog.h>
+#include <linux/delay.h>
 
-#define MTK_WDT_MODE			0x00
-#define MTK_WDT_LENGTH			0x04
-#define MTK_WDT_RESTART			0x08
-#define MTK_WDT_STATUS			0x0c
-#define MTK_WDT_INTERVAL		0x10
-#define MTK_WDT_SWRST			0x14
-#define MTK_WDT_REQ_MODE		0x30
-#define MTK_WDT_DEBUG_CTL		0x40
+#define WDT_MAX_TIMEOUT		31
+#define WDT_MIN_TIMEOUT		1
+#define WDT_LENGTH_TIMEOUT(n)	((n) << 5)
 
-#define WDT_MODE_KEY			(0x22 << 24)
-#define WDT_MODE_EN			BIT(0)
-#define WDT_MODE_EXTPOL			BIT(1)
-#define WDT_MODE_EXTEN			BIT(2)
-#define WDT_MODE_IRQ_EN			BIT(3)
-#define WDT_MODE_DUAL_EN		BIT(6)
+#define WDT_LENGTH		0x04
+#define WDT_LENGTH_KEY		0x8
 
-#define WDT_LENGTH_KEY			0x8
-#define WDT_LENGTH_TIMEOUT(n)		((n) << 5)
+#define WDT_RST			0x08
+#define WDT_RST_RELOAD		0x1971
 
-#define WDT_RESTART_KEY			0x1971
-#define WDT_SWRST_KEY			0x1209
+#define WDT_MODE		0x00
+#define WDT_MODE_EN		(1 << 0)
+#define WDT_MODE_EXT_POL_LOW	(0 << 1)
+#define WDT_MODE_EXT_POL_HIGH	(1 << 1)
+#define WDT_MODE_EXRST_EN	(1 << 2)
+#define WDT_MODE_IRQ_EN		(1 << 3)
+#define WDT_MODE_AUTO_START	(1 << 4)
+#define WDT_MODE_DUAL_EN	(1 << 6)
+#define WDT_MODE_KEY		0x22000000
 
-struct mtk_wdt_priv {
-	void __iomem *base;
+#define WDT_SWRST		0x14
+#define WDT_SWRST_KEY		0x1209
+
+#define DRV_NAME		"mtk-wdt"
+#define DRV_VERSION		"1.0"
+
+static bool nowayout = WATCHDOG_NOWAYOUT;
+static unsigned int timeout;
+
+struct mtk_wdt_dev {
+	struct watchdog_device wdt_dev;
+	void __iomem *wdt_base;
 };
 
-static int mtk_wdt_reset(struct udevice *dev)
+static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
+			   unsigned long action, void *data)
 {
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	void __iomem *wdt_base;
 
-	/* Reload watchdog duration */
-	writel(WDT_RESTART_KEY, priv->base + MTK_WDT_RESTART);
+	wdt_base = mtk_wdt->wdt_base;
+
+	while (1) {
+		writel(WDT_SWRST_KEY, wdt_base + WDT_SWRST);
+		mdelay(5);
+	}
 
 	return 0;
 }
 
-static int mtk_wdt_stop(struct udevice *dev)
+static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
 {
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	void __iomem *wdt_base = mtk_wdt->wdt_base;
 
-	clrsetbits_le32(priv->base + MTK_WDT_MODE, WDT_MODE_EN, WDT_MODE_KEY);
+	iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
 
 	return 0;
 }
 
-static int mtk_wdt_expire_now(struct udevice *dev, ulong flags)
+static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
+				unsigned int timeout)
 {
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	u32 reg;
 
-	/* Kick watchdog to prevent counter == 0 */
-	writel(WDT_RESTART_KEY, priv->base + MTK_WDT_RESTART);
-
-	/* Reset */
-	writel(WDT_SWRST_KEY, priv->base + MTK_WDT_SWRST);
-	hang();
-
-	return 0;
-}
-
-static void mtk_wdt_set_timeout(struct udevice *dev, u64 timeout_ms)
-{
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
-	u64 timeout_us;
-	u32 timeout_cc;
-	u32 length;
+	wdt_dev->timeout = timeout;
 
 	/*
-	 * One WDT_LENGTH count is 512 ticks of the wdt clock
-	 * Clock runs at 32768 Hz
-	 * e.g. 15.625 ms per count (nominal)
-	 * We want the ceiling after dividing timeout_ms by 15.625 ms
-	 * We add 15624 prior to the divide to implement the ceiling
-	 * We prevent over-flow by clamping the timeout_ms value here
-	 *  as the maximum WDT_LENGTH counts is 1023 -> 15.984375 sec
-	 * We also enforce a minimum of 1 count
-	 * Many watchdog peripherals have a self-imposed count of 1
-	 *  that is added to the register counts.
-	 *  The MediaTek docs lack details to know if this is the case here.
-	 *  So we enforce a minimum of 1 to guarantee operation.
+	 * One bit is the value of 512 ticks
+	 * The clock has 32 KHz
 	 */
-	if (timeout_ms > 15984)
-		timeout_ms = 15984;
+	reg = WDT_LENGTH_TIMEOUT(timeout << 6) | WDT_LENGTH_KEY;
+	iowrite32(reg, wdt_base + WDT_LENGTH);
 
-	timeout_us = timeout_ms * 1000;
-	timeout_cc = (15624 + timeout_us) / 15625;
-	if (timeout_cc == 0)
-		timeout_cc = 1;
-
-	length = WDT_LENGTH_TIMEOUT(timeout_cc) | WDT_LENGTH_KEY;
-	writel(length, priv->base + MTK_WDT_LENGTH);
-}
-
-static int mtk_wdt_start(struct udevice *dev, u64 timeout_ms, ulong flags)
-{
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
-
-	mtk_wdt_set_timeout(dev, timeout_ms);
-
-	mtk_wdt_reset(dev);
-
-	/* Enable watchdog reset signal */
-	setbits_le32(priv->base + MTK_WDT_MODE,
-		     WDT_MODE_EN | WDT_MODE_KEY | WDT_MODE_EXTEN);
+	mtk_wdt_ping(wdt_dev);
 
 	return 0;
 }
 
-static int mtk_wdt_probe(struct udevice *dev)
+static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
 {
-	struct mtk_wdt_priv *priv = dev_get_priv(dev);
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	u32 reg;
 
-	priv->base = dev_read_addr_ptr(dev);
-	if (!priv->base)
-		return -ENOENT;
+	reg = readl(wdt_base + WDT_MODE);
+	reg &= ~WDT_MODE_EN;
+	reg |= WDT_MODE_KEY;
+	iowrite32(reg, wdt_base + WDT_MODE);
 
-	/* Clear status */
-	clrsetbits_le32(priv->base + MTK_WDT_MODE,
-			WDT_MODE_IRQ_EN | WDT_MODE_EXTPOL, WDT_MODE_KEY);
-
-	return mtk_wdt_stop(dev);
+	return 0;
 }
 
-static const struct wdt_ops mtk_wdt_ops = {
-	.start = mtk_wdt_start,
-	.reset = mtk_wdt_reset,
-	.stop = mtk_wdt_stop,
-	.expire_now = mtk_wdt_expire_now,
+static int mtk_wdt_start(struct watchdog_device *wdt_dev)
+{
+	u32 reg;
+	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
+	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	int ret;
+
+	ret = mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
+	if (ret < 0)
+		return ret;
+
+	reg = ioread32(wdt_base + WDT_MODE);
+	reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+	reg |= (WDT_MODE_EN | WDT_MODE_KEY);
+	iowrite32(reg, wdt_base + WDT_MODE);
+
+	return 0;
+}
+
+static const struct watchdog_info mtk_wdt_info = {
+	.identity	= DRV_NAME,
+	.options	= WDIOF_SETTIMEOUT |
+			  WDIOF_KEEPALIVEPING |
+			  WDIOF_MAGICCLOSE,
 };
 
-static const struct udevice_id mtk_wdt_ids[] = {
-	{ .compatible = "mediatek,wdt"},
-	{}
+static const struct watchdog_ops mtk_wdt_ops = {
+	.owner		= THIS_MODULE,
+	.start		= mtk_wdt_start,
+	.stop		= mtk_wdt_stop,
+	.ping		= mtk_wdt_ping,
+	.set_timeout	= mtk_wdt_set_timeout,
+	.restart	= mtk_wdt_restart,
 };
 
-U_BOOT_DRIVER(mtk_wdt) = {
-	.name = "mtk_wdt",
-	.id = UCLASS_WDT,
-	.of_match = mtk_wdt_ids,
-	.priv_auto_alloc_size = sizeof(struct mtk_wdt_priv),
-	.probe = mtk_wdt_probe,
-	.ops = &mtk_wdt_ops,
-	.flags = DM_FLAG_PRE_RELOC,
+static int mtk_wdt_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct mtk_wdt_dev *mtk_wdt;
+	int err;
+
+	mtk_wdt = devm_kzalloc(dev, sizeof(*mtk_wdt), GFP_KERNEL);
+	if (!mtk_wdt)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, mtk_wdt);
+
+	mtk_wdt->wdt_base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(mtk_wdt->wdt_base))
+		return PTR_ERR(mtk_wdt->wdt_base);
+
+	mtk_wdt->wdt_dev.info = &mtk_wdt_info;
+	mtk_wdt->wdt_dev.ops = &mtk_wdt_ops;
+	mtk_wdt->wdt_dev.timeout = WDT_MAX_TIMEOUT;
+	mtk_wdt->wdt_dev.max_timeout = WDT_MAX_TIMEOUT;
+	mtk_wdt->wdt_dev.min_timeout = WDT_MIN_TIMEOUT;
+	mtk_wdt->wdt_dev.parent = dev;
+
+	watchdog_init_timeout(&mtk_wdt->wdt_dev, timeout, dev);
+	watchdog_set_nowayout(&mtk_wdt->wdt_dev, nowayout);
+	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 128);
+
+	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
+
+	mtk_wdt_stop(&mtk_wdt->wdt_dev);
+
+	watchdog_stop_on_reboot(&mtk_wdt->wdt_dev);
+	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
+	if (unlikely(err))
+		return err;
+
+	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
+		 mtk_wdt->wdt_dev.timeout, nowayout);
+
+	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int mtk_wdt_suspend(struct device *dev)
+{
+	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
+
+	if (watchdog_active(&mtk_wdt->wdt_dev))
+		mtk_wdt_stop(&mtk_wdt->wdt_dev);
+
+	return 0;
+}
+
+static int mtk_wdt_resume(struct device *dev)
+{
+	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
+
+	if (watchdog_active(&mtk_wdt->wdt_dev)) {
+		mtk_wdt_start(&mtk_wdt->wdt_dev);
+		mtk_wdt_ping(&mtk_wdt->wdt_dev);
+	}
+
+	return 0;
+}
+#endif
+
+static const struct of_device_id mtk_wdt_dt_ids[] = {
+	{ .compatible = "mediatek,mt6589-wdt" },
+	{ /* sentinel */ }
 };
+MODULE_DEVICE_TABLE(of, mtk_wdt_dt_ids);
+
+static const struct dev_pm_ops mtk_wdt_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(mtk_wdt_suspend,
+				mtk_wdt_resume)
+};
+
+static struct platform_driver mtk_wdt_driver = {
+	.probe		= mtk_wdt_probe,
+	.driver		= {
+		.name		= DRV_NAME,
+		.pm		= &mtk_wdt_pm_ops,
+		.of_match_table	= mtk_wdt_dt_ids,
+	},
+};
+
+module_platform_driver(mtk_wdt_driver);
+
+module_param(timeout, uint, 0);
+MODULE_PARM_DESC(timeout, "Watchdog heartbeat in seconds");
+
+module_param(nowayout, bool, 0);
+MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
+			__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Matthias Brugger <matthias.bgg@gmail.com>");
+MODULE_DESCRIPTION("Mediatek WatchDog Timer Driver");
+MODULE_VERSION(DRV_VERSION);

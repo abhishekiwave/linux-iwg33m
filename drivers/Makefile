@@ -1,121 +1,189 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
+#
+# Makefile for the Linux kernel device drivers.
+#
+# 15 Sep 2000, Christoph Hellwig <hch@infradead.org>
+# Rewritten to use lists instead of if-statements.
+#
 
-obj-$(CONFIG_$(SPL_TPL_)CACHE) += cache/
-obj-$(CONFIG_$(SPL_TPL_)CLK) += clk/
-obj-$(CONFIG_$(SPL_TPL_)DM) += core/
-obj-$(CONFIG_$(SPL_TPL_)DFU) += dfu/
-obj-$(CONFIG_$(SPL_TPL_)GPIO_SUPPORT) += gpio/
-obj-$(CONFIG_$(SPL_TPL_)DRIVERS_MISC_SUPPORT) += misc/
-obj-$(CONFIG_$(SPL_TPL_)SYSRESET) += sysreset/
-obj-$(CONFIG_$(SPL_TPL_)FIRMWARE) +=firmware/
-obj-$(CONFIG_$(SPL_TPL_)I2C_SUPPORT) += i2c/
-obj-$(CONFIG_$(SPL_TPL_)INPUT) += input/
-obj-$(CONFIG_$(SPL_TPL_)LED) += led/
-obj-$(CONFIG_$(SPL_TPL_)MMC_SUPPORT) += mmc/
-obj-y += mtd/
-obj-$(CONFIG_$(SPL_TPL_)PCH_SUPPORT) += pch/
-obj-$(CONFIG_$(SPL_TPL_)PCI) += pci/
-obj-$(CONFIG_$(SPL_TPL_)PHY) += phy/
-obj-$(CONFIG_$(SPL_TPL_)PINCTRL) += pinctrl/
-obj-$(CONFIG_$(SPL_TPL_)RAM) += ram/
-obj-$(CONFIG_$(SPL_TPL_)RTC_SUPPORT) += rtc/
-obj-$(CONFIG_$(SPL_TPL_)SERIAL_SUPPORT) += serial/
-obj-$(CONFIG_$(SPL_TPL_)SPI_SUPPORT) += spi/
-obj-$(CONFIG_$(SPL_TPL_)TIMER) += timer/
-obj-$(CONFIG_$(SPL_TPL_)VIRTIO) += virtio/
-obj-$(CONFIG_$(SPL_)DM_MAILBOX) += mailbox/
-obj-$(CONFIG_$(SPL_)REMOTEPROC) += remoteproc/
-obj-$(CONFIG_$(SPL_TPL_)TPM) += tpm/
-obj-$(CONFIG_$(SPL_TPL_)ACPI_PMC) += power/acpi_pmc/
-obj-$(CONFIG_$(SPL_)BOARD) += board/
+obj-y				+= irqchip/
+obj-y				+= bus/
 
-ifndef CONFIG_TPL_BUILD
-ifdef CONFIG_SPL_BUILD
+obj-$(CONFIG_GENERIC_PHY)	+= phy/
 
-obj-$(CONFIG_SPL_BOOTCOUNT_LIMIT) += bootcount/
-obj-$(CONFIG_SPL_CACHE_SUPPORT) += cache/
-obj-$(CONFIG_SPL_CPU_SUPPORT) += cpu/
-obj-$(CONFIG_SPL_CRYPTO_SUPPORT) += crypto/
-obj-$(CONFIG_SPL_MPC8XXX_INIT_DDR_SUPPORT) += ddr/fsl/
-obj-$(CONFIG_ARMADA_38X) += ddr/marvell/a38x/
-obj-$(CONFIG_ARMADA_XP) += ddr/marvell/axp/
-obj-$(CONFIG_$(SPL_)ALTERA_SDRAM) += ddr/altera/
-obj-$(CONFIG_ARCH_IMX8M) += ddr/imx/imx8m/
-obj-$(CONFIG_SPL_POWER_SUPPORT) += power/ power/pmic/
-obj-$(CONFIG_SPL_POWER_SUPPORT) += power/regulator/
-obj-$(CONFIG_SPL_POWER_DOMAIN) += power/domain/
-obj-$(CONFIG_SPL_DM_RESET) += reset/
-obj-$(CONFIG_SPL_DMA) += dma/
-obj-$(CONFIG_SPL_ETH_SUPPORT) += net/
-obj-$(CONFIG_SPL_ETH_SUPPORT) += net/phy/
-obj-$(CONFIG_SPL_USB_ETHER) += net/phy/
-obj-$(CONFIG_SPL_MUSB_NEW_SUPPORT) += usb/musb-new/
-obj-$(CONFIG_SPL_USB_GADGET) += usb/gadget/
-obj-$(CONFIG_SPL_USB_GADGET) += usb/common/
-obj-$(CONFIG_SPL_USB_GADGET) += usb/gadget/udc/
-obj-$(CONFIG_SPL_WATCHDOG_SUPPORT) += watchdog/
-obj-$(CONFIG_SPL_USB_HOST_SUPPORT) += usb/host/
-obj-$(CONFIG_OMAP_USB_PHY) += usb/phy/
-obj-$(CONFIG_SPL_SATA_SUPPORT) += ata/ scsi/
-obj-$(CONFIG_HAVE_BLOCK_DEVICE) += block/
-obj-$(CONFIG_SPL_FPGA_SUPPORT) += fpga/
-obj-$(CONFIG_SPL_THERMAL) += thermal/
+# GPIO must come after pinctrl as gpios may need to mux pins etc
+obj-$(CONFIG_PINCTRL)		+= pinctrl/
+obj-$(CONFIG_GPIOLIB)		+= gpio/
+obj-y				+= pwm/
 
-endif
-endif
+obj-y				+= pci/
 
-ifdef CONFIG_TPL_BUILD
+obj-$(CONFIG_PARISC)		+= parisc/
+obj-$(CONFIG_RAPIDIO)		+= rapidio/
+obj-y				+= video/
+obj-y				+= idle/
 
-obj-$(CONFIG_TPL_MPC8XXX_INIT_DDR_SUPPORT) += ddr/fsl/
+# IPMI must come before ACPI in order to provide IPMI opregion support
+obj-y				+= char/ipmi/
 
-endif
+obj-$(CONFIG_ACPI)		+= acpi/
+obj-$(CONFIG_SFI)		+= sfi/
+# PnP must come after ACPI since it will eventually need to check if acpi
+# was used and do nothing if so
+obj-$(CONFIG_PNP)		+= pnp/
+obj-y				+= amba/
 
-ifeq ($(CONFIG_SPL_BUILD)$(CONFIG_TPL_BUILD),)
+obj-y				+= clk/
+# Many drivers will want to use DMA so this has to be made available
+# really early.
+obj-$(CONFIG_DMADEVICES)	+= dma/
 
-obj-y += adc/
-obj-y += ata/
-obj-$(CONFIG_DM_DEMO) += demo/
-obj-$(CONFIG_BIOSEMU) += bios_emulator/
-obj-y += block/
-obj-$(CONFIG_BOOTCOUNT_LIMIT) += bootcount/
-obj-y += cache/
-obj-$(CONFIG_CPU) += cpu/
-obj-y += crypto/
-obj-$(CONFIG_FASTBOOT) += fastboot/
-obj-$(CONFIG_FPGA) += fpga/
-obj-y += misc/
-obj-$(CONFIG_MMC) += mmc/
-obj-$(CONFIG_NVME) += nvme/
-obj-$(CONFIG_PCI_ENDPOINT) += pci_endpoint/
-obj-y += dfu/
-obj-$(CONFIG_PCH) += pch/
-obj-y += phy/allwinner/
-obj-y += phy/marvell/
-obj-y += rtc/
-obj-y += scsi/
-obj-y += sound/
-obj-y += spmi/
-obj-y += video/
-obj-y += watchdog/
-obj-$(CONFIG_QE) += qe/
-obj-$(CONFIG_U_QE) += qe/
-obj-y += mailbox/
-obj-y += memory/
-obj-y += mtd/
-obj-y += pwm/
-obj-y += reset/
-obj-y += input/
 # SOC specific infrastructure drivers.
-obj-y += smem/
-obj-y += soc/
-obj-y += thermal/
-obj-$(CONFIG_TEE) += tee/
-obj-y += axi/
-obj-y += ufs/
-obj-$(CONFIG_W1) += w1/
-obj-$(CONFIG_W1_EEPROM) += w1-eeprom/
+obj-y				+= soc/
 
-obj-$(CONFIG_MACH_PIC32) += ddr/microchip/
-obj-$(CONFIG_DM_HWSPINLOCK) += hwspinlock/
-obj-$(CONFIG_DM_RNG) += rng/
+obj-$(CONFIG_VIRTIO)		+= virtio/
+obj-$(CONFIG_XEN)		+= xen/
+
+# regulators early, since some subsystems rely on them to initialize
+obj-$(CONFIG_REGULATOR)		+= regulator/
+
+# reset controllers early, since gpu drivers might rely on them to initialize
+obj-$(CONFIG_RESET_CONTROLLER)	+= reset/
+
+# tty/ comes before char/ so that the VT console is the boot-time
+# default.
+obj-y				+= tty/
+obj-y				+= char/
+
+# iommu/ comes before gpu as gpu are using iommu controllers
+obj-y				+= iommu/
+
+# gpu/ comes after char for AGP vs DRM startup and after iommu
+obj-y				+= gpu/
+
+obj-$(CONFIG_CONNECTOR)		+= connector/
+
+# i810fb and intelfb depend on char/agp/
+obj-$(CONFIG_FB_I810)           += video/fbdev/i810/
+obj-$(CONFIG_FB_INTEL)          += video/fbdev/intelfb/
+
+obj-$(CONFIG_PARPORT)		+= parport/
+obj-$(CONFIG_NVM)		+= lightnvm/
+obj-y				+= base/ block/ misc/ mfd/ nfc/
+obj-$(CONFIG_LIBNVDIMM)		+= nvdimm/
+obj-$(CONFIG_DAX)		+= dax/
+obj-$(CONFIG_DMA_SHARED_BUFFER) += dma-buf/
+obj-$(CONFIG_NUBUS)		+= nubus/
+obj-y				+= macintosh/
+obj-$(CONFIG_IDE)		+= ide/
+obj-y				+= scsi/
+obj-y				+= nvme/
+obj-$(CONFIG_ATA)		+= ata/
+obj-$(CONFIG_TARGET_CORE)	+= target/
+obj-$(CONFIG_SPI)		+= spi/
+obj-$(CONFIG_MTD)		+= mtd/
+obj-$(CONFIG_SPMI)		+= spmi/
+obj-$(CONFIG_HSI)		+= hsi/
+obj-$(CONFIG_SLIMBUS)		+= slimbus/
+obj-y				+= net/
+obj-$(CONFIG_ATM)		+= atm/
+obj-$(CONFIG_FUSION)		+= message/
+obj-y				+= firewire/
+obj-$(CONFIG_UIO)		+= uio/
+obj-$(CONFIG_VFIO)		+= vfio/
+obj-y				+= cdrom/
+obj-y				+= auxdisplay/
+obj-$(CONFIG_PCCARD)		+= pcmcia/
+obj-$(CONFIG_DIO)		+= dio/
+obj-$(CONFIG_SBUS)		+= sbus/
+obj-$(CONFIG_ZORRO)		+= zorro/
+obj-$(CONFIG_ATA_OVER_ETH)	+= block/aoe/
+obj-$(CONFIG_PARIDE) 		+= block/paride/
+obj-$(CONFIG_TC)		+= tc/
+obj-$(CONFIG_USB_PHY)		+= usb/
+obj-$(CONFIG_USB)		+= usb/
+obj-$(CONFIG_USB_SUPPORT)	+= usb/
+obj-$(CONFIG_PCI)		+= usb/
+obj-$(CONFIG_USB_GADGET)	+= usb/
+obj-$(CONFIG_OF)		+= usb/
+obj-$(CONFIG_SERIO)		+= input/serio/
+obj-$(CONFIG_GAMEPORT)		+= input/gameport/
+obj-$(CONFIG_INPUT)		+= input/
+obj-$(CONFIG_RTC_LIB)		+= rtc/
+obj-y				+= i2c/ i3c/ media/
+obj-$(CONFIG_PPS)		+= pps/
+obj-y				+= ptp/
+obj-$(CONFIG_W1)		+= w1/
+obj-y				+= power/
+obj-$(CONFIG_HWMON)		+= hwmon/
+obj-$(CONFIG_THERMAL)		+= thermal/
+obj-$(CONFIG_WATCHDOG)		+= watchdog/
+obj-$(CONFIG_MD)		+= md/
+obj-$(CONFIG_BT)		+= bluetooth/
+obj-$(CONFIG_ACCESSIBILITY)	+= accessibility/
+obj-$(CONFIG_ISDN)		+= isdn/
+obj-$(CONFIG_EDAC)		+= edac/
+obj-$(CONFIG_EISA)		+= eisa/
+obj-$(CONFIG_PM_OPP)		+= opp/
+obj-$(CONFIG_CPU_FREQ)		+= cpufreq/
+obj-$(CONFIG_CPU_IDLE)		+= cpuidle/
+obj-y				+= mmc/
+obj-$(CONFIG_MEMSTICK)		+= memstick/
+obj-$(CONFIG_NEW_LEDS)		+= leds/
+obj-$(CONFIG_INFINIBAND)	+= infiniband/
+obj-y				+= firmware/
+obj-$(CONFIG_CRYPTO)		+= crypto/
+obj-$(CONFIG_SUPERH)		+= sh/
+ifndef CONFIG_ARCH_USES_GETTIMEOFFSET
+obj-y				+= clocksource/
 endif
+obj-$(CONFIG_DCA)		+= dca/
+obj-$(CONFIG_HID)		+= hid/
+obj-$(CONFIG_PPC_PS3)		+= ps3/
+obj-$(CONFIG_OF)		+= of/
+obj-$(CONFIG_SSB)		+= ssb/
+obj-$(CONFIG_BCMA)		+= bcma/
+obj-$(CONFIG_VHOST_RING)	+= vhost/
+obj-$(CONFIG_VHOST)		+= vhost/
+obj-$(CONFIG_VLYNQ)		+= vlynq/
+obj-$(CONFIG_GREYBUS)		+= greybus/
+obj-$(CONFIG_STAGING)		+= staging/
+obj-y				+= platform/
+
+obj-$(CONFIG_MAILBOX)		+= mailbox/
+obj-$(CONFIG_HWSPINLOCK)	+= hwspinlock/
+obj-$(CONFIG_REMOTEPROC)	+= remoteproc/
+obj-$(CONFIG_RPMSG)		+= rpmsg/
+obj-$(CONFIG_SOUNDWIRE)		+= soundwire/
+
+# Virtualization drivers
+obj-$(CONFIG_VIRT_DRIVERS)	+= virt/
+obj-$(CONFIG_HYPERV)		+= hv/
+
+obj-$(CONFIG_PM_DEVFREQ)	+= devfreq/
+obj-$(CONFIG_EXTCON)		+= extcon/
+obj-$(CONFIG_MEMORY)		+= memory/
+obj-$(CONFIG_IIO)		+= iio/
+obj-$(CONFIG_VME_BUS)		+= vme/
+obj-$(CONFIG_IPACK_BUS)		+= ipack/
+obj-$(CONFIG_NTB)		+= ntb/
+obj-$(CONFIG_POWERCAP)		+= powercap/
+obj-$(CONFIG_MCB)		+= mcb/
+obj-$(CONFIG_PERF_EVENTS)	+= perf/
+obj-$(CONFIG_RAS)		+= ras/
+obj-$(CONFIG_THUNDERBOLT)	+= thunderbolt/
+obj-$(CONFIG_CORESIGHT)		+= hwtracing/coresight/
+obj-y				+= hwtracing/intel_th/
+obj-$(CONFIG_STM)		+= hwtracing/stm/
+obj-$(CONFIG_ANDROID)		+= android/
+obj-$(CONFIG_NVMEM)		+= nvmem/
+obj-$(CONFIG_FPGA)		+= fpga/
+obj-$(CONFIG_FSI)		+= fsi/
+obj-$(CONFIG_TEE)		+= tee/
+obj-$(CONFIG_MULTIPLEXER)	+= mux/
+obj-$(CONFIG_UNISYS_VISORBUS)	+= visorbus/
+obj-$(CONFIG_SIOX)		+= siox/
+obj-$(CONFIG_GNSS)		+= gnss/
+obj-$(CONFIG_INTERCONNECT)	+= interconnect/
+obj-$(CONFIG_COUNTER)		+= counter/
+obj-y		 		+= mxc/

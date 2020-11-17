@@ -1,176 +1,193 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2013-2014, 2020 Synopsys, Inc. All rights reserved.
+ * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
  */
 
-#ifndef __ASM_ARC_IO_H
-#define __ASM_ARC_IO_H
+#ifndef _ASM_ARC_IO_H
+#define _ASM_ARC_IO_H
 
 #include <linux/types.h>
 #include <asm/byteorder.h>
+#include <asm/page.h>
+#include <asm/unaligned.h>
 
-/*
- * Compiler barrier. It prevents compiler from reordering instructions before
- * and after it. It doesn't prevent HW (CPU) from any reordering though.
- */
-#define __comp_b()		asm volatile("" : : : "memory")
-
-#ifdef __ARCHS__
-
-/*
- * ARCv2 based HS38 cores are in-order issue, but still weakly ordered
- * due to micro-arch buffering/queuing of load/store, cache hit vs. miss ...
- *
- * Explicit barrier provided by DMB instruction
- *  - Operand supports fine grained load/store/load+store semantics
- *  - Ensures that selected memory operation issued before it will complete
- *    before any subsequent memory operation of same type
- *  - DMB guarantees SMP as well as local barrier semantics
- *    (asm-generic/barrier.h ensures sane smp_*mb if not defined here, i.e.
- *    UP: barrier(), SMP: smp_*mb == *mb)
- *  - DSYNC provides DMB+completion_of_cache_bpu_maintenance_ops hence not needed
- *    in the general case. Plus it only provides full barrier.
- */
-
-#define mb()	asm volatile("dmb 3\n" : : : "memory")
-#define rmb()	asm volatile("dmb 1\n" : : : "memory")
-#define wmb()	asm volatile("dmb 2\n" : : : "memory")
-
-#else
-
-/*
- * ARCompact based cores (ARC700) only have SYNC instruction which is super
- * heavy weight as it flushes the pipeline as well.
- * There are no real SMP implementations of such cores.
- */
-
-#define mb()	asm volatile("sync\n" : : : "memory")
-#endif
-
-#ifdef __ARCHS__
+#ifdef CONFIG_ISA_ARCV2
+#include <asm/barrier.h>
 #define __iormb()		rmb()
 #define __iowmb()		wmb()
 #else
-#define __iormb()		__comp_b()
-#define __iowmb()		__comp_b()
+#define __iormb()		do { } while (0)
+#define __iowmb()		do { } while (0)
 #endif
 
-static inline void sync(void)
+extern void __iomem *ioremap(phys_addr_t paddr, unsigned long size);
+extern void __iomem *ioremap_prot(phys_addr_t paddr, unsigned long size,
+				  unsigned long flags);
+static inline void __iomem *ioport_map(unsigned long port, unsigned int nr)
 {
-	/* Not yet implemented */
+	return (void __iomem *)port;
+}
+
+static inline void ioport_unmap(void __iomem *addr)
+{
+}
+
+extern void iounmap(const void __iomem *addr);
+
+#define ioremap_nocache(phy, sz)	ioremap(phy, sz)
+#define ioremap_wc(phy, sz)		ioremap(phy, sz)
+#define ioremap_wt(phy, sz)		ioremap(phy, sz)
+
+/*
+ * io{read,write}{16,32}be() macros
+ */
+#define ioread16be(p)		({ u16 __v = be16_to_cpu((__force __be16)__raw_readw(p)); __iormb(); __v; })
+#define ioread32be(p)		({ u32 __v = be32_to_cpu((__force __be32)__raw_readl(p)); __iormb(); __v; })
+
+#define iowrite16be(v,p)	({ __iowmb(); __raw_writew((__force u16)cpu_to_be16(v), p); })
+#define iowrite32be(v,p)	({ __iowmb(); __raw_writel((__force u32)cpu_to_be32(v), p); })
+
+/* Change struct page to physical address */
+#define page_to_phys(page)		(page_to_pfn(page) << PAGE_SHIFT)
+
+#define __raw_readb __raw_readb
+static inline u8 __raw_readb(const volatile void __iomem *addr)
+{
+	u8 b;
+
+	__asm__ __volatile__(
+	"	ldb%U1 %0, %1	\n"
+	: "=r" (b)
+	: "m" (*(volatile u8 __force *)addr)
+	: "memory");
+
+	return b;
+}
+
+#define __raw_readw __raw_readw
+static inline u16 __raw_readw(const volatile void __iomem *addr)
+{
+	u16 s;
+
+	__asm__ __volatile__(
+	"	ldw%U1 %0, %1	\n"
+	: "=r" (s)
+	: "m" (*(volatile u16 __force *)addr)
+	: "memory");
+
+	return s;
+}
+
+#define __raw_readl __raw_readl
+static inline u32 __raw_readl(const volatile void __iomem *addr)
+{
+	u32 w;
+
+	__asm__ __volatile__(
+	"	ld%U1 %0, %1	\n"
+	: "=r" (w)
+	: "m" (*(volatile u32 __force *)addr)
+	: "memory");
+
+	return w;
 }
 
 /*
- * We must use 'volatile' in C-version read/write IO accessors implementation
- * to avoid merging several reads (writes) into one read (write), or optimizing
- * them out by compiler.
- * We must use compiler barriers before and after operation (read or write) so
- * it won't be reordered by compiler.
+ * {read,write}s{b,w,l}() repeatedly access the same IO address in
+ * native endianness in 8-, 16-, 32-bit chunks {into,from} memory,
+ * @count times
  */
-#define __arch_getb(a)		({ u8  __v; __comp_b(); __v = *(volatile u8  *)(a); __comp_b(); __v; })
-#define __arch_getw(a)		({ u16 __v; __comp_b(); __v = *(volatile u16 *)(a); __comp_b(); __v; })
-#define __arch_getl(a)		({ u32 __v; __comp_b(); __v = *(volatile u32 *)(a); __comp_b(); __v; })
-#define __arch_getq(a)		({ u64 __v; __comp_b(); __v = *(volatile u64 *)(a); __comp_b(); __v; })
-
-#define __arch_putb(v, a)	({ __comp_b(); *(volatile u8  *)(a) = (v); __comp_b(); })
-#define __arch_putw(v, a)	({ __comp_b(); *(volatile u16 *)(a) = (v); __comp_b(); })
-#define __arch_putl(v, a)	({ __comp_b(); *(volatile u32 *)(a) = (v); __comp_b(); })
-#define __arch_putq(v, a)	({ __comp_b(); *(volatile u64 *)(a) = (v); __comp_b(); })
-
-
-/*
- * We add memory barriers for __raw_readX / __raw_writeX accessors same way as
- * it is done for readX and writeX accessors as lots of U-boot driver uses
- * __raw_readX / __raw_writeX instead of proper accessor with barrier.
- */
-#define __raw_writeb(v, c)	({ __iowmb(); __arch_putb(v, c); })
-#define __raw_writew(v, c)	({ __iowmb(); __arch_putw(v, c); })
-#define __raw_writel(v, c)	({ __iowmb(); __arch_putl(v, c); })
-#define __raw_writeq(v, c)	({ __iowmb(); __arch_putq(v, c); })
-
-#define __raw_readb(c)		({ u8  __v = __arch_getb(c); __iormb(); __v; })
-#define __raw_readw(c)		({ u16 __v = __arch_getw(c); __iormb(); __v; })
-#define __raw_readl(c)		({ u32 __v = __arch_getl(c); __iormb(); __v; })
-#define __raw_readq(c)		({ u64 __v = __arch_getq(c); __iormb(); __v; })
-
-
-static inline void __raw_writesb(unsigned long addr, const void *data,
-				 int bytelen)
-{
-	u8 *buf = (uint8_t *)data;
-
-	__iowmb();
-
-	while (bytelen--)
-		__arch_putb(*buf++, addr);
+#define __raw_readsx(t,f) \
+static inline void __raw_reads##f(const volatile void __iomem *addr,	\
+				  void *ptr, unsigned int count)	\
+{									\
+	bool is_aligned = ((unsigned long)ptr % ((t) / 8)) == 0;	\
+	u##t *buf = ptr;						\
+									\
+	if (!count)							\
+		return;							\
+									\
+	/* Some ARC CPU's don't support unaligned accesses */		\
+	if (is_aligned) {						\
+		do {							\
+			u##t x = __raw_read##f(addr);			\
+			*buf++ = x;					\
+		} while (--count);					\
+	} else {							\
+		do {							\
+			u##t x = __raw_read##f(addr);			\
+			put_unaligned(x, buf++);			\
+		} while (--count);					\
+	}								\
 }
 
-static inline void __raw_writesw(unsigned long addr, const void *data,
-				 int wordlen)
+#define __raw_readsb __raw_readsb
+__raw_readsx(8, b)
+#define __raw_readsw __raw_readsw
+__raw_readsx(16, w)
+#define __raw_readsl __raw_readsl
+__raw_readsx(32, l)
+
+#define __raw_writeb __raw_writeb
+static inline void __raw_writeb(u8 b, volatile void __iomem *addr)
 {
-	u16 *buf = (uint16_t *)data;
-
-	__iowmb();
-
-	while (wordlen--)
-		__arch_putw(*buf++, addr);
+	__asm__ __volatile__(
+	"	stb%U1 %0, %1	\n"
+	:
+	: "r" (b), "m" (*(volatile u8 __force *)addr)
+	: "memory");
 }
 
-static inline void __raw_writesl(unsigned long addr, const void *data,
-				 int longlen)
+#define __raw_writew __raw_writew
+static inline void __raw_writew(u16 s, volatile void __iomem *addr)
 {
-	u32 *buf = (uint32_t *)data;
+	__asm__ __volatile__(
+	"	stw%U1 %0, %1	\n"
+	:
+	: "r" (s), "m" (*(volatile u16 __force *)addr)
+	: "memory");
 
-	__iowmb();
-
-	while (longlen--)
-		__arch_putl(*buf++, addr);
 }
 
-static inline void __raw_readsb(unsigned long addr, void *data, int bytelen)
+#define __raw_writel __raw_writel
+static inline void __raw_writel(u32 w, volatile void __iomem *addr)
 {
-	u8 *buf = (uint8_t *)data;
+	__asm__ __volatile__(
+	"	st%U1 %0, %1	\n"
+	:
+	: "r" (w), "m" (*(volatile u32 __force *)addr)
+	: "memory");
 
-	while (bytelen--)
-		*buf++ = __arch_getb(addr);
-
-	__iormb();
 }
 
-static inline void __raw_readsw(unsigned long addr, void *data, int wordlen)
-{
-	u16 *buf = (uint16_t *)data;
-
-	while (wordlen--)
-		*buf++ = __arch_getw(addr);
-
-	__iormb();
+#define __raw_writesx(t,f)						\
+static inline void __raw_writes##f(volatile void __iomem *addr, 	\
+				   const void *ptr, unsigned int count)	\
+{									\
+	bool is_aligned = ((unsigned long)ptr % ((t) / 8)) == 0;	\
+	const u##t *buf = ptr;						\
+									\
+	if (!count)							\
+		return;							\
+									\
+	/* Some ARC CPU's don't support unaligned accesses */		\
+	if (is_aligned) {						\
+		do {							\
+			__raw_write##f(*buf++, addr);			\
+		} while (--count);					\
+	} else {							\
+		do {							\
+			__raw_write##f(get_unaligned(buf++), addr);	\
+		} while (--count);					\
+	}								\
 }
 
-static inline void __raw_readsl(unsigned long addr, void *data, int longlen)
-{
-	u32 *buf = (uint32_t *)data;
-
-	while (longlen--)
-		*buf++ = __arch_getl(addr);
-
-	__iormb();
-}
-
-/*
- * Relaxed I/O memory access primitives. These follow the Device memory
- * ordering rules but do not guarantee any ordering relative to Normal memory
- * accesses.
- */
-#define readb_relaxed(c)	({ u8  __r = __arch_getb(c); __r; })
-#define readw_relaxed(c)	({ u16 __r = le16_to_cpu((__force __le16)__arch_getw(c)); __r; })
-#define readl_relaxed(c)	({ u32 __r = le32_to_cpu((__force __le32)__arch_getl(c)); __r; })
-#define readq_relaxed(c)	({ u64 __r = le64_to_cpu((__force __le64)__arch_getq(c)); __r; })
-
-#define writeb_relaxed(v, c)	((void)__arch_putb((v), (c)))
-#define writew_relaxed(v, c)	((void)__arch_putw((__force u16)cpu_to_le16(v), (c)))
-#define writel_relaxed(v, c)	((void)__arch_putl((__force u32)cpu_to_le32(v), (c)))
-#define writeq_relaxed(v, c)	((void)__arch_putq((__force u64)cpu_to_le64(v), (c)))
+#define __raw_writesb __raw_writesb
+__raw_writesx(8, b)
+#define __raw_writesw __raw_writesw
+__raw_writesx(16, w)
+#define __raw_writesl __raw_writesl
+__raw_writesx(32, l)
 
 /*
  * MMIO can also get buffered/optimized in micro-arch, so barriers needed
@@ -184,71 +201,39 @@ static inline void __raw_readsl(unsigned long addr, void *data, int longlen)
  *
  * http://lkml.kernel.org/r/20150622133656.GG1583@arm.com
  */
-#define readb(c)	({ u8  __v = readb_relaxed(c); __iormb(); __v; })
-#define readw(c)	({ u16 __v = readw_relaxed(c); __iormb(); __v; })
-#define readl(c)	({ u32 __v = readl_relaxed(c); __iormb(); __v; })
-#define readq(c)	({ u64 __v = readq_relaxed(c); __iormb(); __v; })
+#define readb(c)		({ u8  __v = readb_relaxed(c); __iormb(); __v; })
+#define readw(c)		({ u16 __v = readw_relaxed(c); __iormb(); __v; })
+#define readl(c)		({ u32 __v = readl_relaxed(c); __iormb(); __v; })
+#define readsb(p,d,l)		({ __raw_readsb(p,d,l); __iormb(); })
+#define readsw(p,d,l)		({ __raw_readsw(p,d,l); __iormb(); })
+#define readsl(p,d,l)		({ __raw_readsl(p,d,l); __iormb(); })
 
-#define writeb(v, c)	({ __iowmb(); writeb_relaxed(v, c); })
-#define writew(v, c)	({ __iowmb(); writew_relaxed(v, c); })
-#define writel(v, c)	({ __iowmb(); writel_relaxed(v, c); })
-#define writeq(v, c)	({ __iowmb(); writeq_relaxed(v, c); })
-
-#define out_arch(type, endian, a, v)	__raw_write##type(cpu_to_##endian(v), a)
-#define in_arch(type, endian, a)	endian##_to_cpu(__raw_read##type(a))
-
-#define out_le32(a, v)	out_arch(l, le32, a, v)
-#define out_le16(a, v)	out_arch(w, le16, a, v)
-
-#define in_le32(a)	in_arch(l, le32, a)
-#define in_le16(a)	in_arch(w, le16, a)
-
-#define out_be32(a, v)	out_arch(l, be32, a, v)
-#define out_be16(a, v)	out_arch(w, be16, a, v)
-
-#define in_be32(a)	in_arch(l, be32, a)
-#define in_be16(a)	in_arch(w, be16, a)
-
-#define out_8(a, v)	__raw_writeb(v, a)
-#define in_8(a)		__raw_readb(a)
+#define writeb(v,c)		({ __iowmb(); writeb_relaxed(v,c); })
+#define writew(v,c)		({ __iowmb(); writew_relaxed(v,c); })
+#define writel(v,c)		({ __iowmb(); writel_relaxed(v,c); })
+#define writesb(p,d,l)		({ __iowmb(); __raw_writesb(p,d,l); })
+#define writesw(p,d,l)		({ __iowmb(); __raw_writesw(p,d,l); })
+#define writesl(p,d,l)		({ __iowmb(); __raw_writesl(p,d,l); })
 
 /*
- * Clear and set bits in one shot. These macros can be used to clear and
- * set multiple bits in a register using a single call. These macros can
- * also be used to set a multiple-bit bit pattern using a mask, by
- * specifying the mask in the 'clear' parameter and the new bit pattern
- * in the 'set' parameter.
+ * Relaxed API for drivers which can handle barrier ordering themselves
+ *
+ * Also these are defined to perform little endian accesses.
+ * To provide the typical device register semantics of fixed endian,
+ * swap the byte order for Big Endian
+ *
+ * http://lkml.kernel.org/r/201603100845.30602.arnd@arndb.de
  */
+#define readb_relaxed(c)	__raw_readb(c)
+#define readw_relaxed(c) ({ u16 __r = le16_to_cpu((__force __le16) \
+					__raw_readw(c)); __r; })
+#define readl_relaxed(c) ({ u32 __r = le32_to_cpu((__force __le32) \
+					__raw_readl(c)); __r; })
 
-#define clrbits(type, addr, clear) \
-	out_##type((addr), in_##type(addr) & ~(clear))
-
-#define setbits(type, addr, set) \
-	out_##type((addr), in_##type(addr) | (set))
-
-#define clrsetbits(type, addr, clear, set) \
-	out_##type((addr), (in_##type(addr) & ~(clear)) | (set))
-
-#define clrbits_be32(addr, clear) clrbits(be32, addr, clear)
-#define setbits_be32(addr, set) setbits(be32, addr, set)
-#define clrsetbits_be32(addr, clear, set) clrsetbits(be32, addr, clear, set)
-
-#define clrbits_le32(addr, clear) clrbits(le32, addr, clear)
-#define setbits_le32(addr, set) setbits(le32, addr, set)
-#define clrsetbits_le32(addr, clear, set) clrsetbits(le32, addr, clear, set)
-
-#define clrbits_be16(addr, clear) clrbits(be16, addr, clear)
-#define setbits_be16(addr, set) setbits(be16, addr, set)
-#define clrsetbits_be16(addr, clear, set) clrsetbits(be16, addr, clear, set)
-
-#define clrbits_le16(addr, clear) clrbits(le16, addr, clear)
-#define setbits_le16(addr, set) setbits(le16, addr, set)
-#define clrsetbits_le16(addr, clear, set) clrsetbits(le16, addr, clear, set)
-
-#define clrbits_8(addr, clear) clrbits(8, addr, clear)
-#define setbits_8(addr, set) setbits(8, addr, set)
-#define clrsetbits_8(addr, clear, set) clrsetbits(8, addr, clear, set)
+#define writeb_relaxed(v,c)	__raw_writeb(v,c)
+#define writew_relaxed(v,c)	__raw_writew((__force u16) cpu_to_le16(v),c)
+#define writel_relaxed(v,c)	__raw_writel((__force u32) cpu_to_le32(v),c)
 
 #include <asm-generic/io.h>
 
-#endif	/* __ASM_ARC_IO_H */
+#endif /* _ASM_ARC_IO_H */

@@ -1,172 +1,88 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Socfpga Reset Controller Driver
- *
- * Copyright 2014 Steffen Trumtrar <s.trumtrar@pengutronix.de>
- *
- * based on
- * Allwinner SoCs Reset Controller driver
- *
- * Copyright 2013 Maxime Ripard
- *
- * Maxime Ripard <maxime.ripard@free-electrons.com>
+ * Copyright (C) 2018, Intel Corporation
+ * Copied from reset-sunxi.c
  */
 
-#include <common.h>
-#include <dm.h>
-#include <malloc.h>
-#include <dm/lists.h>
-#include <dm/of_access.h>
-#include <env.h>
-#include <reset-uclass.h>
-#include <wait_bit.h>
-#include <linux/bitops.h>
+#include <linux/err.h>
 #include <linux/io.h>
-#include <linux/sizes.h>
+#include <linux/init.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/platform_device.h>
+#include <linux/reset-controller.h>
+#include <linux/reset/socfpga.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
 
-#define BANK_INCREMENT		4
-#define NR_BANKS		8
+#include "reset-simple.h"
 
-struct socfpga_reset_data {
-	void __iomem *modrst_base;
+#define SOCFPGA_NR_BANKS	8
+
+static int a10_reset_init(struct device_node *np)
+{
+	struct reset_simple_data *data;
+	struct resource res;
+	resource_size_t size;
+	int ret;
+	u32 reg_offset = 0x10;
+
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	ret = of_address_to_resource(np, 0, &res);
+	if (ret)
+		goto err_alloc;
+
+	size = resource_size(&res);
+	if (!request_mem_region(res.start, size, np->name)) {
+		ret = -EBUSY;
+		goto err_alloc;
+	}
+
+	data->membase = ioremap(res.start, size);
+	if (!data->membase) {
+		ret = -ENOMEM;
+		goto err_alloc;
+	}
+
+	if (of_property_read_u32(np, "altr,modrst-offset", &reg_offset))
+		pr_warn("missing altr,modrst-offset property, assuming 0x10\n");
+	data->membase += reg_offset;
+
+	spin_lock_init(&data->lock);
+
+	data->rcdev.owner = THIS_MODULE;
+	data->rcdev.nr_resets = SOCFPGA_NR_BANKS * 32;
+	data->rcdev.ops = &reset_simple_ops;
+	data->rcdev.of_node = np;
+	data->status_active_low = true;
+
+	return reset_controller_register(&data->rcdev);
+
+err_alloc:
+	kfree(data);
+	return ret;
 };
 
 /*
- * For compatibility with Kernels that don't support peripheral reset, this
- * driver can keep the old behaviour of not asserting peripheral reset before
- * starting the OS and deasserting all peripheral resets (enabling all
- * peripherals).
- *
- * For that, the reset driver checks the environment variable
- * "socfpga_legacy_reset_compat". If this variable is '1', perihperals are not
- * reset again once taken out of reset and all peripherals in 'permodrst' are
- * taken out of reset before booting into the OS.
- * Note that this should be required for gen5 systems only that are running
- * Linux kernels without proper peripheral reset support for all drivers used.
+ * These are the reset controller we need to initialize early on in
+ * our system, before we can even think of using a regular device
+ * driver for it.
+ * The controllers that we can register through the regular device
+ * model are handled by the simple reset driver directly.
  */
-static bool socfpga_reset_keep_enabled(void)
-{
-#if !defined(CONFIG_SPL_BUILD) || CONFIG_IS_ENABLED(ENV_SUPPORT)
-	const char *env_str;
-	long val;
-
-	env_str = env_get("socfpga_legacy_reset_compat");
-	if (env_str) {
-		val = simple_strtol(env_str, NULL, 0);
-		if (val == 1)
-			return true;
-	}
-#endif
-
-	return false;
-}
-
-static int socfpga_reset_assert(struct reset_ctl *reset_ctl)
-{
-	struct socfpga_reset_data *data = dev_get_priv(reset_ctl->dev);
-	int id = reset_ctl->id;
-	int reg_width = sizeof(u32);
-	int bank = id / (reg_width * BITS_PER_BYTE);
-	int offset = id % (reg_width * BITS_PER_BYTE);
-
-	setbits_le32(data->modrst_base + (bank * BANK_INCREMENT), BIT(offset));
-	return 0;
-}
-
-static int socfpga_reset_deassert(struct reset_ctl *reset_ctl)
-{
-	struct socfpga_reset_data *data = dev_get_priv(reset_ctl->dev);
-	int id = reset_ctl->id;
-	int reg_width = sizeof(u32);
-	int bank = id / (reg_width * BITS_PER_BYTE);
-	int offset = id % (reg_width * BITS_PER_BYTE);
-
-	clrbits_le32(data->modrst_base + (bank * BANK_INCREMENT), BIT(offset));
-
-	return wait_for_bit_le32(data->modrst_base + (bank * BANK_INCREMENT),
-				 BIT(offset),
-				 false, 500, false);
-}
-
-static int socfpga_reset_request(struct reset_ctl *reset_ctl)
-{
-	debug("%s(reset_ctl=%p) (dev=%p, id=%lu)\n", __func__,
-	      reset_ctl, reset_ctl->dev, reset_ctl->id);
-
-	return 0;
-}
-
-static int socfpga_reset_free(struct reset_ctl *reset_ctl)
-{
-	debug("%s(reset_ctl=%p) (dev=%p, id=%lu)\n", __func__, reset_ctl,
-	      reset_ctl->dev, reset_ctl->id);
-
-	return 0;
-}
-
-static const struct reset_ops socfpga_reset_ops = {
-	.request = socfpga_reset_request,
-	.rfree = socfpga_reset_free,
-	.rst_assert = socfpga_reset_assert,
-	.rst_deassert = socfpga_reset_deassert,
-};
-
-static int socfpga_reset_probe(struct udevice *dev)
-{
-	struct socfpga_reset_data *data = dev_get_priv(dev);
-	u32 modrst_offset;
-	void __iomem *membase;
-
-	membase = devfdt_get_addr_ptr(dev);
-
-	modrst_offset = dev_read_u32_default(dev, "altr,modrst-offset", 0x10);
-	data->modrst_base = membase + modrst_offset;
-
-	return 0;
-}
-
-static int socfpga_reset_remove(struct udevice *dev)
-{
-	struct socfpga_reset_data *data = dev_get_priv(dev);
-
-	if (socfpga_reset_keep_enabled()) {
-		puts("Deasserting all peripheral resets\n");
-		writel(0, data->modrst_base + 4);
-	}
-
-	return 0;
-}
-
-static int socfpga_reset_bind(struct udevice *dev)
-{
-	int ret;
-	struct udevice *sys_child;
-
-	/*
-	 * The sysreset driver does not have a device node, so bind it here.
-	 * Bind it to the node, too, so that it can get its base address.
-	 */
-	ret = device_bind_driver_to_node(dev, "socfpga_sysreset", "sysreset",
-					 dev->node, &sys_child);
-	if (ret)
-		debug("Warning: No sysreset driver: ret=%d\n", ret);
-
-	return 0;
-}
-
-static const struct udevice_id socfpga_reset_match[] = {
-	{ .compatible = "altr,rst-mgr" },
+static const struct of_device_id socfpga_early_reset_dt_ids[] __initconst = {
+	{ .compatible = "altr,rst-mgr", },
 	{ /* sentinel */ },
 };
 
-U_BOOT_DRIVER(socfpga_reset) = {
-	.name = "socfpga-reset",
-	.id = UCLASS_RESET,
-	.of_match = socfpga_reset_match,
-	.bind = socfpga_reset_bind,
-	.probe = socfpga_reset_probe,
-	.priv_auto_alloc_size = sizeof(struct socfpga_reset_data),
-	.ops = &socfpga_reset_ops,
-	.remove = socfpga_reset_remove,
-	.flags	= DM_FLAG_OS_PREPARE,
-};
+void __init socfpga_reset_init(void)
+{
+	struct device_node *np;
+
+	for_each_matching_node(np, socfpga_early_reset_dt_ids)
+		a10_reset_init(np);
+}

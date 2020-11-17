@@ -1,19 +1,12 @@
-/* SPDX-License-Identifier: BSD-2-Clause */
+/* SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause) */
 /*
- * Copyright (c) 2015-2018, Linaro Limited
+ * Copyright (c) 2015-2019, Linaro Limited
  */
-
 #ifndef OPTEE_SMC_H
 #define OPTEE_SMC_H
 
 #include <linux/arm-smccc.h>
 #include <linux/bitops.h>
-
-/*
- * This file is based on
- * https://github.com/OP-TEE/optee_os/blob/master/core/arch/arm/include/sm/optee_smc.h
- * and may need to be updated when introducing new features.
- */
 
 #define OPTEE_SMC_STD_CALL_VAL(func_num) \
 	ARM_SMCCC_CALL_VAL(ARM_SMCCC_STD_CALL, ARM_SMCCC_SMC_32, \

@@ -1,370 +1,253 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * bitops.h: Bit string operations on the ppc
+ * PowerPC atomic bit operations.
+ *
+ * Merged version by David Gibson <david@gibson.dropbear.id.au>.
+ * Based on ppc64 versions by: Dave Engebretsen, Todd Inglett, Don
+ * Reed, Pat McCarthy, Peter Bergner, Anton Blanchard.  They
+ * originally took it from the ppc32 code.
+ *
+ * Within a word, bits are numbered LSB first.  Lot's of places make
+ * this assumption by directly testing bits with (val & (1<<nr)).
+ * This can cause confusion for large (> 1 word) bitmaps on a
+ * big-endian system because, unlike little endian, the number of each
+ * bit depends on the word size.
+ *
+ * The bitop functions are defined to work on unsigned longs, so for a
+ * ppc64 system the bits end up numbered:
+ *   |63..............0|127............64|191...........128|255...........192|
+ * and on ppc32:
+ *   |31.....0|63....32|95....64|127...96|159..128|191..160|223..192|255..224|
+ *
+ * There are a few little-endian macros used mostly for filesystem
+ * bitmaps, these work on similar bit arrays layouts, but
+ * byte-oriented:
+ *   |7...0|15...8|23...16|31...24|39...32|47...40|55...48|63...56|
+ *
+ * The main difference is that bit 3-5 (64b) or 3-4 (32b) in the bit
+ * number field needs to be reversed compared to the big-endian bit
+ * fields. This can be achieved by XOR with 0x38 (64b) or 0x18 (32b).
  */
 
-#ifndef _PPC_BITOPS_H
-#define _PPC_BITOPS_H
+#ifndef _ASM_POWERPC_BITOPS_H
+#define _ASM_POWERPC_BITOPS_H
 
-#include <asm/byteorder.h>
-#include <asm-generic/bitops/__ffs.h>
+#ifdef __KERNEL__
+
+#ifndef _LINUX_BITOPS_H
+#error only <linux/bitops.h> can be included directly
+#endif
+
+#include <linux/compiler.h>
+#include <asm/asm-compat.h>
+#include <asm/synch.h>
+#include <asm/asm-405.h>
+
+/* PPC bit number conversion */
+#define PPC_BITLSHIFT(be)	(BITS_PER_LONG - 1 - (be))
+#define PPC_BIT(bit)		(1UL << PPC_BITLSHIFT(bit))
+#define PPC_BITMASK(bs, be)	((PPC_BIT(bs) - PPC_BIT(be)) | PPC_BIT(bs))
+
+/* Put a PPC bit into a "normal" bit position */
+#define PPC_BITEXTRACT(bits, ppc_bit, dst_bit)			\
+	((((bits) >> PPC_BITLSHIFT(ppc_bit)) & 1) << (dst_bit))
+
+#define PPC_BITLSHIFT32(be)	(32 - 1 - (be))
+#define PPC_BIT32(bit)		(1UL << PPC_BITLSHIFT32(bit))
+#define PPC_BITMASK32(bs, be)	((PPC_BIT32(bs) - PPC_BIT32(be))|PPC_BIT32(bs))
+
+#define PPC_BITLSHIFT8(be)	(8 - 1 - (be))
+#define PPC_BIT8(bit)		(1UL << PPC_BITLSHIFT8(bit))
+#define PPC_BITMASK8(bs, be)	((PPC_BIT8(bs) - PPC_BIT8(be))|PPC_BIT8(bs))
+
+#include <asm/barrier.h>
+
+/* Macro for generating the ***_bits() functions */
+#define DEFINE_BITOP(fn, op, prefix)		\
+static __inline__ void fn(unsigned long mask,	\
+		volatile unsigned long *_p)	\
+{						\
+	unsigned long old;			\
+	unsigned long *p = (unsigned long *)_p;	\
+	__asm__ __volatile__ (			\
+	prefix					\
+"1:"	PPC_LLARX(%0,0,%3,0) "\n"		\
+	stringify_in_c(op) "%0,%0,%2\n"		\
+	PPC405_ERR77(0,%3)			\
+	PPC_STLCX "%0,0,%3\n"			\
+	"bne- 1b\n"				\
+	: "=&r" (old), "+m" (*p)		\
+	: "r" (mask), "r" (p)			\
+	: "cc", "memory");			\
+}
+
+DEFINE_BITOP(set_bits, or, "")
+DEFINE_BITOP(clear_bits, andc, "")
+DEFINE_BITOP(clear_bits_unlock, andc, PPC_RELEASE_BARRIER)
+DEFINE_BITOP(change_bits, xor, "")
+
+static __inline__ void set_bit(int nr, volatile unsigned long *addr)
+{
+	set_bits(BIT_MASK(nr), addr + BIT_WORD(nr));
+}
+
+static __inline__ void clear_bit(int nr, volatile unsigned long *addr)
+{
+	clear_bits(BIT_MASK(nr), addr + BIT_WORD(nr));
+}
+
+static __inline__ void clear_bit_unlock(int nr, volatile unsigned long *addr)
+{
+	clear_bits_unlock(BIT_MASK(nr), addr + BIT_WORD(nr));
+}
+
+static __inline__ void change_bit(int nr, volatile unsigned long *addr)
+{
+	change_bits(BIT_MASK(nr), addr + BIT_WORD(nr));
+}
+
+/* Like DEFINE_BITOP(), with changes to the arguments to 'op' and the output
+ * operands. */
+#define DEFINE_TESTOP(fn, op, prefix, postfix, eh)	\
+static __inline__ unsigned long fn(			\
+		unsigned long mask,			\
+		volatile unsigned long *_p)		\
+{							\
+	unsigned long old, t;				\
+	unsigned long *p = (unsigned long *)_p;		\
+	__asm__ __volatile__ (				\
+	prefix						\
+"1:"	PPC_LLARX(%0,0,%3,eh) "\n"			\
+	stringify_in_c(op) "%1,%0,%2\n"			\
+	PPC405_ERR77(0,%3)				\
+	PPC_STLCX "%1,0,%3\n"				\
+	"bne- 1b\n"					\
+	postfix						\
+	: "=&r" (old), "=&r" (t)			\
+	: "r" (mask), "r" (p)				\
+	: "cc", "memory");				\
+	return (old & mask);				\
+}
+
+DEFINE_TESTOP(test_and_set_bits, or, PPC_ATOMIC_ENTRY_BARRIER,
+	      PPC_ATOMIC_EXIT_BARRIER, 0)
+DEFINE_TESTOP(test_and_set_bits_lock, or, "",
+	      PPC_ACQUIRE_BARRIER, 1)
+DEFINE_TESTOP(test_and_clear_bits, andc, PPC_ATOMIC_ENTRY_BARRIER,
+	      PPC_ATOMIC_EXIT_BARRIER, 0)
+DEFINE_TESTOP(test_and_change_bits, xor, PPC_ATOMIC_ENTRY_BARRIER,
+	      PPC_ATOMIC_EXIT_BARRIER, 0)
+
+static __inline__ int test_and_set_bit(unsigned long nr,
+				       volatile unsigned long *addr)
+{
+	return test_and_set_bits(BIT_MASK(nr), addr + BIT_WORD(nr)) != 0;
+}
+
+static __inline__ int test_and_set_bit_lock(unsigned long nr,
+				       volatile unsigned long *addr)
+{
+	return test_and_set_bits_lock(BIT_MASK(nr),
+				addr + BIT_WORD(nr)) != 0;
+}
+
+static __inline__ int test_and_clear_bit(unsigned long nr,
+					 volatile unsigned long *addr)
+{
+	return test_and_clear_bits(BIT_MASK(nr), addr + BIT_WORD(nr)) != 0;
+}
+
+static __inline__ int test_and_change_bit(unsigned long nr,
+					  volatile unsigned long *addr)
+{
+	return test_and_change_bits(BIT_MASK(nr), addr + BIT_WORD(nr)) != 0;
+}
+
+#ifdef CONFIG_PPC64
+static __inline__ unsigned long clear_bit_unlock_return_word(int nr,
+						volatile unsigned long *addr)
+{
+	unsigned long old, t;
+	unsigned long *p = (unsigned long *)addr + BIT_WORD(nr);
+	unsigned long mask = BIT_MASK(nr);
+
+	__asm__ __volatile__ (
+	PPC_RELEASE_BARRIER
+"1:"	PPC_LLARX(%0,0,%3,0) "\n"
+	"andc %1,%0,%2\n"
+	PPC405_ERR77(0,%3)
+	PPC_STLCX "%1,0,%3\n"
+	"bne- 1b\n"
+	: "=&r" (old), "=&r" (t)
+	: "r" (mask), "r" (p)
+	: "cc", "memory");
+
+	return old;
+}
+
+/* This is a special function for mm/filemap.c */
+#define clear_bit_unlock_is_negative_byte(nr, addr)			\
+	(clear_bit_unlock_return_word(nr, addr) & BIT_MASK(PG_waiters))
+
+#endif /* CONFIG_PPC64 */
+
+#include <asm-generic/bitops/non-atomic.h>
+
+static __inline__ void __clear_bit_unlock(int nr, volatile unsigned long *addr)
+{
+	__asm__ __volatile__(PPC_RELEASE_BARRIER "" ::: "memory");
+	__clear_bit(nr, addr);
+}
 
 /*
- * Arguably these bit operations don't imply any memory barrier or
- * SMP ordering, but in fact a lot of drivers expect them to imply
- * both, since they do on x86 cpus.
+ * Return the zero-based bit position (LE, not IBM bit numbering) of
+ * the most significant 1-bit in a double word.
  */
-#ifdef CONFIG_SMP
-#define SMP_WMB		"eieio\n"
-#define SMP_MB		"\nsync"
-#else
-#define SMP_WMB
-#define SMP_MB
-#endif /* CONFIG_SMP */
+#define __ilog2(x)	ilog2(x)
 
-#define __INLINE_BITOPS	1
+#include <asm-generic/bitops/ffz.h>
 
-#if __INLINE_BITOPS
-/*
- * These used to be if'd out here because using : "cc" as a constraint
- * resulted in errors from egcs.  Things may be OK with gcc-2.95.
- */
-static __inline__ void set_bit(int nr, volatile void * addr)
-{
-	unsigned long old;
-	unsigned long mask = 1 << (nr & 0x1f);
-	unsigned long *p = ((unsigned long *)addr) + (nr >> 5);
+#include <asm-generic/bitops/builtin-__ffs.h>
 
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%3\n\
-	or	%0,%0,%2\n\
-	stwcx.	%0,0,%3\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc" );
-}
-
-static __inline__ void clear_bit(int nr, volatile void *addr)
-{
-	unsigned long old;
-	unsigned long mask = 1 << (nr & 0x1f);
-	unsigned long *p = ((unsigned long *)addr) + (nr >> 5);
-
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%3\n\
-	andc	%0,%0,%2\n\
-	stwcx.	%0,0,%3\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc");
-}
-
-static __inline__ void change_bit(int nr, volatile void *addr)
-{
-	unsigned long old;
-	unsigned long mask = 1 << (nr & 0x1f);
-	unsigned long *p = ((unsigned long *)addr) + (nr >> 5);
-
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%3\n\
-	xor	%0,%0,%2\n\
-	stwcx.	%0,0,%3\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc");
-}
-
-static __inline__ int test_and_set_bit(int nr, volatile void *addr)
-{
-	unsigned int old, t;
-	unsigned int mask = 1 << (nr & 0x1f);
-	volatile unsigned int *p = ((volatile unsigned int *)addr) + (nr >> 5);
-
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%4\n\
-	or	%1,%0,%3\n\
-	stwcx.	%1,0,%4\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=&r" (t), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc");
-
-	return (old & mask) != 0;
-}
-
-static __inline__ int test_and_clear_bit(int nr, volatile void *addr)
-{
-	unsigned int old, t;
-	unsigned int mask = 1 << (nr & 0x1f);
-	volatile unsigned int *p = ((volatile unsigned int *)addr) + (nr >> 5);
-
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%4\n\
-	andc	%1,%0,%3\n\
-	stwcx.	%1,0,%4\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=&r" (t), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc");
-
-	return (old & mask) != 0;
-}
-
-static __inline__ int test_and_change_bit(int nr, volatile void *addr)
-{
-	unsigned int old, t;
-	unsigned int mask = 1 << (nr & 0x1f);
-	volatile unsigned int *p = ((volatile unsigned int *)addr) + (nr >> 5);
-
-	__asm__ __volatile__(SMP_WMB "\
-1:	lwarx	%0,0,%4\n\
-	xor	%1,%0,%3\n\
-	stwcx.	%1,0,%4\n\
-	bne	1b"
-	SMP_MB
-	: "=&r" (old), "=&r" (t), "=m" (*p)
-	: "r" (mask), "r" (p), "m" (*p)
-	: "cc");
-
-	return (old & mask) != 0;
-}
-#endif /* __INLINE_BITOPS */
-
-static __inline__ int test_bit(int nr, __const__ volatile void *addr)
-{
-	__const__ unsigned int *p = (__const__ unsigned int *) addr;
-
-	return ((p[nr >> 5] >> (nr & 0x1f)) & 1) != 0;
-}
-
-/* Return the bit position of the most significant 1 bit in a word */
-/* - the result is undefined when x == 0 */
-static __inline__ int __ilog2(unsigned int x)
-{
-	int lz;
-
-	asm ("cntlzw %0,%1" : "=r" (lz) : "r" (x));
-	return 31 - lz;
-}
-
-static __inline__ int ffz(unsigned int x)
-{
-	if ((x = ~x) == 0)
-		return 32;
-	return __ilog2(x & -x);
-}
+#include <asm-generic/bitops/builtin-ffs.h>
 
 /*
  * fls: find last (most-significant) bit set.
  * Note fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
- *
- * On powerpc, __ilog2(0) returns -1, but this is not safe in general
  */
 static __inline__ int fls(unsigned int x)
 {
-	return __ilog2(x) + 1;
+	return 32 - __builtin_clz(x);
 }
-#define PLATFORM_FLS
 
-/**
- * fls64 - find last set bit in a 64-bit word
- * @x: the word to search
- *
- * This is defined in a similar way as the libc and compiler builtin
- * ffsll, but returns the position of the most significant set bit.
- *
- * fls64(value) returns 0 if value is 0 or the position of the last
- * set bit if value is nonzero. The last (most significant) bit is
- * at position 64.
- */
-#if BITS_PER_LONG == 32
-static inline int fls64(__u64 x)
+#include <asm-generic/bitops/builtin-__fls.h>
+
+static __inline__ int fls64(__u64 x)
 {
-	__u32 h = x >> 32;
-	if (h)
-		return fls(h) + 32;
-	return fls(x);
+	return 64 - __builtin_clzll(x);
 }
-#elif BITS_PER_LONG == 64
-static inline int fls64(__u64 x)
-{
-	if (x == 0)
-		return 0;
-	return __ilog2(x) + 1;
-}
+
+#ifdef CONFIG_PPC64
+unsigned int __arch_hweight8(unsigned int w);
+unsigned int __arch_hweight16(unsigned int w);
+unsigned int __arch_hweight32(unsigned int w);
+unsigned long __arch_hweight64(__u64 w);
+#include <asm-generic/bitops/const_hweight.h>
 #else
-#error BITS_PER_LONG not 32 or 64
+#include <asm-generic/bitops/hweight.h>
 #endif
 
-#ifdef __KERNEL__
+#include <asm-generic/bitops/find.h>
 
-/*
- * ffs: find first bit set. This is defined the same way as
- * the libc and compiler builtin ffs routines, therefore
- * differs in spirit from the above ffz (man ffs).
- */
-static __inline__ int ffs(int x)
-{
-	return __ilog2(x & -x) + 1;
-}
-#define PLATFORM_FFS
+/* Little-endian versions */
+#include <asm-generic/bitops/le.h>
 
-/*
- * hweightN: returns the hamming weight (i.e. the number
- * of bits set) of a N-bit word
- */
+/* Bitmap functions for the ext2 filesystem */
 
-#define hweight32(x) generic_hweight32(x)
-#define hweight16(x) generic_hweight16(x)
-#define hweight8(x) generic_hweight8(x)
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
+
+#include <asm-generic/bitops/sched.h>
 
 #endif /* __KERNEL__ */
 
-/*
- * This implementation of find_{first,next}_zero_bit was stolen from
- * Linus' asm-alpha/bitops.h.
- */
-#define find_first_zero_bit(addr, size) \
-	find_next_zero_bit((addr), (size), 0)
-
-static __inline__ unsigned long find_next_zero_bit(void * addr,
-	unsigned long size, unsigned long offset)
-{
-	unsigned int * p = ((unsigned int *) addr) + (offset >> 5);
-	unsigned int result = offset & ~31UL;
-	unsigned int tmp;
-
-	if (offset >= size)
-		return size;
-	size -= result;
-	offset &= 31UL;
-	if (offset) {
-		tmp = *p++;
-		tmp |= ~0UL >> (32-offset);
-		if (size < 32)
-			goto found_first;
-		if (tmp != ~0U)
-			goto found_middle;
-		size -= 32;
-		result += 32;
-	}
-	while (size >= 32) {
-		if ((tmp = *p++) != ~0U)
-			goto found_middle;
-		result += 32;
-		size -= 32;
-	}
-	if (!size)
-		return result;
-	tmp = *p;
-found_first:
-	tmp |= ~0UL << size;
-found_middle:
-	return result + ffz(tmp);
-}
-
-
-#define _EXT2_HAVE_ASM_BITOPS_
-
-#ifdef __KERNEL__
-/*
- * test_and_{set,clear}_bit guarantee atomicity without
- * disabling interrupts.
- */
-#define ext2_set_bit(nr, addr)		test_and_set_bit((nr) ^ 0x18, addr)
-#define ext2_clear_bit(nr, addr)	test_and_clear_bit((nr) ^ 0x18, addr)
-
-#else
-static __inline__ int ext2_set_bit(int nr, void * addr)
-{
-	int		mask;
-	unsigned char	*ADDR = (unsigned char *) addr;
-	int oldbit;
-
-	ADDR += nr >> 3;
-	mask = 1 << (nr & 0x07);
-	oldbit = (*ADDR & mask) ? 1 : 0;
-	*ADDR |= mask;
-	return oldbit;
-}
-
-static __inline__ int ext2_clear_bit(int nr, void * addr)
-{
-	int		mask;
-	unsigned char	*ADDR = (unsigned char *) addr;
-	int oldbit;
-
-	ADDR += nr >> 3;
-	mask = 1 << (nr & 0x07);
-	oldbit = (*ADDR & mask) ? 1 : 0;
-	*ADDR = *ADDR & ~mask;
-	return oldbit;
-}
-#endif	/* __KERNEL__ */
-
-static __inline__ int ext2_test_bit(int nr, __const__ void * addr)
-{
-	__const__ unsigned char	*ADDR = (__const__ unsigned char *) addr;
-
-	return (ADDR[nr >> 3] >> (nr & 7)) & 1;
-}
-
-/*
- * This implementation of ext2_find_{first,next}_zero_bit was stolen from
- * Linus' asm-alpha/bitops.h and modified for a big-endian machine.
- */
-
-#define ext2_find_first_zero_bit(addr, size) \
-	ext2_find_next_zero_bit((addr), (size), 0)
-
-static __inline__ unsigned long ext2_find_next_zero_bit(void *addr,
-	unsigned long size, unsigned long offset)
-{
-	unsigned int *p = ((unsigned int *) addr) + (offset >> 5);
-	unsigned int result = offset & ~31UL;
-	unsigned int tmp;
-
-	if (offset >= size)
-		return size;
-	size -= result;
-	offset &= 31UL;
-	if (offset) {
-		tmp = cpu_to_le32p(p++);
-		tmp |= ~0UL >> (32-offset);
-		if (size < 32)
-			goto found_first;
-		if (tmp != ~0U)
-			goto found_middle;
-		size -= 32;
-		result += 32;
-	}
-	while (size >= 32) {
-		if ((tmp = cpu_to_le32p(p++)) != ~0U)
-			goto found_middle;
-		result += 32;
-		size -= 32;
-	}
-	if (!size)
-		return result;
-	tmp = cpu_to_le32p(p);
-found_first:
-	tmp |= ~0U << size;
-found_middle:
-	return result + ffz(tmp);
-}
-
-/* Bitmap functions for the minix filesystem.  */
-#define minix_test_and_set_bit(nr,addr) ext2_set_bit(nr,addr)
-#define minix_set_bit(nr,addr) ((void)ext2_set_bit(nr,addr))
-#define minix_test_and_clear_bit(nr,addr) ext2_clear_bit(nr,addr)
-#define minix_test_bit(nr,addr) ext2_test_bit(nr,addr)
-#define minix_find_first_zero_bit(addr,size) ext2_find_first_zero_bit(addr,size)
-
-#endif /* _PPC_BITOPS_H */
+#endif /* _ASM_POWERPC_BITOPS_H */

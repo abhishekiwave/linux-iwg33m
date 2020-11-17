@@ -1,18 +1,31 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2000-2007
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for the input core drivers.
+#
 
-obj-$(CONFIG_KEYBOARD) += input.o
-obj-$(CONFIG_$(SPL_TPL_)CROS_EC_KEYB) += cros_ec_keyb.o
-obj-$(CONFIG_$(SPL_TPL_)OF_CONTROL) += key_matrix.o
-obj-$(CONFIG_$(SPL_TPL_)DM_KEYBOARD) += input.o keyboard-uclass.o
+# Each configuration option enables a list of files.
 
-ifndef CONFIG_SPL_BUILD
+obj-$(CONFIG_INPUT)		+= input-core.o
+input-core-y := input.o input-compat.o input-mt.o input-poller.o ff-core.o
 
-obj-$(CONFIG_I8042_KEYB) += i8042.o
-obj-$(CONFIG_TEGRA_KEYBOARD) += input.o tegra-kbc.o
-obj-$(CONFIG_TWL4030_INPUT) += twl4030.o
-obj-$(CONFIG_TWL6030_INPUT) += twl6030.o
-obj-$(CONFIG_MXC_KPD) += mxc_keyb.o
-endif
+obj-$(CONFIG_INPUT_FF_MEMLESS)	+= ff-memless.o
+obj-$(CONFIG_INPUT_POLLDEV)	+= input-polldev.o
+obj-$(CONFIG_INPUT_SPARSEKMAP)	+= sparse-keymap.o
+obj-$(CONFIG_INPUT_MATRIXKMAP)	+= matrix-keymap.o
+
+obj-$(CONFIG_INPUT_LEDS)	+= input-leds.o
+obj-$(CONFIG_INPUT_MOUSEDEV)	+= mousedev.o
+obj-$(CONFIG_INPUT_JOYDEV)	+= joydev.o
+obj-$(CONFIG_INPUT_EVDEV)	+= evdev.o
+obj-$(CONFIG_INPUT_EVBUG)	+= evbug.o
+
+obj-$(CONFIG_INPUT_KEYBOARD)	+= keyboard/
+obj-$(CONFIG_INPUT_MOUSE)	+= mouse/
+obj-$(CONFIG_INPUT_JOYSTICK)	+= joystick/
+obj-$(CONFIG_INPUT_TABLET)	+= tablet/
+obj-$(CONFIG_INPUT_TOUCHSCREEN)	+= touchscreen/
+obj-$(CONFIG_INPUT_MISC)	+= misc/
+
+obj-$(CONFIG_INPUT_APMPOWER)	+= apm-power.o
+
+obj-$(CONFIG_RMI4_CORE)		+= rmi4/

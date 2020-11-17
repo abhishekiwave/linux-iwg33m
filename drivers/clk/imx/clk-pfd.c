@@ -1,52 +1,98 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2019 DENX Software Engineering
- * Lukasz Majewski, DENX Software Engineering, lukma@denx.de
- *
  * Copyright 2012 Freescale Semiconductor, Inc.
  * Copyright 2012 Linaro Ltd.
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
  */
 
-#include <common.h>
-#include <asm/io.h>
-#include <malloc.h>
-#include <clk-uclass.h>
-#include <dm/device.h>
-#include <dm/devres.h>
 #include <linux/clk-provider.h>
-#include <div64.h>
-#include <clk.h>
-#include "clk.h"
+#include <linux/imx_sema4.h>
+#include <linux/io.h>
+#include <linux/slab.h>
 #include <linux/err.h>
+#include <soc/imx/src.h>
+#include "clk.h"
 
-#define UBOOT_DM_CLK_IMX_PFD "imx_clk_pfd"
-
+/**
+ * struct clk_pfd - IMX PFD clock
+ * @clk_hw:	clock source
+ * @reg:	PFD register address
+ * @idx:	the index of PFD encoded in the register
+ *
+ * PFD clock found on i.MX6 series.  Each register for PFD has 4 clk_pfd
+ * data encoded, and member idx is used to specify the one.  And each
+ * register has SET, CLR and TOG registers at offset 0x4 0x8 and 0xc.
+ */
 struct clk_pfd {
-	struct clk	clk;
+	struct clk_hw	hw;
 	void __iomem	*reg;
 	u8		idx;
 };
 
-#define to_clk_pfd(_clk) container_of(_clk, struct clk_pfd, clk)
+#define to_clk_pfd(_hw) container_of(_hw, struct clk_pfd, hw)
 
 #define SET	0x4
 #define CLR	0x8
 #define OTG	0xc
 
-static unsigned long clk_pfd_recalc_rate(struct clk *clk)
+static void clk_pfd_do_hardware(struct clk_pfd *pfd, bool enable)
 {
-	struct clk_pfd *pfd =
-		to_clk_pfd(dev_get_clk_ptr(clk->dev));
-	unsigned long parent_rate = clk_get_parent_rate(clk);
+	if (enable)
+		writel_relaxed(1 << ((pfd->idx + 1) * 8 - 1), pfd->reg + CLR);
+	else
+		writel_relaxed(1 << ((pfd->idx + 1) * 8 - 1), pfd->reg + SET);
+}
+
+static void clk_pfd_do_shared_clks(struct clk_hw *hw, bool enable)
+{
+	struct clk_pfd *pfd = to_clk_pfd(hw);
+
+	if (imx_src_is_m4_enabled() && clk_on_imx6sx()) {
+#ifdef CONFIG_SOC_IMX6SX
+		if (!amp_power_mutex || !shared_mem) {
+			if (enable)
+				clk_pfd_do_hardware(pfd, enable);
+			return;
+		}
+
+		imx_sema4_mutex_lock(amp_power_mutex);
+		if (shared_mem->ca9_valid != SHARED_MEM_MAGIC_NUMBER ||
+			shared_mem->cm4_valid != SHARED_MEM_MAGIC_NUMBER) {
+			imx_sema4_mutex_unlock(amp_power_mutex);
+			return;
+		}
+
+		if (!imx_update_shared_mem(hw, enable)) {
+			imx_sema4_mutex_unlock(amp_power_mutex);
+			return;
+		}
+
+		clk_pfd_do_hardware(pfd, enable);
+
+		imx_sema4_mutex_unlock(amp_power_mutex);
+#endif
+	} else {
+		clk_pfd_do_hardware(pfd, enable);
+	}
+}
+
+static int clk_pfd_enable(struct clk_hw *hw)
+{
+	clk_pfd_do_shared_clks(hw, true);
+
+	return 0;
+}
+
+static void clk_pfd_disable(struct clk_hw *hw)
+{
+	clk_pfd_do_shared_clks(hw, false);
+}
+
+static unsigned long clk_pfd_recalc_rate(struct clk_hw *hw,
+					 unsigned long parent_rate)
+{
+	struct clk_pfd *pfd = to_clk_pfd(hw);
 	u64 tmp = parent_rate;
-	u8 frac = (readl(pfd->reg) >> (pfd->idx * 8)) & 0x3f;
+	u8 frac = (readl_relaxed(pfd->reg) >> (pfd->idx * 8)) & 0x3f;
 
 	tmp *= 18;
 	do_div(tmp, frac);
@@ -54,10 +100,30 @@ static unsigned long clk_pfd_recalc_rate(struct clk *clk)
 	return tmp;
 }
 
-static unsigned long clk_pfd_set_rate(struct clk *clk, unsigned long rate)
+static long clk_pfd_round_rate(struct clk_hw *hw, unsigned long rate,
+			       unsigned long *prate)
 {
-	struct clk_pfd *pfd = to_clk_pfd(clk);
-	unsigned long parent_rate = clk_get_parent_rate(clk);
+	u64 tmp = *prate;
+	u8 frac;
+
+	tmp = tmp * 18 + rate / 2;
+	do_div(tmp, rate);
+	frac = tmp;
+	if (frac < 12)
+		frac = 12;
+	else if (frac > 35)
+		frac = 35;
+	tmp = *prate;
+	tmp *= 18;
+	do_div(tmp, frac);
+
+	return tmp;
+}
+
+static int clk_pfd_set_rate(struct clk_hw *hw, unsigned long rate,
+		unsigned long parent_rate)
+{
+	struct clk_pfd *pfd = to_clk_pfd(hw);
 	u64 tmp = parent_rate;
 	u8 frac;
 
@@ -69,22 +135,37 @@ static unsigned long clk_pfd_set_rate(struct clk *clk, unsigned long rate)
 	else if (frac > 35)
 		frac = 35;
 
-	writel(0x3f << (pfd->idx * 8), pfd->reg + CLR);
-	writel(frac << (pfd->idx * 8), pfd->reg + SET);
+	writel_relaxed(0x3f << (pfd->idx * 8), pfd->reg + CLR);
+	writel_relaxed(frac << (pfd->idx * 8), pfd->reg + SET);
 
 	return 0;
 }
 
+static int clk_pfd_is_enabled(struct clk_hw *hw)
+{
+	struct clk_pfd *pfd = to_clk_pfd(hw);
+
+	if (readl_relaxed(pfd->reg) & (1 << ((pfd->idx + 1) * 8 - 1)))
+		return 0;
+
+	return 1;
+}
+
 static const struct clk_ops clk_pfd_ops = {
-	.get_rate	= clk_pfd_recalc_rate,
+	.enable		= clk_pfd_enable,
+	.disable	= clk_pfd_disable,
+	.recalc_rate	= clk_pfd_recalc_rate,
+	.round_rate	= clk_pfd_round_rate,
 	.set_rate	= clk_pfd_set_rate,
+	.is_enabled     = clk_pfd_is_enabled,
 };
 
-struct clk *imx_clk_pfd(const char *name, const char *parent_name,
+struct clk_hw *imx_clk_hw_pfd(const char *name, const char *parent_name,
 			void __iomem *reg, u8 idx)
 {
 	struct clk_pfd *pfd;
-	struct clk *clk;
+	struct clk_hw *hw;
+	struct clk_init_data init;
 	int ret;
 
 	pfd = kzalloc(sizeof(*pfd), GFP_KERNEL);
@@ -94,21 +175,20 @@ struct clk *imx_clk_pfd(const char *name, const char *parent_name,
 	pfd->reg = reg;
 	pfd->idx = idx;
 
-	/* register the clock */
-	clk = &pfd->clk;
+	init.name = name;
+	init.ops = &clk_pfd_ops;
+	init.flags = 0;
+	init.parent_names = &parent_name;
+	init.num_parents = 1;
 
-	ret = clk_register(clk, UBOOT_DM_CLK_IMX_PFD, name, parent_name);
+	pfd->hw.init = &init;
+	hw = &pfd->hw;
+
+	ret = clk_hw_register(NULL, hw);
 	if (ret) {
 		kfree(pfd);
 		return ERR_PTR(ret);
 	}
 
-	return clk;
+	return hw;
 }
-
-U_BOOT_DRIVER(clk_pfd) = {
-	.name	= UBOOT_DM_CLK_IMX_PFD,
-	.id	= UCLASS_CLK,
-	.ops	= &clk_pfd_ops,
-	.flags = DM_FLAG_PRE_RELOC,
-};

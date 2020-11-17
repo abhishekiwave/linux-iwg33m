@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/muldi3.S
  *
@@ -22,7 +22,6 @@
 #define yh r3
 #endif
 
-.pushsection .text.__muldi3, "ax"
 ENTRY(__muldi3)
 ENTRY(__aeabi_lmul)
 
@@ -44,4 +43,3 @@ ENTRY(__aeabi_lmul)
 
 ENDPROC(__muldi3)
 ENDPROC(__aeabi_lmul)
-.popsection

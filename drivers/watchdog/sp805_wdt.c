@@ -1,136 +1,360 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
- * Watchdog driver for SP805 on some Layerscape SoC
+ * drivers/char/watchdog/sp805-wdt.c
  *
- * Copyright 2019 NXP
+ * Watchdog driver for ARM SP805 watchdog module
+ *
+ * Copyright (C) 2010 ST Microelectronics
+ * Viresh Kumar <vireshk@kernel.org>
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2 or later. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
-#include <asm/io.h>
-#include <common.h>
-#include <dm/device.h>
-#include <dm/fdtaddr.h>
-#include <dm/read.h>
+#include <linux/acpi.h>
+#include <linux/device.h>
+#include <linux/resource.h>
+#include <linux/amba/bus.h>
 #include <linux/bitops.h>
-#include <watchdog.h>
-#include <wdt.h>
-#include <linux/err.h>
+#include <linux/clk.h>
+#include <linux/io.h>
+#include <linux/ioport.h>
+#include <linux/kernel.h>
+#include <linux/math64.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/of.h>
+#include <linux/pm.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/types.h>
+#include <linux/watchdog.h>
 
+/* default timeout in seconds */
+#define DEFAULT_TIMEOUT		60
+
+#define MODULE_NAME		"sp805-wdt"
+
+/* watchdog register offsets and masks */
 #define WDTLOAD			0x000
+	#define LOAD_MIN	0x00000001
+	#define LOAD_MAX	0xFFFFFFFF
+#define WDTVALUE		0x004
 #define WDTCONTROL		0x008
+	/* control register masks */
+	#define	INT_ENABLE	(1 << 0)
+	#define	RESET_ENABLE	(1 << 1)
+	#define	ENABLE_MASK	(INT_ENABLE | RESET_ENABLE)
 #define WDTINTCLR		0x00C
+#define WDTRIS			0x010
+#define WDTMIS			0x014
+	#define INT_MASK	(1 << 0)
 #define WDTLOCK			0xC00
+	#define	UNLOCK		0x1ACCE551
+	#define	LOCK		0x00000001
 
-#define TIME_OUT_MIN_MSECS	1
-#define TIME_OUT_MAX_MSECS	120000
-#define SYS_FSL_WDT_CLK_DIV	16
-#define INT_ENABLE		BIT(0)
-#define RESET_ENABLE		BIT(1)
-#define DISABLE			0
-#define UNLOCK			0x1ACCE551
-#define LOCK			0x00000001
-#define INT_MASK		BIT(0)
-
-DECLARE_GLOBAL_DATA_PTR;
-
-struct sp805_wdt_priv {
-	void __iomem *reg;
+/**
+ * struct sp805_wdt: sp805 wdt device structure
+ * @wdd: instance of struct watchdog_device
+ * @lock: spin lock protecting dev structure and io access
+ * @base: base address of wdt
+ * @clk: clock structure of wdt
+ * @adev: amba device structure of wdt
+ * @status: current status of wdt
+ * @load_val: load value to be set for current timeout
+ */
+struct sp805_wdt {
+	struct watchdog_device		wdd;
+	spinlock_t			lock;
+	void __iomem			*base;
+	struct clk			*clk;
+	u64				rate;
+	struct amba_device		*adev;
+	unsigned int			load_val;
 };
 
-static int sp805_wdt_reset(struct udevice *dev)
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
+MODULE_PARM_DESC(nowayout,
+		"Set to 1 to keep watchdog running after device release");
+
+/* returns true if wdt is running; otherwise returns false */
+static bool wdt_is_running(struct watchdog_device *wdd)
 {
-	struct sp805_wdt_priv *priv = dev_get_priv(dev);
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	u32 wdtcontrol = readl_relaxed(wdt->base + WDTCONTROL);
 
-	writel(UNLOCK, priv->reg + WDTLOCK);
-	writel(INT_MASK, priv->reg + WDTINTCLR);
-	writel(LOCK, priv->reg + WDTLOCK);
-	readl(priv->reg + WDTLOCK);
-
-	return 0;
+	return (wdtcontrol & ENABLE_MASK) == ENABLE_MASK;
 }
 
-static int sp805_wdt_start(struct udevice *dev, u64 timeout, ulong flags)
+/* This routine finds load value that will reset system in required timout */
+static int wdt_setload(struct watchdog_device *wdd, unsigned int timeout)
 {
-	u32 load_value;
-	u32 load_time;
-	struct sp805_wdt_priv *priv = dev_get_priv(dev);
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	u64 load, rate;
 
-	load_time = (u32)timeout;
-	if (timeout < TIME_OUT_MIN_MSECS)
-		load_time = TIME_OUT_MIN_MSECS;
-	else if (timeout > TIME_OUT_MAX_MSECS)
-		load_time = TIME_OUT_MAX_MSECS;
-	/* sp805 runs counter with given value twice, so when the max timeout is
-	 * set 120s, the gd->bus_clk is less than 1145MHz, the load_value will
-	 * not overflow.
+	rate = wdt->rate;
+
+	/*
+	 * sp805 runs counter with given value twice, after the end of first
+	 * counter it gives an interrupt and then starts counter again. If
+	 * interrupt already occurred then it resets the system. This is why
+	 * load is half of what should be required.
 	 */
-	load_value = (gd->bus_clk) /
-		(2 * 1000 * SYS_FSL_WDT_CLK_DIV) * load_time;
+	load = div_u64(rate, 2) * timeout - 1;
 
-	writel(UNLOCK, priv->reg + WDTLOCK);
-	writel(load_value, priv->reg + WDTLOAD);
-	writel(INT_MASK, priv->reg + WDTINTCLR);
-	writel(INT_ENABLE | RESET_ENABLE, priv->reg + WDTCONTROL);
-	writel(LOCK, priv->reg + WDTLOCK);
-	readl(priv->reg + WDTLOCK);
+	load = (load > LOAD_MAX) ? LOAD_MAX : load;
+	load = (load < LOAD_MIN) ? LOAD_MIN : load;
+
+	spin_lock(&wdt->lock);
+	wdt->load_val = load;
+	/* roundup timeout to closest positive integer value */
+	wdd->timeout = div_u64((load + 1) * 2 + (rate / 2), rate);
+	spin_unlock(&wdt->lock);
 
 	return 0;
 }
 
-static int sp805_wdt_stop(struct udevice *dev)
+/* returns number of seconds left for reset to occur */
+static unsigned int wdt_timeleft(struct watchdog_device *wdd)
 {
-	struct sp805_wdt_priv *priv = dev_get_priv(dev);
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	u64 load;
 
-	writel(UNLOCK, priv->reg + WDTLOCK);
-	writel(DISABLE, priv->reg + WDTCONTROL);
-	writel(LOCK, priv->reg + WDTLOCK);
-	readl(priv->reg + WDTLOCK);
+	spin_lock(&wdt->lock);
+	load = readl_relaxed(wdt->base + WDTVALUE);
 
-	return 0;
+	/*If the interrupt is inactive then time left is WDTValue + WDTLoad. */
+	if (!(readl_relaxed(wdt->base + WDTRIS) & INT_MASK))
+		load += wdt->load_val + 1;
+	spin_unlock(&wdt->lock);
+
+	return div_u64(load, wdt->rate);
 }
 
-static int sp805_wdt_expire_now(struct udevice *dev, ulong flags)
+static int
+wdt_restart(struct watchdog_device *wdd, unsigned long mode, void *cmd)
 {
-	sp805_wdt_start(dev, 0, flags);
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+
+	writel_relaxed(0, wdt->base + WDTCONTROL);
+	writel_relaxed(0, wdt->base + WDTLOAD);
+	writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base + WDTCONTROL);
 
 	return 0;
 }
 
-static int sp805_wdt_probe(struct udevice *dev)
+static int wdt_config(struct watchdog_device *wdd, bool ping)
 {
-	debug("%s: Probing wdt%u (sp805-wdt)\n", __func__, dev->seq);
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+	int ret;
+
+	if (!ping) {
+
+		ret = clk_prepare_enable(wdt->clk);
+		if (ret) {
+			dev_err(&wdt->adev->dev, "clock enable fail");
+			return ret;
+		}
+	}
+
+	spin_lock(&wdt->lock);
+
+	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
+	writel_relaxed(wdt->load_val, wdt->base + WDTLOAD);
+	writel_relaxed(INT_MASK, wdt->base + WDTINTCLR);
+
+	if (!ping)
+		writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base +
+				WDTCONTROL);
+
+	writel_relaxed(LOCK, wdt->base + WDTLOCK);
+
+	/* Flush posted writes. */
+	readl_relaxed(wdt->base + WDTLOCK);
+	spin_unlock(&wdt->lock);
 
 	return 0;
 }
 
-static int sp805_wdt_ofdata_to_platdata(struct udevice *dev)
+static int wdt_ping(struct watchdog_device *wdd)
 {
-	struct sp805_wdt_priv *priv = dev_get_priv(dev);
+	return wdt_config(wdd, true);
+}
 
-	priv->reg = (void __iomem *)dev_read_addr(dev);
-	if (IS_ERR(priv->reg))
-		return PTR_ERR(priv->reg);
+/* enables watchdog timers reset */
+static int wdt_enable(struct watchdog_device *wdd)
+{
+	return wdt_config(wdd, false);
+}
+
+/* disables watchdog timers reset */
+static int wdt_disable(struct watchdog_device *wdd)
+{
+	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
+
+	spin_lock(&wdt->lock);
+
+	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
+	writel_relaxed(0, wdt->base + WDTCONTROL);
+	writel_relaxed(LOCK, wdt->base + WDTLOCK);
+
+	/* Flush posted writes. */
+	readl_relaxed(wdt->base + WDTLOCK);
+	spin_unlock(&wdt->lock);
+
+	clk_disable_unprepare(wdt->clk);
 
 	return 0;
 }
 
-static const struct wdt_ops sp805_wdt_ops = {
-	.start = sp805_wdt_start,
-	.reset = sp805_wdt_reset,
-	.stop = sp805_wdt_stop,
-	.expire_now = sp805_wdt_expire_now,
+static const struct watchdog_info wdt_info = {
+	.options = WDIOF_MAGICCLOSE | WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING,
+	.identity = MODULE_NAME,
 };
 
-static const struct udevice_id sp805_wdt_ids[] = {
-	{ .compatible = "arm,sp805-wdt" },
-	{}
+static const struct watchdog_ops wdt_ops = {
+	.owner		= THIS_MODULE,
+	.start		= wdt_enable,
+	.stop		= wdt_disable,
+	.ping		= wdt_ping,
+	.set_timeout	= wdt_setload,
+	.get_timeleft	= wdt_timeleft,
+	.restart	= wdt_restart,
 };
 
-U_BOOT_DRIVER(sp805_wdt) = {
-	.name = "sp805_wdt",
-	.id = UCLASS_WDT,
-	.of_match = sp805_wdt_ids,
-	.probe = sp805_wdt_probe,
-	.priv_auto_alloc_size = sizeof(struct sp805_wdt_priv),
-	.ofdata_to_platdata = sp805_wdt_ofdata_to_platdata,
-	.ops = &sp805_wdt_ops,
+static int
+sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
+{
+	struct sp805_wdt *wdt;
+	int ret = 0;
+
+	wdt = devm_kzalloc(&adev->dev, sizeof(*wdt), GFP_KERNEL);
+	if (!wdt) {
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	wdt->base = devm_ioremap_resource(&adev->dev, &adev->res);
+	if (IS_ERR(wdt->base))
+		return PTR_ERR(wdt->base);
+
+	if (adev->dev.of_node) {
+		wdt->clk = devm_clk_get(&adev->dev, NULL);
+		if (IS_ERR(wdt->clk)) {
+			dev_err(&adev->dev, "Clock not found\n");
+			return PTR_ERR(wdt->clk);
+		}
+		wdt->rate = clk_get_rate(wdt->clk);
+	} else if (has_acpi_companion(&adev->dev)) {
+		/*
+		 * When Driver probe with ACPI device, clock devices
+		 * are not available, so watchdog rate get from
+		 * clock-frequency property given in _DSD object.
+		 */
+		device_property_read_u64(&adev->dev, "clock-frequency",
+					 &wdt->rate);
+		if (!wdt->rate) {
+			dev_err(&adev->dev, "no clock-frequency property\n");
+			return -ENODEV;
+		}
+	}
+
+	wdt->adev = adev;
+	wdt->wdd.info = &wdt_info;
+	wdt->wdd.ops = &wdt_ops;
+	wdt->wdd.parent = &adev->dev;
+
+	spin_lock_init(&wdt->lock);
+	watchdog_set_nowayout(&wdt->wdd, nowayout);
+	watchdog_set_drvdata(&wdt->wdd, wdt);
+	watchdog_set_restart_priority(&wdt->wdd, 128);
+
+	/*
+	 * If 'timeout-sec' devicetree property is specified, use that.
+	 * Otherwise, use DEFAULT_TIMEOUT
+	 */
+	wdt->wdd.timeout = DEFAULT_TIMEOUT;
+	watchdog_init_timeout(&wdt->wdd, 0, &adev->dev);
+	wdt_setload(&wdt->wdd, wdt->wdd.timeout);
+
+	/*
+	 * If HW is already running, enable/reset the wdt and set the running
+	 * bit to tell the wdt subsystem
+	 */
+	if (wdt_is_running(&wdt->wdd)) {
+		wdt_enable(&wdt->wdd);
+		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
+	}
+
+	ret = watchdog_register_device(&wdt->wdd);
+	if (ret)
+		goto err;
+	amba_set_drvdata(adev, wdt);
+
+	dev_info(&adev->dev, "registration successful\n");
+	return 0;
+
+err:
+	dev_err(&adev->dev, "Probe Failed!!!\n");
+	return ret;
+}
+
+static int sp805_wdt_remove(struct amba_device *adev)
+{
+	struct sp805_wdt *wdt = amba_get_drvdata(adev);
+
+	watchdog_unregister_device(&wdt->wdd);
+	watchdog_set_drvdata(&wdt->wdd, NULL);
+
+	return 0;
+}
+
+static int __maybe_unused sp805_wdt_suspend(struct device *dev)
+{
+	struct sp805_wdt *wdt = dev_get_drvdata(dev);
+
+	if (watchdog_active(&wdt->wdd))
+		return wdt_disable(&wdt->wdd);
+
+	return 0;
+}
+
+static int __maybe_unused sp805_wdt_resume(struct device *dev)
+{
+	struct sp805_wdt *wdt = dev_get_drvdata(dev);
+
+	if (watchdog_active(&wdt->wdd))
+		return wdt_enable(&wdt->wdd);
+
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(sp805_wdt_dev_pm_ops, sp805_wdt_suspend,
+		sp805_wdt_resume);
+
+static const struct amba_id sp805_wdt_ids[] = {
+	{
+		.id	= 0x00141805,
+		.mask	= 0x00ffffff,
+	},
+	{ 0, 0 },
 };
+
+MODULE_DEVICE_TABLE(amba, sp805_wdt_ids);
+
+static struct amba_driver sp805_wdt_driver = {
+	.drv = {
+		.name	= MODULE_NAME,
+		.pm	= &sp805_wdt_dev_pm_ops,
+	},
+	.id_table	= sp805_wdt_ids,
+	.probe		= sp805_wdt_probe,
+	.remove = sp805_wdt_remove,
+};
+
+module_amba_driver(sp805_wdt_driver);
+
+MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
+MODULE_DESCRIPTION("ARM SP805 Watchdog Driver");
+MODULE_LICENSE("GPL");

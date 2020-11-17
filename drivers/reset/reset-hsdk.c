@@ -1,20 +1,30 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
- * HSDK SoC Reset Controller driver
+ * Copyright (C) 2017 Synopsys.
  *
- * Copyright (C) 2019 Synopsys, Inc. All rights reserved.
- * Author: Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>
+ * Synopsys HSDK Development platform reset driver.
+ *
+ * This file is licensed under the terms of the GNU General Public
+ * License version 2. This program is licensed "as is" without any
+ * warranty of any kind, whether express or implied.
  */
 
-#include <asm/io.h>
-#include <common.h>
-#include <dm.h>
+#include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/iopoll.h>
-#include <reset-uclass.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
+#include <linux/reset-controller.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+
+#define to_hsdk_rst(p)	container_of((p), struct hsdk_rst, rcdev)
 
 struct hsdk_rst {
-	void __iomem		*regs_ctl;
-	void __iomem		*regs_rst;
+	void __iomem			*regs_ctl;
+	void __iomem			*regs_rst;
+	spinlock_t			lock;
+	struct reset_controller_dev	rcdev;
 };
 
 static const u32 rst_map[] = {
@@ -55,62 +65,74 @@ static int hsdk_reset_do(struct hsdk_rst *rst)
 	writel(reg, rst->regs_rst + CGU_IP_SW_RESET);
 
 	/* wait till reset bit is back to 0 */
-	return readl_poll_timeout(rst->regs_rst + CGU_IP_SW_RESET, reg,
-		!(reg & CGU_IP_SW_RESET_RESET), SW_RESET_TIMEOUT);
+	return readl_poll_timeout_atomic(rst->regs_rst + CGU_IP_SW_RESET, reg,
+		!(reg & CGU_IP_SW_RESET_RESET), 5, SW_RESET_TIMEOUT);
 }
 
-static int hsdk_reset_reset(struct reset_ctl *rst_ctl)
+static int hsdk_reset_reset(struct reset_controller_dev *rcdev,
+			      unsigned long id)
 {
-	struct udevice *dev = rst_ctl->dev;
-	struct hsdk_rst *rst = dev_get_priv(dev);
+	struct hsdk_rst *rst = to_hsdk_rst(rcdev);
+	unsigned long flags;
+	int ret;
 
-	if (rst_ctl->id >= HSDK_MAX_RESETS)
-		return -EINVAL;
+	spin_lock_irqsave(&rst->lock, flags);
+	hsdk_reset_config(rst, id);
+	ret = hsdk_reset_do(rst);
+	spin_unlock_irqrestore(&rst->lock, flags);
 
-	debug("%s(reset_ctl=%p) (dev=%p, id=%lu)\n", __func__, rst_ctl,
-	      rst_ctl->dev, rst_ctl->id);
-
-	hsdk_reset_config(rst, rst_ctl->id);
-	return hsdk_reset_do(rst);
+	return ret;
 }
 
-static int hsdk_reset_noop(struct reset_ctl *rst_ctl)
-{
-	return 0;
-}
-
-static const struct reset_ops hsdk_reset_ops = {
-	.request	= hsdk_reset_noop,
-	.rfree		= hsdk_reset_noop,
-	.rst_assert	= hsdk_reset_noop,
-	.rst_deassert	= hsdk_reset_reset,
+static const struct reset_control_ops hsdk_reset_ops = {
+	.reset	= hsdk_reset_reset,
+	.deassert = hsdk_reset_reset,
 };
 
-static const struct udevice_id hsdk_reset_dt_match[] = {
+static int hsdk_reset_probe(struct platform_device *pdev)
+{
+	struct hsdk_rst *rst;
+	struct resource *mem;
+
+	rst = devm_kzalloc(&pdev->dev, sizeof(*rst), GFP_KERNEL);
+	if (!rst)
+		return -ENOMEM;
+
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	rst->regs_ctl = devm_ioremap_resource(&pdev->dev, mem);
+	if (IS_ERR(rst->regs_ctl))
+		return PTR_ERR(rst->regs_ctl);
+
+	mem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	rst->regs_rst = devm_ioremap_resource(&pdev->dev, mem);
+	if (IS_ERR(rst->regs_rst))
+		return PTR_ERR(rst->regs_rst);
+
+	spin_lock_init(&rst->lock);
+
+	rst->rcdev.owner = THIS_MODULE;
+	rst->rcdev.ops = &hsdk_reset_ops;
+	rst->rcdev.of_node = pdev->dev.of_node;
+	rst->rcdev.nr_resets = HSDK_MAX_RESETS;
+	rst->rcdev.of_reset_n_cells = 1;
+
+	return reset_controller_register(&rst->rcdev);
+}
+
+static const struct of_device_id hsdk_reset_dt_match[] = {
 	{ .compatible = "snps,hsdk-reset" },
 	{ },
 };
 
-static int hsdk_reset_probe(struct udevice *dev)
-{
-	struct hsdk_rst *rst = dev_get_priv(dev);
-
-	rst->regs_ctl = dev_remap_addr_index(dev, 0);
-	if (!rst->regs_ctl)
-		return -EINVAL;
-
-	rst->regs_rst = dev_remap_addr_index(dev, 1);
-	if (!rst->regs_rst)
-		return -EINVAL;
-
-	return 0;
-}
-
-U_BOOT_DRIVER(hsdk_reset) = {
-	.name = "hsdk-reset",
-	.id = UCLASS_RESET,
-	.of_match = hsdk_reset_dt_match,
-	.ops = &hsdk_reset_ops,
-	.probe = hsdk_reset_probe,
-	.priv_auto_alloc_size = sizeof(struct hsdk_rst),
+static struct platform_driver hsdk_reset_driver = {
+	.probe	= hsdk_reset_probe,
+	.driver	= {
+		.name = "hsdk-reset",
+		.of_match_table = hsdk_reset_dt_match,
+	},
 };
+builtin_platform_driver(hsdk_reset_driver);
+
+MODULE_AUTHOR("Eugeniy Paltsev <Eugeniy.Paltsev@synopsys.com>");
+MODULE_DESCRIPTION("Synopsys HSDK SDP reset driver");
+MODULE_LICENSE("GPL v2");

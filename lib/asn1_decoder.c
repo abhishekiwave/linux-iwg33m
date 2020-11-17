@@ -5,16 +5,10 @@
  * Written by David Howells (dhowells@redhat.com)
  */
 
-#ifdef __UBOOT__
-#include <linux/compat.h>
-#else
 #include <linux/export.h>
-#endif
 #include <linux/kernel.h>
 #include <linux/errno.h>
-#ifndef __UBOOT__
 #include <linux/module.h>
-#endif
 #include <linux/asn1_decoder.h>
 #include <linux/asn1_ber_bytecode.h>
 

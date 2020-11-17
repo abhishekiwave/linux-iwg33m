@@ -1,346 +1,213 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2016-2017 Socionext Inc.
+ * Copyright (C) 2016 Socionext Inc.
  *   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
-#include <dm/device_compat.h>
-#include <linux/bitops.h>
-#include <linux/io.h>
-#include <linux/sizes.h>
+#include <linux/clk-provider.h>
+#include <linux/init.h>
+#include <linux/mfd/syscon.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #include "clk-uniphier.h"
 
-/**
- * struct uniphier_clk_priv - private data for UniPhier clock driver
- *
- * @base: base address of the clock provider
- * @data: SoC specific data
- */
-struct uniphier_clk_priv {
-	struct udevice *dev;
-	void __iomem *base;
-	const struct uniphier_clk_data *data;
-};
-
-static void uniphier_clk_gate_enable(struct uniphier_clk_priv *priv,
-				     const struct uniphier_clk_gate_data *gate)
-{
-	u32 val;
-
-	val = readl(priv->base + gate->reg);
-	val |= BIT(gate->bit);
-	writel(val, priv->base + gate->reg);
-}
-
-static void uniphier_clk_mux_set_parent(struct uniphier_clk_priv *priv,
-					const struct uniphier_clk_mux_data *mux,
-					u8 id)
-{
-	u32 val;
-	int i;
-
-	for (i = 0; i < mux->num_parents; i++) {
-		if (mux->parent_ids[i] != id)
-			continue;
-
-		val = readl(priv->base + mux->reg);
-		val &= ~mux->masks[i];
-		val |= mux->vals[i];
-		writel(val, priv->base + mux->reg);
-		return;
-	}
-
-	WARN_ON(1);
-}
-
-static u8 uniphier_clk_mux_get_parent(struct uniphier_clk_priv *priv,
-				      const struct uniphier_clk_mux_data *mux)
-{
-	u32 val;
-	int i;
-
-	val = readl(priv->base + mux->reg);
-
-	for (i = 0; i < mux->num_parents; i++)
-		if ((mux->masks[i] & val) == mux->vals[i])
-			return mux->parent_ids[i];
-
-	dev_err(priv->dev, "invalid mux setting\n");
-
-	return UNIPHIER_CLK_ID_INVALID;
-}
-
-static const struct uniphier_clk_data *uniphier_clk_get_data(
-					struct uniphier_clk_priv *priv, u8 id)
-{
-	const struct uniphier_clk_data *data;
-
-	for (data = priv->data; data->type != UNIPHIER_CLK_TYPE_END; data++)
-		if (data->id == id)
-			return data;
-
-	dev_err(priv->dev, "id=%u not found\n", id);
-
-	return NULL;
-}
-
-static const struct uniphier_clk_data *uniphier_clk_get_parent_data(
-					struct uniphier_clk_priv *priv,
+static struct clk_hw *uniphier_clk_register(struct device *dev,
+					    struct regmap *regmap,
 					const struct uniphier_clk_data *data)
 {
-	const struct uniphier_clk_data *parent_data;
-	u8 parent_id = UNIPHIER_CLK_ID_INVALID;
-
 	switch (data->type) {
+	case UNIPHIER_CLK_TYPE_CPUGEAR:
+		return uniphier_clk_register_cpugear(dev, regmap, data->name,
+						     &data->data.cpugear);
+	case UNIPHIER_CLK_TYPE_FIXED_FACTOR:
+		return uniphier_clk_register_fixed_factor(dev, data->name,
+							  &data->data.factor);
+	case UNIPHIER_CLK_TYPE_FIXED_RATE:
+		return uniphier_clk_register_fixed_rate(dev, data->name,
+							&data->data.rate);
 	case UNIPHIER_CLK_TYPE_GATE:
-		parent_id = data->data.gate.parent_id;
-		break;
+		return uniphier_clk_register_gate(dev, regmap, data->name,
+						  &data->data.gate);
 	case UNIPHIER_CLK_TYPE_MUX:
-		parent_id = uniphier_clk_mux_get_parent(priv, &data->data.mux);
-		break;
+		return uniphier_clk_register_mux(dev, regmap, data->name,
+						 &data->data.mux);
 	default:
-		break;
+		dev_err(dev, "unsupported clock type\n");
+		return ERR_PTR(-EINVAL);
 	}
-
-	if (parent_id == UNIPHIER_CLK_ID_INVALID)
-		return NULL;
-
-	parent_data = uniphier_clk_get_data(priv, parent_id);
-
-	WARN_ON(!parent_data);
-
-	return parent_data;
 }
 
-static void __uniphier_clk_enable(struct uniphier_clk_priv *priv,
-				  const struct uniphier_clk_data *data)
+static int uniphier_clk_probe(struct platform_device *pdev)
 {
-	const struct uniphier_clk_data *parent_data;
+	struct device *dev = &pdev->dev;
+	struct clk_hw_onecell_data *hw_data;
+	const struct uniphier_clk_data *p, *data;
+	struct regmap *regmap;
+	struct device_node *parent;
+	int clk_num = 0;
 
-	if (data->type == UNIPHIER_CLK_TYPE_GATE)
-		uniphier_clk_gate_enable(priv, &data->data.gate);
-
-	parent_data = uniphier_clk_get_parent_data(priv, data);
-	if (!parent_data)
-		return;
-
-	return __uniphier_clk_enable(priv, parent_data);
-}
-
-static int uniphier_clk_enable(struct clk *clk)
-{
-	struct uniphier_clk_priv *priv = dev_get_priv(clk->dev);
-	const struct uniphier_clk_data *data;
-
-	data = uniphier_clk_get_data(priv, clk->id);
-	if (!data)
-		return -ENODEV;
-
-	__uniphier_clk_enable(priv, data);
-
-	return 0;
-}
-
-static unsigned long __uniphier_clk_get_rate(
-					struct uniphier_clk_priv *priv,
-					const struct uniphier_clk_data *data)
-{
-	const struct uniphier_clk_data *parent_data;
-
-	if (data->type == UNIPHIER_CLK_TYPE_FIXED_RATE)
-		return data->data.rate.fixed_rate;
-
-	parent_data = uniphier_clk_get_parent_data(priv, data);
-	if (!parent_data)
-		return 0;
-
-	return __uniphier_clk_get_rate(priv, parent_data);
-}
-
-static unsigned long uniphier_clk_get_rate(struct clk *clk)
-{
-	struct uniphier_clk_priv *priv = dev_get_priv(clk->dev);
-	const struct uniphier_clk_data *data;
-
-	data = uniphier_clk_get_data(priv, clk->id);
-	if (!data)
-		return -ENODEV;
-
-	return __uniphier_clk_get_rate(priv, data);
-}
-
-static unsigned long __uniphier_clk_set_rate(
-					struct uniphier_clk_priv *priv,
-					const struct uniphier_clk_data *data,
-					unsigned long rate, bool set)
-{
-	const struct uniphier_clk_data *best_parent_data = NULL;
-	const struct uniphier_clk_data *parent_data;
-	unsigned long best_rate = 0;
-	unsigned long parent_rate;
-	u8 parent_id;
-	int i;
-
-	if (data->type == UNIPHIER_CLK_TYPE_FIXED_RATE)
-		return data->data.rate.fixed_rate;
-
-	if (data->type == UNIPHIER_CLK_TYPE_GATE) {
-		parent_data = uniphier_clk_get_parent_data(priv, data);
-		if (!parent_data)
-			return 0;
-
-		return __uniphier_clk_set_rate(priv, parent_data, rate, set);
-	}
-
-	if (WARN_ON(data->type != UNIPHIER_CLK_TYPE_MUX))
+	data = of_device_get_match_data(dev);
+	if (WARN_ON(!data))
 		return -EINVAL;
 
-	for (i = 0; i < data->data.mux.num_parents; i++) {
-		parent_id = data->data.mux.parent_ids[i];
-		parent_data = uniphier_clk_get_data(priv, parent_id);
-		if (WARN_ON(!parent_data))
-			return -EINVAL;
-
-		parent_rate = __uniphier_clk_set_rate(priv, parent_data, rate,
-						      false);
-
-		if (parent_rate <= rate && best_rate < parent_rate) {
-			best_rate = parent_rate;
-			best_parent_data = parent_data;
-		}
+	parent = of_get_parent(dev->of_node); /* parent should be syscon node */
+	regmap = syscon_node_to_regmap(parent);
+	of_node_put(parent);
+	if (IS_ERR(regmap)) {
+		dev_err(dev, "failed to get regmap (error %ld)\n",
+			PTR_ERR(regmap));
+		return PTR_ERR(regmap);
 	}
 
-	dev_dbg(priv->dev, "id=%u, best_rate=%lu\n", data->id, best_rate);
+	for (p = data; p->name; p++)
+		clk_num = max(clk_num, p->idx + 1);
 
-	if (!best_parent_data)
-		return -EINVAL;
-
-	if (!set)
-		return best_rate;
-
-	uniphier_clk_mux_set_parent(priv, &data->data.mux,
-				    best_parent_data->id);
-
-	return best_rate = __uniphier_clk_set_rate(priv, best_parent_data,
-						   rate, true);
-}
-
-static unsigned long uniphier_clk_set_rate(struct clk *clk, ulong rate)
-{
-	struct uniphier_clk_priv *priv = dev_get_priv(clk->dev);
-	const struct uniphier_clk_data *data;
-
-	data = uniphier_clk_get_data(priv, clk->id);
-	if (!data)
-		return -ENODEV;
-
-	return __uniphier_clk_set_rate(priv, data, rate, true);
-}
-
-static const struct clk_ops uniphier_clk_ops = {
-	.enable = uniphier_clk_enable,
-	.get_rate = uniphier_clk_get_rate,
-	.set_rate = uniphier_clk_set_rate,
-};
-
-static int uniphier_clk_probe(struct udevice *dev)
-{
-	struct uniphier_clk_priv *priv = dev_get_priv(dev);
-	fdt_addr_t addr;
-
-	addr = devfdt_get_addr(dev->parent);
-	if (addr == FDT_ADDR_T_NONE)
-		return -EINVAL;
-
-	priv->base = devm_ioremap(dev, addr, SZ_4K);
-	if (!priv->base)
+	hw_data = devm_kzalloc(dev,
+			sizeof(*hw_data) + clk_num * sizeof(struct clk_hw *),
+			GFP_KERNEL);
+	if (!hw_data)
 		return -ENOMEM;
 
-	priv->dev = dev;
-	priv->data = (void *)dev_get_driver_data(dev);
+	hw_data->num = clk_num;
+
+	/* avoid returning NULL for unused idx */
+	while (--clk_num >= 0)
+		hw_data->hws[clk_num] = ERR_PTR(-EINVAL);
+
+	for (p = data; p->name; p++) {
+		struct clk_hw *hw;
+
+		dev_dbg(dev, "register %s (index=%d)\n", p->name, p->idx);
+		hw = uniphier_clk_register(dev, regmap, p);
+		if (WARN(IS_ERR(hw), "failed to register %s", p->name))
+			continue;
+
+		if (p->idx >= 0)
+			hw_data->hws[p->idx] = hw;
+	}
+
+	return of_clk_add_hw_provider(dev->of_node, of_clk_hw_onecell_get,
+				      hw_data);
+}
+
+static int uniphier_clk_remove(struct platform_device *pdev)
+{
+	of_clk_del_provider(pdev->dev.of_node);
 
 	return 0;
 }
 
-static const struct udevice_id uniphier_clk_match[] = {
+static const struct of_device_id uniphier_clk_match[] = {
 	/* System clock */
 	{
 		.compatible = "socionext,uniphier-ld4-clock",
-		.data = (ulong)uniphier_pxs2_sys_clk_data,
+		.data = uniphier_ld4_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pro4-clock",
-		.data = (ulong)uniphier_pxs2_sys_clk_data,
+		.data = uniphier_pro4_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-sld8-clock",
-		.data = (ulong)uniphier_pxs2_sys_clk_data,
+		.data = uniphier_sld8_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pro5-clock",
-		.data = (ulong)uniphier_pxs2_sys_clk_data,
+		.data = uniphier_pro5_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pxs2-clock",
-		.data = (ulong)uniphier_pxs2_sys_clk_data,
+		.data = uniphier_pxs2_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-ld11-clock",
-		.data = (ulong)uniphier_ld20_sys_clk_data,
+		.data = uniphier_ld11_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-ld20-clock",
-		.data = (ulong)uniphier_ld20_sys_clk_data,
+		.data = uniphier_ld20_sys_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pxs3-clock",
-		.data = (ulong)uniphier_pxs3_sys_clk_data,
+		.data = uniphier_pxs3_sys_clk_data,
 	},
-	/* Media I/O clock */
+	/* Media I/O clock, SD clock */
 	{
 		.compatible = "socionext,uniphier-ld4-mio-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_ld4_mio_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pro4-mio-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_ld4_mio_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-sld8-mio-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_ld4_mio_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pro5-sd-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_pro5_sd_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pxs2-sd-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_pro5_sd_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-ld11-mio-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_ld4_mio_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-ld20-sd-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_pro5_sd_clk_data,
 	},
 	{
 		.compatible = "socionext,uniphier-pxs3-sd-clock",
-		.data = (ulong)uniphier_mio_clk_data,
+		.data = uniphier_pro5_sd_clk_data,
+	},
+	/* Peripheral clock */
+	{
+		.compatible = "socionext,uniphier-ld4-peri-clock",
+		.data = uniphier_ld4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-pro4-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-sld8-peri-clock",
+		.data = uniphier_ld4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-pro5-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-pxs2-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-ld11-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-ld20-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
+	},
+	{
+		.compatible = "socionext,uniphier-pxs3-peri-clock",
+		.data = uniphier_pro4_peri_clk_data,
 	},
 	{ /* sentinel */ }
 };
 
-U_BOOT_DRIVER(uniphier_clk) = {
-	.name = "uniphier-clk",
-	.id = UCLASS_CLK,
-	.of_match = uniphier_clk_match,
+static struct platform_driver uniphier_clk_driver = {
 	.probe = uniphier_clk_probe,
-	.priv_auto_alloc_size = sizeof(struct uniphier_clk_priv),
-	.ops = &uniphier_clk_ops,
+	.remove = uniphier_clk_remove,
+	.driver = {
+		.name = "uniphier-clk",
+		.of_match_table = uniphier_clk_match,
+	},
 };
+builtin_platform_driver(uniphier_clk_driver);

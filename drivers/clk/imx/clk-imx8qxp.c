@@ -1,202 +1,282 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright 2018 NXP
- * Peng Fan <peng.fan@nxp.com>
+ *	Dong Aisheng <aisheng.dong@nxp.com>
  */
 
-#include <common.h>
-#include <clk-uclass.h>
-#include <dm.h>
-#include <asm/arch/sci/sci.h>
-#include <asm/arch/clock.h>
-#include <dt-bindings/clock/imx8qxp-clock.h>
-#include <dt-bindings/soc/imx_rsrc.h>
-#include <misc.h>
-#include <asm/arch/lpcg.h>
+#include <linux/clk-provider.h>
+#include <linux/err.h>
+#include <linux/io.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
 
-#include "clk-imx8.h"
+#include <dt-bindings/firmware/imx/rsrc.h>
 
-static struct imx8_clks imx8qxp_clks[] = {
-	CLK_4( IMX8QXP_A35_DIV, "A35_DIV", SC_R_A35, SC_PM_CLK_CPU ),
-	CLK_4( IMX8QXP_I2C0_DIV, "I2C0_DIV", SC_R_I2C_0, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_I2C1_DIV, "I2C1_DIV", SC_R_I2C_1, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_I2C2_DIV, "I2C2_DIV", SC_R_I2C_2, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_I2C3_DIV, "I2C3_DIV", SC_R_I2C_3, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_MIPI0_I2C0_DIV, "MIPI0 I2C0_DIV", SC_R_MIPI_0_I2C_0, SC_PM_CLK_MISC2 ),
-	CLK_4( IMX8QXP_MIPI0_I2C1_DIV, "MIPI0 I2C1_DIV", SC_R_MIPI_0_I2C_1, SC_PM_CLK_MISC2 ),
-	CLK_4( IMX8QXP_MIPI1_I2C0_DIV, "MIPI1 I2C0_DIV", SC_R_MIPI_1_I2C_0, SC_PM_CLK_MISC2 ),
-	CLK_4( IMX8QXP_MIPI1_I2C1_DIV, "MIPI1 I2C1_DIV", SC_R_MIPI_1_I2C_1, SC_PM_CLK_MISC2 ),
-	CLK_4( IMX8QXP_CSI0_I2C0_DIV, "CSI0 I2C0_DIV", SC_R_CSI_0_I2C_0, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_UART0_DIV, "UART0_DIV", SC_R_UART_0, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_UART1_DIV, "UART1_DIV", SC_R_UART_1, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_UART2_DIV, "UART2_DIV", SC_R_UART_2, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_UART3_DIV, "UART3_DIV", SC_R_UART_3, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_SDHC0_DIV, "SDHC0_DIV", SC_R_SDHC_0, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_SDHC1_DIV, "SDHC1_DIV", SC_R_SDHC_1, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_SDHC2_DIV, "SDHC2_DIV", SC_R_SDHC_2, SC_PM_CLK_PER ),
-#if !defined(CONFIG_IMX8DXL)
-	CLK_4( IMX8QXP_ENET0_ROOT_DIV, "ENET0_ROOT_DIV", SC_R_ENET_0, SC_PM_CLK_PER ),
-#endif
-	CLK_4( IMX8QXP_ENET0_RGMII_DIV, "ENET0_RGMII_DIV", SC_R_ENET_0, SC_PM_CLK_MISC0 ),
-	CLK_4( IMX8QXP_ENET1_ROOT_DIV, "ENET1_ROOT_DIV", SC_R_ENET_1, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_ENET1_RGMII_DIV, "ENET1_RGMII_DIV", SC_R_ENET_1, SC_PM_CLK_MISC0 ),
-	CLK_4( IMX8QXP_USB3_ACLK_DIV, "USB3_ACLK_DIV", SC_R_USB_2, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_USB3_BUS_DIV, "USB3_BUS_DIV", SC_R_USB_2, SC_PM_CLK_MST_BUS ),
-	CLK_4( IMX8QXP_USB3_LPM_DIV, "USB3_LPM_DIV", SC_R_USB_2, SC_PM_CLK_MISC ),
-	CLK_4( IMX8QXP_LSIO_FSPI0_DIV, "FSPI0_DIV", SC_R_FSPI_0, SC_PM_CLK_PER ),
-	CLK_4( IMX8QXP_GPMI_BCH_IO_DIV, "GPMI_IO_DIV", SC_R_NAND, SC_PM_CLK_MST_BUS ),
-	CLK_4( IMX8QXP_GPMI_BCH_DIV, "GPMI_BCH_DIV", SC_R_NAND, SC_PM_CLK_PER ),
+#include "clk-scu.h"
+
+static const char *pll0_sels[] = {
+	"clk_dummy",
+	"pi_dpll_clk",
+	"clk_dummy",
+	"clk_dummy",
+	"clk_dummy",
 };
 
-static struct imx8_fixed_clks imx8qxp_fixed_clks[] = {
-	CLK_3( IMX8QXP_IPG_CONN_CLK_ROOT, "IPG_CONN_CLK", SC_83MHZ ),
-	CLK_3( IMX8QXP_AHB_CONN_CLK_ROOT, "AHB_CONN_CLK", SC_166MHZ ),
-	CLK_3( IMX8QXP_AXI_CONN_CLK_ROOT, "AXI_CONN_CLK", SC_333MHZ ),
-	CLK_3( IMX8QXP_IPG_DMA_CLK_ROOT, "IPG_DMA_CLK", SC_120MHZ ),
-	CLK_3( IMX8QXP_MIPI_IPG_CLK, "IPG_MIPI_CLK", SC_120MHZ ),
-	CLK_3( IMX8QXP_LSIO_BUS_CLK, "LSIO_BUS_CLK", SC_100MHZ ),
-	CLK_3( IMX8QXP_LSIO_MEM_CLK, "LSIO_MEM_CLK", SC_200MHZ ),
-	CLK_3( IMX8QXP_HSIO_PER_CLK, "HSIO_CLK", SC_133MHZ ),
-	CLK_3( IMX8QXP_HSIO_AXI_CLK, "HSIO_AXI", SC_400MHZ ),
-#if defined(CONFIG_IMX8DXL)
-	CLK_3( IMX8QXP_ENET0_ROOT_DIV, "ENET0_ROOT_DIV", SC_250MHZ ),
-#endif
+static const char *enet0_rgmii_txc_sels[] = {
+	"enet0_ref_div",
+	"clk_dummy",
 };
 
-static struct imx8_gpr_clks imx8qxp_gpr_clks[] = {
-	CLK_5( IMX8QXP_ENET0_REF_DIV, "ENET0_REF_DIV", SC_R_ENET_0, SC_C_CLKDIV, IMX8QXP_ENET0_ROOT_DIV ),
-	CLK_4( IMX8QXP_ENET0_REF_25MHZ_125MHZ_SEL, "ENET0_REF_25_125", SC_R_ENET_0, SC_C_SEL_125 ),
-	CLK_4( IMX8QXP_ENET0_RMII_TX_SEL, "ENET0_RMII_TX", SC_R_ENET_0, SC_C_TXCLK ),
-	CLK_4( IMX8QXP_ENET0_REF_25MHZ_125MHZ_CLK, "ENET0_REF_25_125_CLK", SC_R_ENET_0, SC_C_DISABLE_125 ),
-	CLK_4( IMX8QXP_ENET0_REF_50MHZ_CLK, "ENET0_REF_50", SC_R_ENET_0, SC_C_DISABLE_50 ),
-
-	CLK_5( IMX8QXP_ENET1_REF_DIV, "ENET1_REF_DIV", SC_R_ENET_1, SC_C_CLKDIV, IMX8QXP_ENET1_ROOT_DIV ),
-	CLK_4( IMX8QXP_ENET1_REF_25MHZ_125MHZ_SEL, "ENET1_REF_25_125", SC_R_ENET_1, SC_C_SEL_125 ),
-	CLK_4( IMX8QXP_ENET1_RMII_TX_SEL, "ENET1_RMII_TX", SC_R_ENET_1, SC_C_TXCLK ),
-	CLK_4( IMX8QXP_ENET1_REF_25MHZ_125MHZ_CLK, "ENET1_REF_25_125_CLK", SC_R_ENET_1, SC_C_DISABLE_125 ),
-	CLK_4( IMX8QXP_ENET1_REF_50MHZ_CLK, "ENET1_REF_50", SC_R_ENET_1, SC_C_DISABLE_50 ),
+static const char *enet1_rgmii_txc_sels[] __maybe_unused = {
+	"enet1_ref_div",
+	"clk_dummy",
 };
 
-static struct imx8_lpcg_clks imx8qxp_lpcg_clks[] = {
-	CLK_5( IMX8QXP_I2C0_CLK, "I2C0_CLK", 0, LPI2C_0_LPCG, IMX8QXP_I2C0_DIV ),
-	CLK_5( IMX8QXP_I2C0_IPG_CLK, "I2C0_IPG", 16, LPI2C_0_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_I2C1_CLK, "I2C1_CLK", 0, LPI2C_1_LPCG, IMX8QXP_I2C1_DIV ),
-	CLK_5( IMX8QXP_I2C1_IPG_CLK, "I2C1_IPG", 16, LPI2C_1_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_I2C2_CLK, "I2C2_CLK", 0, LPI2C_2_LPCG, IMX8QXP_I2C2_DIV ),
-	CLK_5( IMX8QXP_I2C2_IPG_CLK, "I2C2_IPG", 16, LPI2C_2_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_I2C3_CLK, "I2C3_CLK", 0, LPI2C_3_LPCG, IMX8QXP_I2C3_DIV ),
-	CLK_5( IMX8QXP_I2C3_IPG_CLK, "I2C3_IPG", 16, LPI2C_3_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_MIPI0_I2C0_CLK, "MIPI0_I2C0_CLK", 0, DI_MIPI0_LPCG + 0x10, IMX8QXP_MIPI0_I2C0_DIV ),
-	CLK_5( IMX8QXP_MIPI0_I2C0_IPG_CLK, "MIPI0_I2C0_IPG", 16, DI_MIPI0_LPCG + 0x10, IMX8QXP_MIPI_IPG_CLK ),
-	CLK_5( IMX8QXP_MIPI0_I2C1_CLK, "MIPI0_I2C1_CLK", 0, DI_MIPI0_LPCG + 0x14, IMX8QXP_MIPI0_I2C1_DIV ),
-	CLK_5( IMX8QXP_MIPI0_I2C1_IPG_CLK, "MIPI0_I2C1_IPG", 16, DI_MIPI0_LPCG + 0x14, IMX8QXP_MIPI_IPG_CLK ),
-	CLK_5( IMX8QXP_MIPI1_I2C0_CLK, "MIPI1_I2C0_CLK", 0, DI_MIPI1_LPCG + 0x10, IMX8QXP_MIPI1_I2C0_DIV ),
-	CLK_5( IMX8QXP_MIPI1_I2C0_IPG_CLK, "MIPI1_I2C0_IPG", 16, DI_MIPI1_LPCG + 0x10, IMX8QXP_MIPI_IPG_CLK ),
-	CLK_5( IMX8QXP_MIPI1_I2C1_CLK, "MIPI1_I2C1_CLK", 0, DI_MIPI1_LPCG + 0x14, IMX8QXP_MIPI1_I2C1_DIV ),
-	CLK_5( IMX8QXP_MIPI1_I2C1_IPG_CLK, "MIPI1_I2C1_IPG", 16, DI_MIPI1_LPCG + 0x14, IMX8QXP_MIPI_IPG_CLK ),
-	CLK_5( IMX8QXP_CSI0_I2C0_CLK, "CSI0_I2C0_CLK", 0, MIPI_CSI_0_LPCG + 0x14, IMX8QXP_CSI0_I2C0_DIV ),
-	CLK_5( IMX8QXP_CSI0_I2C0_IPG_CLK, "CSI0_I2C0_IPG", 16, MIPI_CSI_0_LPCG + 0x14, IMX8QXP_MIPI_IPG_CLK ),
-
-	CLK_5( IMX8QXP_UART0_CLK, "UART0_CLK", 0, LPUART_0_LPCG, IMX8QXP_UART0_DIV ),
-	CLK_5( IMX8QXP_UART0_IPG_CLK, "UART0_IPG", 16, LPUART_0_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_UART1_CLK, "UART1_CLK", 0, LPUART_1_LPCG, IMX8QXP_UART1_DIV ),
-	CLK_5( IMX8QXP_UART1_IPG_CLK, "UART1_IPG", 16, LPUART_1_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_UART2_CLK, "UART2_CLK", 0, LPUART_2_LPCG, IMX8QXP_UART2_DIV ),
-	CLK_5( IMX8QXP_UART2_IPG_CLK, "UART2_IPG", 16, LPUART_2_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-	CLK_5( IMX8QXP_UART3_CLK, "UART3_CLK", 0, LPUART_3_LPCG, IMX8QXP_UART3_DIV ),
-	CLK_5( IMX8QXP_UART3_IPG_CLK, "UART3_IPG", 16, LPUART_3_LPCG, IMX8QXP_IPG_DMA_CLK_ROOT ),
-
-	CLK_5( IMX8QXP_SDHC0_CLK, "SDHC0_CLK", 0, USDHC_0_LPCG, IMX8QXP_SDHC0_DIV ),
-	CLK_5( IMX8QXP_SDHC0_IPG_CLK, "SDHC0_IPG", 16, USDHC_0_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_SDHC0_AHB_CLK, "SDHC0_AHB", 20, USDHC_0_LPCG, IMX8QXP_AHB_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_SDHC1_CLK, "SDHC1_CLK", 0, USDHC_1_LPCG, IMX8QXP_SDHC1_DIV ),
-	CLK_5( IMX8QXP_SDHC1_IPG_CLK, "SDHC1_IPG", 16, USDHC_1_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_SDHC1_AHB_CLK, "SDHC1_AHB", 20, USDHC_1_LPCG, IMX8QXP_AHB_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_SDHC2_CLK, "SDHC2_CLK", 0, USDHC_2_LPCG, IMX8QXP_SDHC2_DIV ),
-	CLK_5( IMX8QXP_SDHC2_IPG_CLK, "SDHC2_IPG", 16, USDHC_2_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_SDHC2_AHB_CLK, "SDHC2_AHB", 20, USDHC_2_LPCG, IMX8QXP_AHB_CONN_CLK_ROOT ),
-
-	CLK_5( IMX8QXP_ENET0_IPG_S_CLK, "ENET0_IPG_S", 20, ENET_0_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_ENET0_IPG_CLK, "ENET0_IPG", 16, ENET_0_LPCG, IMX8QXP_ENET0_IPG_S_CLK ),
-	CLK_5( IMX8QXP_ENET0_AHB_CLK, "ENET0_AHB", 8, ENET_0_LPCG, IMX8QXP_AXI_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_ENET0_TX_CLK, "ENET0_TX", 4, ENET_0_LPCG, IMX8QXP_ENET0_ROOT_DIV ),
-	CLK_5( IMX8QXP_ENET0_PTP_CLK, "ENET0_PTP", 0, ENET_0_LPCG, IMX8QXP_ENET0_ROOT_DIV  ),
-	CLK_5( IMX8QXP_ENET0_RGMII_TX_CLK, "ENET0_RGMII_TX", 12, ENET_0_LPCG, IMX8QXP_ENET0_RMII_TX_SEL  ),
-	CLK_5( IMX8QXP_ENET0_RMII_RX_CLK, "ENET0_RMII_RX", 0, ENET_0_LPCG + 0x4, IMX8QXP_ENET0_RGMII_DIV  ),
-
-	CLK_5( IMX8QXP_ENET1_IPG_S_CLK, "ENET1_IPG_S", 20, ENET_1_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_ENET1_IPG_CLK, "ENET1_IPG", 16, ENET_1_LPCG, IMX8QXP_ENET1_IPG_S_CLK ),
-	CLK_5( IMX8QXP_ENET1_AHB_CLK, "ENET1_AHB", 8, ENET_1_LPCG, IMX8QXP_AXI_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_ENET1_TX_CLK, "ENET1_TX", 4, ENET_1_LPCG, IMX8QXP_ENET1_ROOT_DIV ),
-	CLK_5( IMX8QXP_ENET1_PTP_CLK, "ENET1_PTP", 0, ENET_1_LPCG, IMX8QXP_ENET1_ROOT_DIV  ),
-	CLK_5( IMX8QXP_ENET1_RGMII_TX_CLK, "ENET1_RGMII_TX", 12, ENET_1_LPCG, IMX8QXP_ENET1_RMII_TX_SEL  ),
-	CLK_5( IMX8QXP_ENET1_RMII_RX_CLK, "ENET1_RMII_RX", 0, ENET_1_LPCG + 0x4, IMX8QXP_ENET1_RGMII_DIV  ),
-
-#if defined(CONFIG_IMX8DXL)
-	CLK_5( IMX8DXL_EQOS_MEM_CLK, "EQOS_MEM_CLK", 8, ENET_1_LPCG, IMX8QXP_AXI_CONN_CLK_ROOT ),
-	CLK_5( IMX8DXL_EQOS_ACLK, "EQOS_ACLK", 16, ENET_1_LPCG, IMX8DXL_EQOS_MEM_CLK ),
-	CLK_5( IMX8DXL_EQOS_CSR_CLK, "EQOS_CSR_CLK", 24, ENET_1_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8DXL_EQOS_CLK, "EQOS_CLK", 20, ENET_1_LPCG, IMX8QXP_ENET1_ROOT_DIV ),
-	CLK_5( IMX8DXL_EQOS_PTP_CLK_S, "EQOS_PTP_S", 8, ENET_1_LPCG, IMX8QXP_ENET0_ROOT_DIV  ),
-	CLK_5( IMX8DXL_EQOS_PTP_CLK, "EQOS_PTP", 0, ENET_1_LPCG, IMX8DXL_EQOS_PTP_CLK_S  ),
-#endif
-
-	CLK_5( IMX8QXP_LSIO_FSPI0_IPG_S_CLK, "FSPI0_IPG_S", 0x18, FSPI_0_LPCG, IMX8QXP_LSIO_BUS_CLK ),
-	CLK_5( IMX8QXP_LSIO_FSPI0_IPG_CLK, "FSPI0_IPG", 0x14, FSPI_0_LPCG, IMX8QXP_LSIO_FSPI0_IPG_S_CLK ),
-	CLK_5( IMX8QXP_LSIO_FSPI0_HCLK, "FSPI0_HCLK", 0x10, FSPI_0_LPCG, IMX8QXP_LSIO_MEM_CLK ),
-	CLK_5( IMX8QXP_LSIO_FSPI0_CLK, "FSPI0_CLK", 0, FSPI_0_LPCG, IMX8QXP_LSIO_FSPI0_DIV ),
-
-#if !defined(CONFIG_IMX8DXL)
-	CLK_5( IMX8QXP_USB2_OH_AHB_CLK, "USB2_OH_AHB", 24, USB_2_LPCG, IMX8QXP_AHB_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_USB2_OH_IPG_S_CLK, "USB2_OH_IPG_S", 16, USB_2_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_USB2_OH_IPG_S_PL301_CLK, "USB2_OH_IPG_S_PL301", 20, USB_2_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-#endif
-	CLK_5( IMX8QXP_USB2_PHY_IPG_CLK, "USB2_PHY_IPG", 28, USB_2_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-
-	CLK_5( IMX8QXP_USB3_IPG_CLK, "USB3_IPG", 16, USB_3_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_USB3_CORE_PCLK, "USB3_CORE", 20, USB_3_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_USB3_PHY_CLK, "USB3_PHY", 24, USB_3_LPCG, IMX8QXP_USB3_IPG_CLK ),
-
-#if defined(CONFIG_IMX8DXL)
-	CLK_5( IMX8DXL_USB2_PHY2_IPG_CLK, "USB3_ACLK", 28, USB_3_LPCG, IMX8QXP_IPG_CONN_CLK_ROOT ),
-#endif
-	CLK_5( IMX8QXP_USB3_ACLK, "USB3_ACLK", 28, USB_3_LPCG, IMX8QXP_USB3_ACLK_DIV ),
-	CLK_5( IMX8QXP_USB3_BUS_CLK, "USB3_BUS", 0, USB_3_LPCG, IMX8QXP_USB3_BUS_DIV ),
-	CLK_5( IMX8QXP_USB3_LPM_CLK, "USB3_LPM", 4, USB_3_LPCG, IMX8QXP_USB3_LPM_DIV ),
-
-	CLK_5( IMX8QXP_GPMI_APB_CLK, "GPMI_APB", 16, NAND_LPCG, IMX8QXP_AXI_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_GPMI_APB_BCH_CLK, "GPMI_APB_BCH", 20, NAND_LPCG, IMX8QXP_AXI_CONN_CLK_ROOT ),
-	CLK_5( IMX8QXP_GPMI_BCH_IO_CLK, "GPMI_IO_CLK", 4, NAND_LPCG, IMX8QXP_GPMI_BCH_IO_DIV ),
-	CLK_5( IMX8QXP_GPMI_BCH_CLK, "GPMI_BCH_CLK", 0, NAND_LPCG, IMX8QXP_GPMI_BCH_DIV ),
-	CLK_5( IMX8QXP_APBHDMA_CLK, "GPMI_CLK", 16, NAND_LPCG + 0x4, IMX8QXP_AXI_CONN_CLK_ROOT ),
-
-	CLK_5( IMX8QXP_HSIO_PCIE_MSTR_AXI_CLK, "HSIO_PCIE_A_MSTR_AXI_CLK", 16, HSIO_PCIE_X1_LPCG, IMX8QXP_HSIO_AXI_CLK ),
-	CLK_5( IMX8QXP_HSIO_PCIE_SLV_AXI_CLK, "HSIO_PCIE_A_SLV_AXI_CLK", 20, HSIO_PCIE_X1_LPCG, IMX8QXP_HSIO_AXI_CLK ),
-	CLK_5( IMX8QXP_HSIO_PCIE_DBI_AXI_CLK, "HSIO_PCIE_A_DBI_AXI_CLK", 24, HSIO_PCIE_X1_LPCG, IMX8QXP_HSIO_AXI_CLK ),
-	CLK_5( IMX8QXP_HSIO_PCIE_X1_PER_CLK, "HSIO_PCIE_X1_PER_CLK", 16, HSIO_PCIE_X1_CRR3_LPCG, IMX8QXP_HSIO_PER_CLK ),
-	CLK_5( IMX8QXP_HSIO_PHY_X1_PER_CLK, "HSIO_PHY_X1_PER_CLK", 16, HSIO_PHY_X1_CRR1_LPCG, IMX8QXP_HSIO_PER_CLK ),
-	CLK_5( IMX8QXP_HSIO_MISC_PER_CLK, "HSIO_MISC_PER_CLK", 16, HSIO_MISC_LPCG, IMX8QXP_HSIO_PER_CLK ),
-	CLK_5( IMX8QXP_HSIO_PHY_X1_APB_CLK, "HSIO_PHY_X1_APB_CLK", 16, HSIO_PHY_X1_LPCG, IMX8QXP_HSIO_PER_CLK ),
-	CLK_5( IMX8QXP_HSIO_GPIO_CLK, "HSIO_GPIO_CLK", 16, HSIO_GPIO_LPCG, IMX8QXP_HSIO_PER_CLK ),
-	CLK_5( IMX8QXP_HSIO_PHY_X1_PCLK, "HSIO_PHY_X1_PCLK", 0, HSIO_PHY_X1_LPCG, 0 ),
+static const char *dc0_sels[] = {
+	"clk_dummy",
+	"clk_dummy",
+	"dc0_pll0_clk",
+	"dc0_pll1_clk",
+	"dc0_bypass0_clk",
 };
 
-struct imx8_mux_clks imx8qxp_mux_clks[] = {
-	CLK_MUX( IMX8QXP_SDHC0_SEL, "SDHC0_SEL", IMX8QXP_SDHC0_DIV, IMX8QXP_CLK_DUMMY, IMX8QXP_CONN_PLL0_CLK,
-		IMX8QXP_CONN_PLL1_CLK, IMX8QXP_CLK_DUMMY, IMX8QXP_CLK_DUMMY ),
-	CLK_MUX( IMX8QXP_SDHC1_SEL, "SDHC1_SEL", IMX8QXP_SDHC1_DIV, IMX8QXP_CLK_DUMMY, IMX8QXP_CONN_PLL0_CLK,
-		IMX8QXP_CONN_PLL1_CLK, IMX8QXP_CLK_DUMMY, IMX8QXP_CLK_DUMMY ),
-	CLK_MUX( IMX8QXP_SDHC2_SEL, "SDHC2_SEL", IMX8QXP_SDHC2_DIV, IMX8QXP_CLK_DUMMY, IMX8QXP_CONN_PLL0_CLK,
-		IMX8QXP_CONN_PLL1_CLK, IMX8QXP_CLK_DUMMY, IMX8QXP_CLK_DUMMY ),
+static const char *dc1_sels[] = {
+	"clk_dummy",
+	"clk_dummy",
+	"dc1_pll0_clk",
+	"dc1_pll1_clk",
+	"dc1_bypass0_clk",
 };
 
-struct imx8_clks_collect imx8qxp_clk_collect = {
-	{
-		{&imx8qxp_clks, ARRAY_SIZE(imx8qxp_clks)},
-		{&imx8qxp_fixed_clks, ARRAY_SIZE(imx8qxp_fixed_clks)},
-		{&imx8qxp_gpr_clks, ARRAY_SIZE(imx8qxp_gpr_clks)},
-		{&imx8qxp_lpcg_clks, ARRAY_SIZE(imx8qxp_lpcg_clks)},
-		{&imx8qxp_mux_clks, ARRAY_SIZE(imx8qxp_mux_clks)},
+static const char *hdmi_sels[] = {
+	"clk_dummy",
+	"hdmi_dig_pll_clk",
+	"clk_dummy",
+	"clk_dummy",
+	"hdmi_av_pll_clk",
+};
+
+static const char *lcd_pxl_sels[] = {
+	"dummy",
+	"dummy",
+	"dummy",
+	"dummy",
+	"lcd_pxl_bypass_div_clk",
+};
+
+static const char *mipi_sels[] = {
+	"clk_dummy",
+	"clk_dummy",
+	"mipi_pll_div2_clk",
+	"clk_dummy",
+	"clk_dummy",
+};
+
+static const struct of_device_id imx8qxp_match[] = {
+	{ .compatible = "fsl,scu-clk", },
+	{ .compatible = "fsl,imx8qxp-clk", &imx_clk_scu_rsrc_imx8qxp, },
+	{ .compatible = "fsl,imx8qm-clk", &imx_clk_scu_rsrc_imx8qm, },
+	{ .compatible = "fsl,imx8dxl-clk", &imx_clk_scu_rsrc_imx8dxl, },
+	{ /* sentinel */ }
+};
+
+static int imx8qxp_clk_probe(struct platform_device *pdev)
+{
+	const struct of_device_id *of_id =
+			of_match_device(imx8qxp_match, &pdev->dev);
+	struct device_node *ccm_node = pdev->dev.of_node;
+	int ret;
+
+	ret = imx_clk_scu_init(ccm_node, of_id->data);
+	if (ret)
+		return ret;
+
+	/* ARM core */
+	imx_clk_scu("a35_clk", IMX_SC_R_A35, IMX_SC_PM_CLK_CPU);
+	imx_clk_scu("a53_clk", IMX_SC_R_A53, IMX_SC_PM_CLK_CPU);
+	imx_clk_scu("a72_clk", IMX_SC_R_A72, IMX_SC_PM_CLK_CPU);
+
+	/* LSIO SS */
+	imx_clk_scu("pwm0_clk", IMX_SC_R_PWM_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm1_clk", IMX_SC_R_PWM_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm2_clk", IMX_SC_R_PWM_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm3_clk", IMX_SC_R_PWM_3, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm4_clk", IMX_SC_R_PWM_4, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm5_clk", IMX_SC_R_PWM_5, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm6_clk", IMX_SC_R_PWM_6, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm7_clk", IMX_SC_R_PWM_7, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpt1_clk", IMX_SC_R_GPT_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpt2_clk", IMX_SC_R_GPT_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpt3_clk", IMX_SC_R_GPT_3, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpt4_clk", IMX_SC_R_GPT_4, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("fspi0_clk", IMX_SC_R_FSPI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("fspi1_clk", IMX_SC_R_FSPI_1, IMX_SC_PM_CLK_PER);
+
+	/* DMA SS */
+	imx_clk_scu("uart0_clk", IMX_SC_R_UART_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("uart1_clk", IMX_SC_R_UART_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("uart2_clk", IMX_SC_R_UART_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("uart3_clk", IMX_SC_R_UART_3, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("uart4_clk", IMX_SC_R_UART_4, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("sim0_clk",  IMX_SC_R_EMVSIM_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("spi0_clk",  IMX_SC_R_SPI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("spi1_clk",  IMX_SC_R_SPI_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("spi2_clk",  IMX_SC_R_SPI_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("spi3_clk",  IMX_SC_R_SPI_3, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("can0_clk",  IMX_SC_R_CAN_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("can1_clk",  IMX_SC_R_CAN_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("can2_clk",  IMX_SC_R_CAN_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("i2c0_clk",  IMX_SC_R_I2C_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("i2c1_clk",  IMX_SC_R_I2C_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("i2c2_clk",  IMX_SC_R_I2C_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("i2c3_clk",  IMX_SC_R_I2C_3, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("ftm0_clk",  IMX_SC_R_FTM_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("ftm1_clk",  IMX_SC_R_FTM_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("adc0_clk",  IMX_SC_R_ADC_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pwm_clk",   IMX_SC_R_LCD_0_PWM_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lcd_clk",   IMX_SC_R_LCD_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu2("lcd_pxl_clk", lcd_pxl_sels, ARRAY_SIZE(lcd_pxl_sels), IMX_SC_R_LCD_0, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu("lcd_pxl_bypass_div_clk", IMX_SC_R_LCD_0, IMX_SC_PM_CLK_BYPASS);
+
+	/* Audio SS */
+	imx_clk_scu("audio_pll0_clk", IMX_SC_R_AUDIO_PLL_0, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("audio_pll1_clk", IMX_SC_R_AUDIO_PLL_1, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("audio_pll_div_clk0_clk", IMX_SC_R_AUDIO_PLL_0, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu("audio_pll_div_clk1_clk", IMX_SC_R_AUDIO_PLL_1, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu("audio_rec_clk0_clk", IMX_SC_R_AUDIO_PLL_0, IMX_SC_PM_CLK_MISC1);
+	imx_clk_scu("audio_rec_clk1_clk", IMX_SC_R_AUDIO_PLL_1, IMX_SC_PM_CLK_MISC1);
+
+	/* Connectivity */
+	imx_clk_scu("sdhc0_clk", IMX_SC_R_SDHC_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("sdhc1_clk", IMX_SC_R_SDHC_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("sdhc2_clk", IMX_SC_R_SDHC_2, IMX_SC_PM_CLK_PER);
+	if (of_id->data == &imx_clk_scu_rsrc_imx8dxl) {
+		imx_clk_divider_gpr_scu("enet0_ref_div", "conn_enet0_root_clk", IMX_SC_R_ENET_0, IMX_SC_C_CLKDIV);
+	} else {
+		imx_clk_scu("enet0_root_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_PER);
+		imx_clk_divider_gpr_scu("enet0_ref_div", "enet0_root_clk", IMX_SC_R_ENET_0, IMX_SC_C_CLKDIV);
+	}
+	imx_clk_mux_gpr_scu("enet0_rgmii_txc_sel", enet0_rgmii_txc_sels, ARRAY_SIZE(enet0_rgmii_txc_sels), IMX_SC_R_ENET_0, IMX_SC_C_TXCLK);
+	imx_clk_scu("enet0_bypass_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_gate_gpr_scu("enet0_ref_50_clk", "clk_dummy", IMX_SC_R_ENET_0, IMX_SC_C_DISABLE_50, true);
+	imx_clk_scu("enet1_root_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_PER);
+
+	if (of_id->data != &imx_clk_scu_rsrc_imx8dxl) {
+		imx_clk_scu("enet0_rgmii_rx_clk", IMX_SC_R_ENET_0, IMX_SC_PM_CLK_MISC0);
+		imx_clk_scu("enet1_rgmii_rx_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_MISC0);
+		imx_clk_divider_gpr_scu("enet1_ref_div", "enet1_root_clk", IMX_SC_R_ENET_1, IMX_SC_C_CLKDIV);
+		imx_clk_mux_gpr_scu("enet1_rgmii_txc_sel", enet1_rgmii_txc_sels, ARRAY_SIZE(enet1_rgmii_txc_sels), IMX_SC_R_ENET_1, IMX_SC_C_TXCLK);
+	}
+	imx_clk_scu("enet1_bypass_clk", IMX_SC_R_ENET_1, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_gate_gpr_scu("enet1_ref_50_clk", "clk_dummy", IMX_SC_R_ENET_1, IMX_SC_C_DISABLE_50, true);
+	imx_clk_scu("gpmi_io_clk", IMX_SC_R_NAND, IMX_SC_PM_CLK_MST_BUS);
+	imx_clk_scu("gpmi_bch_clk", IMX_SC_R_NAND, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("usb3_aclk_div", IMX_SC_R_USB_2, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("usb3_bus_div", IMX_SC_R_USB_2, IMX_SC_PM_CLK_MST_BUS);
+	imx_clk_scu("usb3_lpm_div", IMX_SC_R_USB_2, IMX_SC_PM_CLK_MISC);
+
+	/* Display controller SS */
+	imx_clk_scu2("dc0_disp0_clk", dc0_sels, ARRAY_SIZE(dc0_sels), IMX_SC_R_DC_0, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu2("dc0_disp1_clk", dc0_sels, ARRAY_SIZE(dc0_sels), IMX_SC_R_DC_0, IMX_SC_PM_CLK_MISC1);
+	imx_clk_scu("dc0_pll0_clk", IMX_SC_R_DC_0_PLL_0, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("dc0_pll1_clk", IMX_SC_R_DC_0_PLL_1, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("dc0_bypass0_clk", IMX_SC_R_DC_0_VIDEO0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("dc0_bypass1_clk", IMX_SC_R_DC_0_VIDEO1, IMX_SC_PM_CLK_BYPASS);
+
+	imx_clk_scu2("dc1_disp0_clk", dc1_sels, ARRAY_SIZE(dc1_sels), IMX_SC_R_DC_1, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu2("dc1_disp1_clk", dc1_sels, ARRAY_SIZE(dc1_sels), IMX_SC_R_DC_1, IMX_SC_PM_CLK_MISC1);
+	imx_clk_scu("dc1_pll0_clk", IMX_SC_R_DC_1_PLL_0, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("dc1_pll1_clk", IMX_SC_R_DC_1_PLL_1, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("dc1_bypass0_clk", IMX_SC_R_DC_1_VIDEO0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("dc1_bypass1_clk", IMX_SC_R_DC_1_VIDEO1, IMX_SC_PM_CLK_BYPASS);
+
+	/* MIPI-LVDS SS */
+	imx_clk_scu("mipi0_bypass_clk", IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("mipi0_pixel_clk", IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds0_pixel_clk", IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("lvds0_bypass_clk", IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("lvds0_phy_clk", IMX_SC_R_LVDS_0, IMX_SC_PM_CLK_MISC3);
+	imx_clk_scu2("mipi0_dsi_tx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_MST_BUS);
+	imx_clk_scu2("mipi0_dsi_rx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_SLV_BUS);
+	imx_clk_scu2("mipi0_dsi_phy_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_0, IMX_SC_PM_CLK_PHY);
+	imx_clk_scu("mipi0_i2c0_clk", IMX_SC_R_MIPI_0_I2C_0, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("mipi0_i2c1_clk", IMX_SC_R_MIPI_0_I2C_1, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("mipi0_pwm_clk", IMX_SC_R_MIPI_0_PWM_0, IMX_SC_PM_CLK_PER);
+
+	imx_clk_scu("mipi1_bypass_clk", IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("mipi1_pixel_clk", IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds1_pixel_clk", IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("lvds1_bypass_clk", IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("lvds1_phy_clk", IMX_SC_R_LVDS_1, IMX_SC_PM_CLK_MISC3);
+	imx_clk_scu2("mipi1_dsi_tx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_MST_BUS);
+	imx_clk_scu2("mipi1_dsi_rx_esc_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_SLV_BUS);
+	imx_clk_scu2("mipi1_dsi_phy_clk", mipi_sels, ARRAY_SIZE(mipi_sels), IMX_SC_R_MIPI_1, IMX_SC_PM_CLK_PHY);
+	imx_clk_scu("mipi1_i2c0_clk", IMX_SC_R_MIPI_1_I2C_0, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("mipi1_i2c1_clk", IMX_SC_R_MIPI_1_I2C_1, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("mipi1_pwm_clk", IMX_SC_R_MIPI_1_PWM_0, IMX_SC_PM_CLK_PER);
+
+	imx_clk_scu("lvds0_i2c0_clk", IMX_SC_R_LVDS_0_I2C_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds0_pwm0_clk", IMX_SC_R_LVDS_0_PWM_0, IMX_SC_PM_CLK_PER);
+
+	imx_clk_scu("lvds1_i2c0_clk", IMX_SC_R_LVDS_1_I2C_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("lvds1_pwm0_clk", IMX_SC_R_LVDS_1_PWM_0, IMX_SC_PM_CLK_PER);
+
+	/* MIPI CSI SS */
+	imx_clk_scu("mipi_csi0_core_clk", IMX_SC_R_CSI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("mipi_csi0_esc_clk",  IMX_SC_R_CSI_0, IMX_SC_PM_CLK_MISC);
+	imx_clk_scu("mipi_csi0_i2c0_clk", IMX_SC_R_CSI_0_I2C_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("mipi_csi0_pwm0_clk", IMX_SC_R_CSI_0_PWM_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("mipi_csi1_core_clk", IMX_SC_R_CSI_1, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("mipi_csi1_esc_clk",  IMX_SC_R_CSI_1, IMX_SC_PM_CLK_MISC);
+	imx_clk_scu("mipi_csi1_i2c0_clk", IMX_SC_R_CSI_1_I2C_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("mipi_csi1_pwm0_clk", IMX_SC_R_CSI_1_PWM_0, IMX_SC_PM_CLK_PER);
+
+	/* Parallel Interface SS */
+	imx_clk_scu("pi_dpll_clk", IMX_SC_R_PI_0_PLL, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu2("pi_per_div_clk", pll0_sels, ARRAY_SIZE(pll0_sels), IMX_SC_R_PI_0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("pi_mclk_div_clk", IMX_SC_R_PI_0, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu("pi_i2c0_div_clk", IMX_SC_R_PI_0_I2C_0, IMX_SC_PM_CLK_PER);
+
+	/* GPU SS */
+	imx_clk_scu("gpu_core0_clk",	 IMX_SC_R_GPU_0_PID0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpu_shader0_clk", IMX_SC_R_GPU_0_PID0, IMX_SC_PM_CLK_MISC);
+
+	imx_clk_scu("gpu_core1_clk",	 IMX_SC_R_GPU_1_PID0, IMX_SC_PM_CLK_PER);
+	imx_clk_scu("gpu_shader1_clk", IMX_SC_R_GPU_1_PID0, IMX_SC_PM_CLK_MISC);
+	 /* CM40 SS */
+	imx_clk_scu("cm40_i2c_div", IMX_SC_R_M4_0_I2C, IMX_SC_PM_CLK_PER);
+
+	 /* CM41 SS */
+	imx_clk_scu("cm41_i2c_div", IMX_SC_R_M4_1_I2C, IMX_SC_PM_CLK_PER);
+
+	/* HDMI TX SS */
+	imx_clk_scu("hdmi_dig_pll_clk",  IMX_SC_R_HDMI_PLL_0, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu("hdmi_av_pll_clk", IMX_SC_R_HDMI_PLL_1, IMX_SC_PM_CLK_PLL);
+	imx_clk_scu2("hdmi_pixel_mux_clk", hdmi_sels, ARRAY_SIZE(hdmi_sels), IMX_SC_R_HDMI, IMX_SC_PM_CLK_MISC0);
+	imx_clk_scu2("hdmi_pixel_link_clk", hdmi_sels, ARRAY_SIZE(hdmi_sels), IMX_SC_R_HDMI, IMX_SC_PM_CLK_MISC1);
+	imx_clk_scu("hdmi_ipg_clk", IMX_SC_R_HDMI, IMX_SC_PM_CLK_MISC4);
+	imx_clk_scu("hdmi_i2c0_clk", IMX_SC_R_HDMI_I2C_0, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu("hdmi_hdp_core_clk", IMX_SC_R_HDMI, IMX_SC_PM_CLK_MISC2);
+	imx_clk_scu2("hdmi_pxl_clk", hdmi_sels, ARRAY_SIZE(hdmi_sels), IMX_SC_R_HDMI, IMX_SC_PM_CLK_MISC3);
+	imx_clk_scu("hdmi_i2s_bypass_clk", IMX_SC_R_HDMI_I2S, IMX_SC_PM_CLK_BYPASS);
+	imx_clk_scu("hdmi_i2s_clk", IMX_SC_R_HDMI_I2S, IMX_SC_PM_CLK_MISC0);
+
+	return of_clk_add_hw_provider(ccm_node, imx_scu_of_clk_src_get, imx_scu_clks);
+}
+
+static struct platform_driver imx8qxp_clk_driver = {
+	.driver = {
+		.name = "imx8qxp-clk",
+		.of_match_table = imx8qxp_match,
+		.suppress_bind_attrs = true,
 	},
-	FLAG_CLK_IMX8_IMX8QXP,
+	.probe = imx8qxp_clk_probe,
 };
+static int __init imx8qxp_clk_driver_init(void)
+{
+	return platform_driver_register(&imx8qxp_clk_driver);
+}
+subsys_initcall_sync(imx8qxp_clk_driver_init);

@@ -1,20 +1,28 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
+#
+# Makefile for the linux kernel.
+#
 
-obj-$(CONFIG_AT91_WANTS_COMMON_PHY) += phy.o
-ifneq ($(CONFIG_SPL_BUILD),)
-obj-$(CONFIG_AT91SAM9260) += sdram.o spl_at91.o
-obj-$(CONFIG_AT91SAM9G20) += sdram.o spl_at91.o
-obj-$(CONFIG_AT91SAM9M10G45) += mpddrc.o spl_at91.o
-obj-$(CONFIG_AT91SAM9N12) += mpddrc.o spl_at91.o
-obj-$(CONFIG_AT91SAM9X5) += mpddrc.o spl_at91.o
-obj-$(CONFIG_SAMA5D2) += bootparams_atmel.o mpddrc.o spl_atmel.o matrix.o
-obj-$(CONFIG_SAMA5D3) += bootparams_atmel.o mpddrc.o spl_atmel.o
-obj-$(CONFIG_SAMA5D4) += bootparams_atmel.o mpddrc.o spl_atmel.o matrix.o
-obj-y += spl.o
-obj-$(CONFIG_ATMEL_SFR) += atmel_sfr.o
+# CPU-specific support
+obj-$(CONFIG_SOC_AT91RM9200)	+= at91rm9200.o
+obj-$(CONFIG_SOC_AT91SAM9)	+= at91sam9.o
+obj-$(CONFIG_SOC_SAMA5)		+= sama5.o
+obj-$(CONFIG_SOC_SAMV7)		+= samv7.o
+
+# Power Management
+obj-$(CONFIG_ATMEL_PM)		+= pm.o pm_suspend.o
+
+ifeq ($(CONFIG_CPU_V7),y)
+AFLAGS_pm_suspend.o := -march=armv7-a
+endif
+ifeq ($(CONFIG_PM_DEBUG),y)
+CFLAGS_pm.o += -DDEBUG
 endif
 
-obj-y += clock.o
-obj-$(CONFIG_CPU_ARM920T)	+= arm920t/
-obj-$(CONFIG_CPU_ARM926EJS)	+= arm926ejs/
-obj-$(CONFIG_CPU_V7A)		+= armv7/
+$(obj)/pm_data-offsets.h: $(obj)/pm_data-offsets.s FORCE
+	$(call filechk,offsets,__PM_DATA_OFFSETS_H__)
+
+$(obj)/pm_suspend.o: $(obj)/pm_data-offsets.h
+
+targets += pm_data-offsets.s
+clean-files += pm_data-offsets.h

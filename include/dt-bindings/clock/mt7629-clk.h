@@ -7,8 +7,6 @@
 #define _DT_BINDINGS_CLK_MT7629_H
 
 /* TOPCKGEN */
-#define CLK_TOP_FCLKS_OFF		0
-
 #define CLK_TOP_TO_U2_PHY		0
 #define CLK_TOP_TO_U2_PHY_1P		1
 #define CLK_TOP_PCIE0_PIPE_EN		2
@@ -19,7 +17,6 @@
 #define CLK_TOP_SSUSB_CDR_FB		7
 #define CLK_TOP_SATA_ASIC		8
 #define CLK_TOP_SATA_RBC		9
-
 #define CLK_TOP_TO_USB3_SYS		10
 #define CLK_TOP_P1_1MHZ			11
 #define CLK_TOP_4MHZ			12
@@ -83,7 +80,6 @@
 #define CLK_TOP_FROM_TOP_AXI		70
 #define CLK_TOP_PCIE1_MAC_EN		71
 #define CLK_TOP_PCIE0_MAC_EN		72
-
 #define CLK_TOP_AXI_SEL			73
 #define CLK_TOP_MEM_SEL			74
 #define CLK_TOP_DDRPHYCFG_SEL		75
@@ -162,7 +158,8 @@
 #define CLK_APMIXED_ETH1PLL		3
 #define CLK_APMIXED_ETH2PLL		4
 #define CLK_APMIXED_SGMIPLL		5
-#define CLK_APMIXED_NR_CLK		6
+#define CLK_APMIXED_MAIN_CORE_EN	6
+#define CLK_APMIXED_NR_CLK		7
 
 /* SSUSBSYS */
 #define CLK_SSUSB_U2_PHY_1P_EN		0

@@ -1,8 +1,4 @@
-/*
- * Copied from Linux:
- * commit 37487a56523d402e25650da16c337acf4cecd13d
- * Author: Christoph Lameter <clameter@sgi.com>
- */
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_KBUILD_H
 #define __LINUX_KBUILD_H
 

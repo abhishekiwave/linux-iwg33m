@@ -1,7 +1,8 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0-only
 #
-# (C) Copyright 2000-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for the linux cramfs routines.
+#
 
-obj-y := cramfs.o
-obj-y += uncompress.o
+obj-$(CONFIG_CRAMFS) += cramfs.o
+
+cramfs-objs := inode.o uncompress.o

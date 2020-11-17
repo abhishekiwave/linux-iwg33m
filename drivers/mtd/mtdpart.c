@@ -1,285 +1,60 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Simple MTD partitioning layer
  *
  * Copyright © 2000 Nicolas Pitre <nico@fluxnic.net>
  * Copyright © 2002 Thomas Gleixner <gleixner@linutronix.de>
  * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org>
- *
  */
 
-#ifndef __UBOOT__
-#include <dm/devres.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/kmod.h>
-#endif
-
-#include <common.h>
-#include <malloc.h>
-#include <linux/errno.h>
-#include <linux/compat.h>
-#include <ubi_uboot.h>
-
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/err.h>
-#include <linux/sizes.h>
+#include <linux/of.h>
 
 #include "mtdcore.h"
 
-#ifndef __UBOOT__
+/* Our partition linked list */
+static LIST_HEAD(mtd_partitions);
 static DEFINE_MUTEX(mtd_partitions_mutex);
-#else
-DEFINE_MUTEX(mtd_partitions_mutex);
-#endif
-
-#ifdef __UBOOT__
-/* from mm/util.c */
 
 /**
- * kstrdup - allocate space for and copy an existing string
- * @s: the string to duplicate
- * @gfp: the GFP mask used in the kmalloc() call when allocating memory
+ * struct mtd_part - our partition node structure
+ *
+ * @mtd: struct holding partition details
+ * @parent: parent mtd - flash device or another partition
+ * @offset: partition offset relative to the *flash device*
  */
-char *kstrdup(const char *s, gfp_t gfp)
+struct mtd_part {
+	struct mtd_info mtd;
+	struct mtd_info *parent;
+	uint64_t offset;
+	struct list_head list;
+};
+
+/*
+ * Given a pointer to the MTD object in the mtd_part structure, we can retrieve
+ * the pointer to that structure.
+ */
+static inline struct mtd_part *mtd_to_part(const struct mtd_info *mtd)
 {
-	size_t len;
-	char *buf;
-
-	if (!s)
-		return NULL;
-
-	len = strlen(s) + 1;
-	buf = kmalloc(len, gfp);
-	if (buf)
-		memcpy(buf, s, len);
-	return buf;
-}
-#endif
-
-#define MTD_SIZE_REMAINING		(~0LLU)
-#define MTD_OFFSET_NOT_SPECIFIED	(~0LLU)
-
-bool mtd_partitions_used(struct mtd_info *master)
-{
-	struct mtd_info *slave;
-
-	list_for_each_entry(slave, &master->partitions, node) {
-		if (slave->usecount)
-			return true;
-	}
-
-	return false;
+	return container_of(mtd, struct mtd_part, mtd);
 }
 
-/**
- * mtd_parse_partition - Parse @mtdparts partition definition, fill @partition
- *                       with it and update the @mtdparts string pointer.
- *
- * The partition name is allocated and must be freed by the caller.
- *
- * This function is widely inspired from part_parse (mtdparts.c).
- *
- * @mtdparts: String describing the partition with mtdparts command syntax
- * @partition: MTD partition structure to fill
- *
- * @return 0 on success, an error otherwise.
- */
-static int mtd_parse_partition(const char **_mtdparts,
-			       struct mtd_partition *partition)
+static u64 part_absolute_offset(struct mtd_info *mtd)
 {
-	const char *mtdparts = *_mtdparts;
-	const char *name = NULL;
-	int name_len;
-	char *buf;
+	struct mtd_part *part = mtd_to_part(mtd);
 
-	/* Ensure the partition structure is empty */
-	memset(partition, 0, sizeof(struct mtd_partition));
+	if (!mtd_is_partition(mtd))
+		return 0;
 
-	/* Fetch the partition size */
-	if (*mtdparts == '-') {
-		/* Assign all remaining space to this partition */
-		partition->size = MTD_SIZE_REMAINING;
-		mtdparts++;
-	} else {
-		partition->size = ustrtoull(mtdparts, (char **)&mtdparts, 0);
-		if (partition->size < SZ_4K) {
-			printf("Minimum partition size 4kiB, %lldB requested\n",
-			       partition->size);
-			return -EINVAL;
-		}
-	}
-
-	/* Check for the offset */
-	partition->offset = MTD_OFFSET_NOT_SPECIFIED;
-	if (*mtdparts == '@') {
-		mtdparts++;
-		partition->offset = ustrtoull(mtdparts, (char **)&mtdparts, 0);
-	}
-
-	/* Now look for the name */
-	if (*mtdparts == '(') {
-		name = ++mtdparts;
-		mtdparts = strchr(name, ')');
-		if (!mtdparts) {
-			printf("No closing ')' found in partition name\n");
-			return -EINVAL;
-		}
-		name_len = mtdparts - name + 1;
-		if ((name_len - 1) == 0) {
-			printf("Empty partition name\n");
-			return -EINVAL;
-		}
-		mtdparts++;
-	} else {
-		/* Name will be of the form size@offset */
-		name_len = 22;
-	}
-
-	/* Check if the partition is read-only */
-	if (strncmp(mtdparts, "ro", 2) == 0) {
-		partition->mask_flags |= MTD_WRITEABLE;
-		mtdparts += 2;
-	}
-
-	/* Check for a potential next partition definition */
-	if (*mtdparts == ',') {
-		if (partition->size == MTD_SIZE_REMAINING) {
-			printf("No partitions allowed after a fill-up\n");
-			return -EINVAL;
-		}
-		++mtdparts;
-	} else if ((*mtdparts == ';') || (*mtdparts == '\0')) {
-		/* NOP */
-	} else {
-		printf("Unexpected character '%c' in mtdparts\n", *mtdparts);
-		return -EINVAL;
-	}
-
-	/*
-	 * Allocate a buffer for the name and either copy the provided name or
-	 * auto-generate it with the form 'size@offset'.
-	 */
-	buf = malloc(name_len);
-	if (!buf)
-		return -ENOMEM;
-
-	if (name)
-		strncpy(buf, name, name_len - 1);
-	else
-		snprintf(buf, name_len, "0x%08llx@0x%08llx",
-			 partition->size, partition->offset);
-
-	buf[name_len - 1] = '\0';
-	partition->name = buf;
-
-	*_mtdparts = mtdparts;
-
-	return 0;
-}
-
-/**
- * mtd_parse_partitions - Create a partition array from an mtdparts definition
- *
- * Stateless function that takes a @parent MTD device, a string @_mtdparts
- * describing the partitions (with the "mtdparts" command syntax) and creates
- * the corresponding MTD partition structure array @_parts. Both the name and
- * the structure partition itself must be freed freed, the caller may use
- * @mtd_free_parsed_partitions() for this purpose.
- *
- * @parent: MTD device which contains the partitions
- * @_mtdparts: Pointer to a string describing the partitions with "mtdparts"
- *             command syntax.
- * @_parts: Allocated array containing the partitions, must be freed by the
- *          caller.
- * @_nparts: Size of @_parts array.
- *
- * @return 0 on success, an error otherwise.
- */
-int mtd_parse_partitions(struct mtd_info *parent, const char **_mtdparts,
-			 struct mtd_partition **_parts, int *_nparts)
-{
-	struct mtd_partition partition = {}, *parts;
-	const char *mtdparts = *_mtdparts;
-	int cur_off = 0, cur_sz = 0;
-	int nparts = 0;
-	int ret, idx;
-	u64 sz;
-
-	/* First, iterate over the partitions until we know their number */
-	while (mtdparts[0] != '\0' && mtdparts[0] != ';') {
-		ret = mtd_parse_partition(&mtdparts, &partition);
-		if (ret)
-			return ret;
-
-		free((char *)partition.name);
-		nparts++;
-	}
-
-	/* Allocate an array of partitions to give back to the caller */
-	parts = malloc(sizeof(*parts) * nparts);
-	if (!parts) {
-		printf("Not enough space to save partitions meta-data\n");
-		return -ENOMEM;
-	}
-
-	/* Iterate again over each partition to save the data in our array */
-	for (idx = 0; idx < nparts; idx++) {
-		ret = mtd_parse_partition(_mtdparts, &parts[idx]);
-		if (ret)
-			return ret;
-
-		if (parts[idx].size == MTD_SIZE_REMAINING)
-			parts[idx].size = parent->size - cur_sz;
-		cur_sz += parts[idx].size;
-
-		sz = parts[idx].size;
-		if (sz < parent->writesize || do_div(sz, parent->writesize)) {
-			printf("Partition size must be a multiple of %d\n",
-			       parent->writesize);
-			return -EINVAL;
-		}
-
-		if (parts[idx].offset == MTD_OFFSET_NOT_SPECIFIED)
-			parts[idx].offset = cur_off;
-		cur_off += parts[idx].size;
-
-		parts[idx].ecclayout = parent->ecclayout;
-	}
-
-	/* Offset by one mtdparts to point to the next device if any */
-	if (*_mtdparts[0] == ';')
-		(*_mtdparts)++;
-
-	*_parts = parts;
-	*_nparts = nparts;
-
-	return 0;
-}
-
-/**
- * mtd_free_parsed_partitions - Free dynamically allocated partitions
- *
- * Each successful call to @mtd_parse_partitions must be followed by a call to
- * @mtd_free_parsed_partitions to free any allocated array during the parsing
- * process.
- *
- * @parts: Array containing the partitions that will be freed.
- * @nparts: Size of @parts array.
- */
-void mtd_free_parsed_partitions(struct mtd_partition *parts,
-				unsigned int nparts)
-{
-	int i;
-
-	for (i = 0; i < nparts; i++)
-		free((char *)parts[i].name);
-
-	free(parts);
+	return part_absolute_offset(part->parent) + part->offset;
 }
 
 /*
@@ -290,435 +65,425 @@ void mtd_free_parsed_partitions(struct mtd_partition *parts,
 static int part_read(struct mtd_info *mtd, loff_t from, size_t len,
 		size_t *retlen, u_char *buf)
 {
+	struct mtd_part *part = mtd_to_part(mtd);
 	struct mtd_ecc_stats stats;
 	int res;
 
-	stats = mtd->parent->ecc_stats;
-	res = mtd->parent->_read(mtd->parent, from + mtd->offset, len,
-				 retlen, buf);
+	stats = part->parent->ecc_stats;
+	res = part->parent->_read(part->parent, from + part->offset, len,
+				  retlen, buf);
 	if (unlikely(mtd_is_eccerr(res)))
 		mtd->ecc_stats.failed +=
-			mtd->parent->ecc_stats.failed - stats.failed;
+			part->parent->ecc_stats.failed - stats.failed;
 	else
 		mtd->ecc_stats.corrected +=
-			mtd->parent->ecc_stats.corrected - stats.corrected;
+			part->parent->ecc_stats.corrected - stats.corrected;
 	return res;
 }
 
-#ifndef __UBOOT__
 static int part_point(struct mtd_info *mtd, loff_t from, size_t len,
 		size_t *retlen, void **virt, resource_size_t *phys)
 {
-	return mtd->parent->_point(mtd->parent, from + mtd->offset, len,
-				   retlen, virt, phys);
+	struct mtd_part *part = mtd_to_part(mtd);
+
+	return part->parent->_point(part->parent, from + part->offset, len,
+				    retlen, virt, phys);
 }
 
 static int part_unpoint(struct mtd_info *mtd, loff_t from, size_t len)
 {
-	return mtd->parent->_unpoint(mtd->parent, from + mtd->offset, len);
-}
-#endif
+	struct mtd_part *part = mtd_to_part(mtd);
 
-static unsigned long part_get_unmapped_area(struct mtd_info *mtd,
-					    unsigned long len,
-					    unsigned long offset,
-					    unsigned long flags)
-{
-	offset += mtd->offset;
-	return mtd->parent->_get_unmapped_area(mtd->parent, len, offset, flags);
+	return part->parent->_unpoint(part->parent, from + part->offset, len);
 }
 
 static int part_read_oob(struct mtd_info *mtd, loff_t from,
 		struct mtd_oob_ops *ops)
 {
+	struct mtd_part *part = mtd_to_part(mtd);
+	struct mtd_ecc_stats stats;
 	int res;
 
-	if (from >= mtd->size)
-		return -EINVAL;
-	if (ops->datbuf && from + ops->len > mtd->size)
-		return -EINVAL;
-
-	/*
-	 * If OOB is also requested, make sure that we do not read past the end
-	 * of this partition.
-	 */
-	if (ops->oobbuf) {
-		size_t len, pages;
-
-		if (ops->mode == MTD_OPS_AUTO_OOB)
-			len = mtd->oobavail;
-		else
-			len = mtd->oobsize;
-		pages = mtd_div_by_ws(mtd->size, mtd);
-		pages -= mtd_div_by_ws(from, mtd);
-		if (ops->ooboffs + ops->ooblen > pages * len)
-			return -EINVAL;
-	}
-
-	res = mtd->parent->_read_oob(mtd->parent, from + mtd->offset, ops);
-	if (unlikely(res)) {
-		if (mtd_is_bitflip(res))
-			mtd->ecc_stats.corrected++;
-		if (mtd_is_eccerr(res))
-			mtd->ecc_stats.failed++;
-	}
+	stats = part->parent->ecc_stats;
+	res = part->parent->_read_oob(part->parent, from + part->offset, ops);
+	if (unlikely(mtd_is_eccerr(res)))
+		mtd->ecc_stats.failed +=
+			part->parent->ecc_stats.failed - stats.failed;
+	else
+		mtd->ecc_stats.corrected +=
+			part->parent->ecc_stats.corrected - stats.corrected;
 	return res;
 }
 
 static int part_read_user_prot_reg(struct mtd_info *mtd, loff_t from,
 		size_t len, size_t *retlen, u_char *buf)
 {
-	return mtd->parent->_read_user_prot_reg(mtd->parent, from, len,
-						retlen, buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_read_user_prot_reg(part->parent, from, len,
+						 retlen, buf);
 }
 
 static int part_get_user_prot_info(struct mtd_info *mtd, size_t len,
 				   size_t *retlen, struct otp_info *buf)
 {
-	return mtd->parent->_get_user_prot_info(mtd->parent, len, retlen,
-						buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_get_user_prot_info(part->parent, len, retlen,
+						 buf);
 }
 
 static int part_read_fact_prot_reg(struct mtd_info *mtd, loff_t from,
 		size_t len, size_t *retlen, u_char *buf)
 {
-	return mtd->parent->_read_fact_prot_reg(mtd->parent, from, len,
-						retlen, buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_read_fact_prot_reg(part->parent, from, len,
+						 retlen, buf);
 }
 
 static int part_get_fact_prot_info(struct mtd_info *mtd, size_t len,
 				   size_t *retlen, struct otp_info *buf)
 {
-	return mtd->parent->_get_fact_prot_info(mtd->parent, len, retlen,
-						buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_get_fact_prot_info(part->parent, len, retlen,
+						 buf);
 }
 
 static int part_write(struct mtd_info *mtd, loff_t to, size_t len,
 		size_t *retlen, const u_char *buf)
 {
-	return mtd->parent->_write(mtd->parent, to + mtd->offset, len,
-				   retlen, buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_write(part->parent, to + part->offset, len,
+				    retlen, buf);
 }
 
 static int part_panic_write(struct mtd_info *mtd, loff_t to, size_t len,
 		size_t *retlen, const u_char *buf)
 {
-	return mtd->parent->_panic_write(mtd->parent, to + mtd->offset, len,
-					 retlen, buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_panic_write(part->parent, to + part->offset, len,
+					  retlen, buf);
 }
 
 static int part_write_oob(struct mtd_info *mtd, loff_t to,
 		struct mtd_oob_ops *ops)
 {
-	if (to >= mtd->size)
-		return -EINVAL;
-	if (ops->datbuf && to + ops->len > mtd->size)
-		return -EINVAL;
-	return mtd->parent->_write_oob(mtd->parent, to + mtd->offset, ops);
+	struct mtd_part *part = mtd_to_part(mtd);
+
+	return part->parent->_write_oob(part->parent, to + part->offset, ops);
 }
 
 static int part_write_user_prot_reg(struct mtd_info *mtd, loff_t from,
 		size_t len, size_t *retlen, u_char *buf)
 {
-	return mtd->parent->_write_user_prot_reg(mtd->parent, from, len,
-						 retlen, buf);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_write_user_prot_reg(part->parent, from, len,
+						  retlen, buf);
 }
 
 static int part_lock_user_prot_reg(struct mtd_info *mtd, loff_t from,
 		size_t len)
 {
-	return mtd->parent->_lock_user_prot_reg(mtd->parent, from, len);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_lock_user_prot_reg(part->parent, from, len);
 }
 
-#ifndef __UBOOT__
 static int part_writev(struct mtd_info *mtd, const struct kvec *vecs,
 		unsigned long count, loff_t to, size_t *retlen)
 {
-	return mtd->parent->_writev(mtd->parent, vecs, count,
-				    to + mtd->offset, retlen);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_writev(part->parent, vecs, count,
+				     to + part->offset, retlen);
 }
-#endif
 
 static int part_erase(struct mtd_info *mtd, struct erase_info *instr)
 {
+	struct mtd_part *part = mtd_to_part(mtd);
 	int ret;
 
-	instr->addr += mtd->offset;
-	ret = mtd->parent->_erase(mtd->parent, instr);
-	if (ret) {
-		if (instr->fail_addr != MTD_FAIL_ADDR_UNKNOWN)
-			instr->fail_addr -= mtd->offset;
-		instr->addr -= mtd->offset;
-	}
+	instr->addr += part->offset;
+	ret = part->parent->_erase(part->parent, instr);
+	if (instr->fail_addr != MTD_FAIL_ADDR_UNKNOWN)
+		instr->fail_addr -= part->offset;
+	instr->addr -= part->offset;
+
 	return ret;
 }
 
-void mtd_erase_callback(struct erase_info *instr)
-{
-	if (instr->mtd->_erase == part_erase) {
-		if (instr->fail_addr != MTD_FAIL_ADDR_UNKNOWN)
-			instr->fail_addr -= instr->mtd->offset;
-		instr->addr -= instr->mtd->offset;
-	}
-	if (instr->callback)
-		instr->callback(instr);
-}
-EXPORT_SYMBOL_GPL(mtd_erase_callback);
-
 static int part_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 {
-	return mtd->parent->_lock(mtd->parent, ofs + mtd->offset, len);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_lock(part->parent, ofs + part->offset, len);
 }
 
 static int part_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 {
-	return mtd->parent->_unlock(mtd->parent, ofs + mtd->offset, len);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_unlock(part->parent, ofs + part->offset, len);
 }
 
 static int part_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 {
-	return mtd->parent->_is_locked(mtd->parent, ofs + mtd->offset, len);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_is_locked(part->parent, ofs + part->offset, len);
 }
 
 static void part_sync(struct mtd_info *mtd)
 {
-	mtd->parent->_sync(mtd->parent);
+	struct mtd_part *part = mtd_to_part(mtd);
+	part->parent->_sync(part->parent);
 }
 
-#ifndef __UBOOT__
 static int part_suspend(struct mtd_info *mtd)
 {
-	return mtd->parent->_suspend(mtd->parent);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_suspend(part->parent);
 }
 
 static void part_resume(struct mtd_info *mtd)
 {
-	mtd->parent->_resume(mtd->parent);
+	struct mtd_part *part = mtd_to_part(mtd);
+	part->parent->_resume(part->parent);
 }
-#endif
 
 static int part_block_isreserved(struct mtd_info *mtd, loff_t ofs)
 {
-	ofs += mtd->offset;
-	return mtd->parent->_block_isreserved(mtd->parent, ofs);
+	struct mtd_part *part = mtd_to_part(mtd);
+	ofs += part->offset;
+	return part->parent->_block_isreserved(part->parent, ofs);
 }
 
 static int part_block_isbad(struct mtd_info *mtd, loff_t ofs)
 {
-	ofs += mtd->offset;
-	return mtd->parent->_block_isbad(mtd->parent, ofs);
+	struct mtd_part *part = mtd_to_part(mtd);
+	ofs += part->offset;
+	return part->parent->_block_isbad(part->parent, ofs);
 }
 
 static int part_block_markbad(struct mtd_info *mtd, loff_t ofs)
 {
+	struct mtd_part *part = mtd_to_part(mtd);
 	int res;
 
-	ofs += mtd->offset;
-	res = mtd->parent->_block_markbad(mtd->parent, ofs);
+	ofs += part->offset;
+	res = part->parent->_block_markbad(part->parent, ofs);
 	if (!res)
 		mtd->ecc_stats.badblocks++;
 	return res;
 }
 
-static inline void free_partition(struct mtd_info *p)
+static int part_get_device(struct mtd_info *mtd)
 {
-	kfree(p->name);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return part->parent->_get_device(part->parent);
+}
+
+static void part_put_device(struct mtd_info *mtd)
+{
+	struct mtd_part *part = mtd_to_part(mtd);
+	part->parent->_put_device(part->parent);
+}
+
+static int part_ooblayout_ecc(struct mtd_info *mtd, int section,
+			      struct mtd_oob_region *oobregion)
+{
+	struct mtd_part *part = mtd_to_part(mtd);
+
+	return mtd_ooblayout_ecc(part->parent, section, oobregion);
+}
+
+static int part_ooblayout_free(struct mtd_info *mtd, int section,
+			       struct mtd_oob_region *oobregion)
+{
+	struct mtd_part *part = mtd_to_part(mtd);
+
+	return mtd_ooblayout_free(part->parent, section, oobregion);
+}
+
+static const struct mtd_ooblayout_ops part_ooblayout_ops = {
+	.ecc = part_ooblayout_ecc,
+	.free = part_ooblayout_free,
+};
+
+static int part_max_bad_blocks(struct mtd_info *mtd, loff_t ofs, size_t len)
+{
+	struct mtd_part *part = mtd_to_part(mtd);
+
+	return part->parent->_max_bad_blocks(part->parent,
+					     ofs + part->offset, len);
+}
+
+static inline void free_partition(struct mtd_part *p)
+{
+	kfree(p->mtd.name);
 	kfree(p);
 }
 
-/*
- * This function unregisters and destroy all slave MTD objects which are
- * attached to the given master MTD object, recursively.
- */
-static int do_del_mtd_partitions(struct mtd_info *master)
+static struct mtd_part *allocate_partition(struct mtd_info *parent,
+			const struct mtd_partition *part, int partno,
+			uint64_t cur_offset)
 {
-	struct mtd_info *slave, *next;
-	int ret, err = 0;
-
-	list_for_each_entry_safe(slave, next, &master->partitions, node) {
-		if (mtd_has_partitions(slave))
-			del_mtd_partitions(slave);
-
-		debug("Deleting %s MTD partition\n", slave->name);
-		ret = del_mtd_device(slave);
-		if (ret < 0) {
-			printf("Error when deleting partition \"%s\" (%d)\n",
-			       slave->name, ret);
-			err = ret;
-			continue;
-		}
-
-		list_del(&slave->node);
-		free_partition(slave);
-	}
-
-	return err;
-}
-
-int del_mtd_partitions(struct mtd_info *master)
-{
-	int ret;
-
-	debug("Deleting MTD partitions on \"%s\":\n", master->name);
-
-	mutex_lock(&mtd_partitions_mutex);
-	ret = do_del_mtd_partitions(master);
-	mutex_unlock(&mtd_partitions_mutex);
-
-	return ret;
-}
-
-static struct mtd_info *allocate_partition(struct mtd_info *master,
-					   const struct mtd_partition *part,
-					   int partno, uint64_t cur_offset)
-{
-	struct mtd_info *slave;
+	int wr_alignment = (parent->flags & MTD_NO_ERASE) ? parent->writesize :
+							    parent->erasesize;
+	struct mtd_part *slave;
+	u32 remainder;
 	char *name;
+	u64 tmp;
 
 	/* allocate the partition structure */
 	slave = kzalloc(sizeof(*slave), GFP_KERNEL);
 	name = kstrdup(part->name, GFP_KERNEL);
 	if (!name || !slave) {
 		printk(KERN_ERR"memory allocation error while creating partitions for \"%s\"\n",
-		       master->name);
+		       parent->name);
 		kfree(name);
 		kfree(slave);
 		return ERR_PTR(-ENOMEM);
 	}
 
 	/* set up the MTD object for this partition */
-	slave->type = master->type;
-	slave->flags = master->flags & ~part->mask_flags;
-	slave->size = part->size;
-	slave->writesize = master->writesize;
-	slave->writebufsize = master->writebufsize;
-	slave->oobsize = master->oobsize;
-	slave->oobavail = master->oobavail;
-	slave->subpage_sft = master->subpage_sft;
+	slave->mtd.type = parent->type;
+	slave->mtd.flags = parent->orig_flags & ~part->mask_flags;
+	slave->mtd.orig_flags = slave->mtd.flags;
+	slave->mtd.size = part->size;
+	slave->mtd.writesize = parent->writesize;
+	slave->mtd.writebufsize = parent->writebufsize;
+	slave->mtd.oobsize = parent->oobsize;
+	slave->mtd.oobavail = parent->oobavail;
+	slave->mtd.subpage_sft = parent->subpage_sft;
+	slave->mtd.pairing = parent->pairing;
 
-	slave->name = name;
-	slave->owner = master->owner;
-#ifndef __UBOOT__
-	slave->backing_dev_info = master->backing_dev_info;
+	slave->mtd.name = name;
+	slave->mtd.owner = parent->owner;
 
-	/* NOTE:  we don't arrange MTDs as a tree; it'd be error-prone
-	 * to have the same data be in two different partitions.
+	/* NOTE: Historically, we didn't arrange MTDs as a tree out of
+	 * concern for showing the same data in multiple partitions.
+	 * However, it is very useful to have the master node present,
+	 * so the MTD_PARTITIONED_MASTER option allows that. The master
+	 * will have device nodes etc only if this is set, so make the
+	 * parent conditional on that option. Note, this is a way to
+	 * distinguish between the master and the partition in sysfs.
 	 */
-	slave->dev.parent = master->dev.parent;
-#endif
+	slave->mtd.dev.parent = IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER) || mtd_is_partition(parent) ?
+				&parent->dev :
+				parent->dev.parent;
+	slave->mtd.dev.of_node = part->of_node;
 
-	if (master->_read)
-		slave->_read = part_read;
-	if (master->_write)
-		slave->_write = part_write;
+	if (parent->_read)
+		slave->mtd._read = part_read;
+	if (parent->_write)
+		slave->mtd._write = part_write;
 
-	if (master->_panic_write)
-		slave->_panic_write = part_panic_write;
+	if (parent->_panic_write)
+		slave->mtd._panic_write = part_panic_write;
 
-#ifndef __UBOOT__
-	if (master->_point && master->_unpoint) {
-		slave->_point = part_point;
-		slave->_unpoint = part_unpoint;
+	if (parent->_point && parent->_unpoint) {
+		slave->mtd._point = part_point;
+		slave->mtd._unpoint = part_unpoint;
 	}
-#endif
 
-	if (master->_get_unmapped_area)
-		slave->_get_unmapped_area = part_get_unmapped_area;
-	if (master->_read_oob)
-		slave->_read_oob = part_read_oob;
-	if (master->_write_oob)
-		slave->_write_oob = part_write_oob;
-	if (master->_read_user_prot_reg)
-		slave->_read_user_prot_reg = part_read_user_prot_reg;
-	if (master->_read_fact_prot_reg)
-		slave->_read_fact_prot_reg = part_read_fact_prot_reg;
-	if (master->_write_user_prot_reg)
-		slave->_write_user_prot_reg = part_write_user_prot_reg;
-	if (master->_lock_user_prot_reg)
-		slave->_lock_user_prot_reg = part_lock_user_prot_reg;
-	if (master->_get_user_prot_info)
-		slave->_get_user_prot_info = part_get_user_prot_info;
-	if (master->_get_fact_prot_info)
-		slave->_get_fact_prot_info = part_get_fact_prot_info;
-	if (master->_sync)
-		slave->_sync = part_sync;
-#ifndef __UBOOT__
-	if (!partno && !master->dev.class && master->_suspend &&
-	    master->_resume) {
-		slave->_suspend = part_suspend;
-		slave->_resume = part_resume;
+	if (parent->_read_oob)
+		slave->mtd._read_oob = part_read_oob;
+	if (parent->_write_oob)
+		slave->mtd._write_oob = part_write_oob;
+	if (parent->_read_user_prot_reg)
+		slave->mtd._read_user_prot_reg = part_read_user_prot_reg;
+	if (parent->_read_fact_prot_reg)
+		slave->mtd._read_fact_prot_reg = part_read_fact_prot_reg;
+	if (parent->_write_user_prot_reg)
+		slave->mtd._write_user_prot_reg = part_write_user_prot_reg;
+	if (parent->_lock_user_prot_reg)
+		slave->mtd._lock_user_prot_reg = part_lock_user_prot_reg;
+	if (parent->_get_user_prot_info)
+		slave->mtd._get_user_prot_info = part_get_user_prot_info;
+	if (parent->_get_fact_prot_info)
+		slave->mtd._get_fact_prot_info = part_get_fact_prot_info;
+	if (parent->_sync)
+		slave->mtd._sync = part_sync;
+	if (!partno && !parent->dev.class && parent->_suspend &&
+	    parent->_resume) {
+		slave->mtd._suspend = part_suspend;
+		slave->mtd._resume = part_resume;
 	}
-	if (master->_writev)
-		slave->_writev = part_writev;
-#endif
-	if (master->_lock)
-		slave->_lock = part_lock;
-	if (master->_unlock)
-		slave->_unlock = part_unlock;
-	if (master->_is_locked)
-		slave->_is_locked = part_is_locked;
-	if (master->_block_isreserved)
-		slave->_block_isreserved = part_block_isreserved;
-	if (master->_block_isbad)
-		slave->_block_isbad = part_block_isbad;
-	if (master->_block_markbad)
-		slave->_block_markbad = part_block_markbad;
-	slave->_erase = part_erase;
-	slave->parent = master;
+	if (parent->_writev)
+		slave->mtd._writev = part_writev;
+	if (parent->_lock)
+		slave->mtd._lock = part_lock;
+	if (parent->_unlock)
+		slave->mtd._unlock = part_unlock;
+	if (parent->_is_locked)
+		slave->mtd._is_locked = part_is_locked;
+	if (parent->_block_isreserved)
+		slave->mtd._block_isreserved = part_block_isreserved;
+	if (parent->_block_isbad)
+		slave->mtd._block_isbad = part_block_isbad;
+	if (parent->_block_markbad)
+		slave->mtd._block_markbad = part_block_markbad;
+	if (parent->_max_bad_blocks)
+		slave->mtd._max_bad_blocks = part_max_bad_blocks;
+
+	if (parent->_get_device)
+		slave->mtd._get_device = part_get_device;
+	if (parent->_put_device)
+		slave->mtd._put_device = part_put_device;
+
+	slave->mtd._erase = part_erase;
+	slave->parent = parent;
 	slave->offset = part->offset;
-	INIT_LIST_HEAD(&slave->partitions);
-	INIT_LIST_HEAD(&slave->node);
 
 	if (slave->offset == MTDPART_OFS_APPEND)
 		slave->offset = cur_offset;
 	if (slave->offset == MTDPART_OFS_NXTBLK) {
+		tmp = cur_offset;
 		slave->offset = cur_offset;
-		if (mtd_mod_by_eb(cur_offset, master) != 0) {
-			/* Round up to next erasesize */
-			slave->offset = (mtd_div_by_eb(cur_offset, master) + 1) * master->erasesize;
-			debug("Moving partition %d: "
+		remainder = do_div(tmp, wr_alignment);
+		if (remainder) {
+			slave->offset += wr_alignment - remainder;
+			printk(KERN_NOTICE "Moving partition %d: "
 			       "0x%012llx -> 0x%012llx\n", partno,
 			       (unsigned long long)cur_offset, (unsigned long long)slave->offset);
 		}
 	}
 	if (slave->offset == MTDPART_OFS_RETAIN) {
 		slave->offset = cur_offset;
-		if (master->size - slave->offset >= slave->size) {
-			slave->size = master->size - slave->offset
-							- slave->size;
+		if (parent->size - slave->offset >= slave->mtd.size) {
+			slave->mtd.size = parent->size - slave->offset
+							- slave->mtd.size;
 		} else {
-			debug("mtd partition \"%s\" doesn't have enough space: %#llx < %#llx, disabled\n",
-				part->name, master->size - slave->offset,
-				slave->size);
+			printk(KERN_ERR "mtd partition \"%s\" doesn't have enough space: %#llx < %#llx, disabled\n",
+				part->name, parent->size - slave->offset,
+				slave->mtd.size);
 			/* register to preserve ordering */
 			goto out_register;
 		}
 	}
-	if (slave->size == MTDPART_SIZ_FULL)
-		slave->size = master->size - slave->offset;
+	if (slave->mtd.size == MTDPART_SIZ_FULL)
+		slave->mtd.size = parent->size - slave->offset;
 
-	debug("0x%012llx-0x%012llx : \"%s\"\n", (unsigned long long)slave->offset,
-		(unsigned long long)(slave->offset + slave->size), slave->name);
+	printk(KERN_NOTICE "0x%012llx-0x%012llx : \"%s\"\n", (unsigned long long)slave->offset,
+		(unsigned long long)(slave->offset + slave->mtd.size), slave->mtd.name);
 
 	/* let's do some sanity checks */
-	if (slave->offset >= master->size) {
+	if (slave->offset >= parent->size) {
 		/* let's register it anyway to preserve ordering */
 		slave->offset = 0;
-		slave->size = 0;
+		slave->mtd.size = 0;
+
+		/* Initialize ->erasesize to make add_mtd_device() happy. */
+		slave->mtd.erasesize = parent->erasesize;
+
 		printk(KERN_ERR"mtd: partition \"%s\" is out of reach -- disabled\n",
 			part->name);
 		goto out_register;
 	}
-	if (slave->offset + slave->size > master->size) {
-		slave->size = master->size - slave->offset;
+	if (slave->offset + slave->mtd.size > parent->size) {
+		slave->mtd.size = parent->size - slave->offset;
 		printk(KERN_WARNING"mtd: partition \"%s\" extends beyond the end of device \"%s\" -- size truncated to %#llx\n",
-		       part->name, master->name, slave->size);
+			part->name, parent->name, (unsigned long long)slave->mtd.size);
 	}
-	if (master->numeraseregions > 1) {
+	if (parent->numeraseregions > 1) {
 		/* Deal with variable erase size stuff */
-		int i, max = master->numeraseregions;
-		u64 end = slave->offset + slave->size;
-		struct mtd_erase_region_info *regions = master->eraseregions;
+		int i, max = parent->numeraseregions;
+		u64 end = slave->offset + slave->mtd.size;
+		struct mtd_erase_region_info *regions = parent->eraseregions;
 
 		/* Find the first erase regions which is part of this
 		 * partition. */
@@ -730,43 +495,57 @@ static struct mtd_info *allocate_partition(struct mtd_info *master,
 
 		/* Pick biggest erasesize */
 		for (; i < max && regions[i].offset < end; i++) {
-			if (slave->erasesize < regions[i].erasesize)
-				slave->erasesize = regions[i].erasesize;
+			if (slave->mtd.erasesize < regions[i].erasesize) {
+				slave->mtd.erasesize = regions[i].erasesize;
+			}
 		}
-		WARN_ON(slave->erasesize == 0);
+		BUG_ON(slave->mtd.erasesize == 0);
 	} else {
 		/* Single erase size */
-		slave->erasesize = master->erasesize;
+		slave->mtd.erasesize = parent->erasesize;
 	}
 
-	if ((slave->flags & MTD_WRITEABLE) &&
-	    mtd_mod_by_eb(slave->offset, slave)) {
+	/*
+	 * Slave erasesize might differ from the master one if the master
+	 * exposes several regions with different erasesize. Adjust
+	 * wr_alignment accordingly.
+	 */
+	if (!(slave->mtd.flags & MTD_NO_ERASE))
+		wr_alignment = slave->mtd.erasesize;
+
+	tmp = part_absolute_offset(parent) + slave->offset;
+	remainder = do_div(tmp, wr_alignment);
+	if ((slave->mtd.flags & MTD_WRITEABLE) && remainder) {
 		/* Doesn't start on a boundary of major erase size */
 		/* FIXME: Let it be writable if it is on a boundary of
 		 * _minor_ erase size though */
-		slave->flags &= ~MTD_WRITEABLE;
-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't start on an erase block boundary -- force read-only\n",
-			part->name);
-	}
-	if ((slave->flags & MTD_WRITEABLE) &&
-	    mtd_mod_by_eb(slave->size, slave)) {
-		slave->flags &= ~MTD_WRITEABLE;
-		printk(KERN_WARNING"mtd: partition \"%s\" doesn't end on an erase block -- force read-only\n",
+		slave->mtd.flags &= ~MTD_WRITEABLE;
+		printk(KERN_WARNING"mtd: partition \"%s\" doesn't start on an erase/write block boundary -- force read-only\n",
 			part->name);
 	}
 
-	slave->ecclayout = master->ecclayout;
-	slave->ecc_step_size = master->ecc_step_size;
-	slave->ecc_strength = master->ecc_strength;
-	slave->bitflip_threshold = master->bitflip_threshold;
+	tmp = part_absolute_offset(parent) + slave->mtd.size;
+	remainder = do_div(tmp, wr_alignment);
+	if ((slave->mtd.flags & MTD_WRITEABLE) && remainder) {
+		slave->mtd.flags &= ~MTD_WRITEABLE;
+		printk(KERN_WARNING"mtd: partition \"%s\" doesn't end on an erase/write block -- force read-only\n",
+			part->name);
+	}
 
-	if (master->_block_isbad) {
+	mtd_set_ooblayout(&slave->mtd, &part_ooblayout_ops);
+	slave->mtd.ecc_step_size = parent->ecc_step_size;
+	slave->mtd.ecc_strength = parent->ecc_strength;
+	slave->mtd.bitflip_threshold = parent->bitflip_threshold;
+
+	if (parent->_block_isbad) {
 		uint64_t offs = 0;
 
-		while (offs < slave->size) {
-			if (mtd_block_isbad(master, offs + slave->offset))
-				slave->ecc_stats.badblocks++;
-			offs += slave->erasesize;
+		while (offs < slave->mtd.size) {
+			if (mtd_block_isreserved(parent, offs + slave->offset))
+				slave->mtd.ecc_stats.bbtblocks++;
+			else if (mtd_block_isbad(parent, offs + slave->offset))
+				slave->mtd.ecc_stats.badblocks++;
+			offs += slave->mtd.erasesize;
 		}
 	}
 
@@ -774,13 +553,35 @@ out_register:
 	return slave;
 }
 
-#ifndef __UBOOT__
-int mtd_add_partition(struct mtd_info *master, const char *name,
+static ssize_t mtd_partition_offset_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mtd_info *mtd = dev_get_drvdata(dev);
+	struct mtd_part *part = mtd_to_part(mtd);
+	return snprintf(buf, PAGE_SIZE, "%llu\n", part->offset);
+}
+
+static DEVICE_ATTR(offset, S_IRUGO, mtd_partition_offset_show, NULL);
+
+static const struct attribute *mtd_partition_attrs[] = {
+	&dev_attr_offset.attr,
+	NULL
+};
+
+static int mtd_add_partition_attrs(struct mtd_part *new)
+{
+	int ret = sysfs_create_files(&new->mtd.dev.kobj, mtd_partition_attrs);
+	if (ret)
+		printk(KERN_WARNING
+		       "mtd: failed to create partition attrs, err=%d\n", ret);
+	return ret;
+}
+
+int mtd_add_partition(struct mtd_info *parent, const char *name,
 		      long long offset, long long length)
 {
 	struct mtd_partition part;
-	struct mtd_info *p, *new;
-	uint64_t start, end;
+	struct mtd_part *new;
 	int ret = 0;
 
 	/* the direct offset is expected */
@@ -789,62 +590,106 @@ int mtd_add_partition(struct mtd_info *master, const char *name,
 		return -EINVAL;
 
 	if (length == MTDPART_SIZ_FULL)
-		length = master->size - offset;
+		length = parent->size - offset;
 
 	if (length <= 0)
 		return -EINVAL;
 
+	memset(&part, 0, sizeof(part));
 	part.name = name;
 	part.size = length;
 	part.offset = offset;
-	part.mask_flags = 0;
-	part.ecclayout = NULL;
 
-	new = allocate_partition(master, &part, -1, offset);
+	new = allocate_partition(parent, &part, -1, offset);
 	if (IS_ERR(new))
 		return PTR_ERR(new);
 
-	start = offset;
-	end = offset + length;
-
 	mutex_lock(&mtd_partitions_mutex);
-	list_for_each_entry(p, &master->partitions, node) {
-		if (start >= p->offset &&
-		    (start < (p->offset + p->size)))
-			goto err_inv;
-
-		if (end >= p->offset &&
-		    (end < (p->offset + p->size)))
-			goto err_inv;
-	}
-
-	list_add_tail(&new->node, &master->partitions);
+	list_add(&new->list, &mtd_partitions);
 	mutex_unlock(&mtd_partitions_mutex);
 
-	add_mtd_device(new);
+	ret = add_mtd_device(&new->mtd);
+	if (ret)
+		goto err_remove_part;
+
+	mtd_add_partition_attrs(new);
+
+	return 0;
+
+err_remove_part:
+	mutex_lock(&mtd_partitions_mutex);
+	list_del(&new->list);
+	mutex_unlock(&mtd_partitions_mutex);
+
+	free_partition(new);
 
 	return ret;
-err_inv:
-	mutex_unlock(&mtd_partitions_mutex);
-	free_partition(new);
-	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(mtd_add_partition);
 
-int mtd_del_partition(struct mtd_info *master, int partno)
+/**
+ * __mtd_del_partition - delete MTD partition
+ *
+ * @priv: internal MTD struct for partition to be deleted
+ *
+ * This function must be called with the partitions mutex locked.
+ */
+static int __mtd_del_partition(struct mtd_part *priv)
 {
-	struct mtd_info *slave, *next;
+	struct mtd_part *child, *next;
+	int err;
+
+	list_for_each_entry_safe(child, next, &mtd_partitions, list) {
+		if (child->parent == &priv->mtd) {
+			err = __mtd_del_partition(child);
+			if (err)
+				return err;
+		}
+	}
+
+	sysfs_remove_files(&priv->mtd.dev.kobj, mtd_partition_attrs);
+
+	err = del_mtd_device(&priv->mtd);
+	if (err)
+		return err;
+
+	list_del(&priv->list);
+	free_partition(priv);
+
+	return 0;
+}
+
+/*
+ * This function unregisters and destroy all slave MTD objects which are
+ * attached to the given MTD object.
+ */
+int del_mtd_partitions(struct mtd_info *mtd)
+{
+	struct mtd_part *slave, *next;
+	int ret, err = 0;
+
+	mutex_lock(&mtd_partitions_mutex);
+	list_for_each_entry_safe(slave, next, &mtd_partitions, list)
+		if (slave->parent == mtd) {
+			ret = __mtd_del_partition(slave);
+			if (ret < 0)
+				err = ret;
+		}
+	mutex_unlock(&mtd_partitions_mutex);
+
+	return err;
+}
+
+int mtd_del_partition(struct mtd_info *mtd, int partno)
+{
+	struct mtd_part *slave, *next;
 	int ret = -EINVAL;
 
 	mutex_lock(&mtd_partitions_mutex);
-	list_for_each_entry_safe(slave, next, &master->partitions, node)
-		if (slave->index == partno) {
-			ret = del_mtd_device(slave);
-			if (ret < 0)
-				break;
-
-			list_del(&slave->node);
-			free_partition(slave);
+	list_for_each_entry_safe(slave, next, &mtd_partitions, list)
+		if ((slave->parent == mtd) &&
+		    (slave->mtd.index == partno)) {
+			ret = __mtd_del_partition(slave);
 			break;
 		}
 	mutex_unlock(&mtd_partitions_mutex);
@@ -852,49 +697,66 @@ int mtd_del_partition(struct mtd_info *master, int partno)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mtd_del_partition);
-#endif
 
 /*
  * This function, given a master MTD object and a partition table, creates
  * and registers slave MTD objects which are bound to the master according to
  * the partition definitions.
  *
- * We don't register the master, or expect the caller to have done so,
- * for reasons of data integrity.
+ * For historical reasons, this function's caller only registers the master
+ * if the MTD_PARTITIONED_MASTER config option is set.
  */
 
 int add_mtd_partitions(struct mtd_info *master,
 		       const struct mtd_partition *parts,
 		       int nbparts)
 {
-	struct mtd_info *slave;
+	struct mtd_part *slave;
 	uint64_t cur_offset = 0;
-	int i;
+	int i, ret;
 
-	debug("Creating %d MTD partitions on \"%s\":\n", nbparts, master->name);
+	printk(KERN_NOTICE "Creating %d MTD partitions on \"%s\":\n", nbparts, master->name);
 
 	for (i = 0; i < nbparts; i++) {
 		slave = allocate_partition(master, parts + i, i, cur_offset);
-		if (IS_ERR(slave))
-			return PTR_ERR(slave);
+		if (IS_ERR(slave)) {
+			ret = PTR_ERR(slave);
+			goto err_del_partitions;
+		}
 
 		mutex_lock(&mtd_partitions_mutex);
-		list_add_tail(&slave->node, &master->partitions);
+		list_add(&slave->list, &mtd_partitions);
 		mutex_unlock(&mtd_partitions_mutex);
 
-		add_mtd_device(slave);
+		ret = add_mtd_device(&slave->mtd);
+		if (ret) {
+			mutex_lock(&mtd_partitions_mutex);
+			list_del(&slave->list);
+			mutex_unlock(&mtd_partitions_mutex);
 
-		cur_offset = slave->offset + slave->size;
+			free_partition(slave);
+			goto err_del_partitions;
+		}
+
+		mtd_add_partition_attrs(slave);
+		/* Look for subpartitions */
+		parse_mtd_partitions(&slave->mtd, parts[i].types, NULL);
+
+		cur_offset = slave->offset + slave->mtd.size;
 	}
 
 	return 0;
+
+err_del_partitions:
+	del_mtd_partitions(master);
+
+	return ret;
 }
 
-#ifndef __UBOOT__
 static DEFINE_SPINLOCK(part_parser_lock);
 static LIST_HEAD(part_parsers);
 
-static struct mtd_part_parser *get_partition_parser(const char *name)
+static struct mtd_part_parser *mtd_part_parser_get(const char *name)
 {
 	struct mtd_part_parser *p, *ret = NULL;
 
@@ -911,15 +773,35 @@ static struct mtd_part_parser *get_partition_parser(const char *name)
 	return ret;
 }
 
-#define put_partition_parser(p) do { module_put((p)->owner); } while (0)
-
-void register_mtd_parser(struct mtd_part_parser *p)
+static inline void mtd_part_parser_put(const struct mtd_part_parser *p)
 {
+	module_put(p->owner);
+}
+
+/*
+ * Many partition parsers just expected the core to kfree() all their data in
+ * one chunk. Do that by default.
+ */
+static void mtd_part_parser_cleanup_default(const struct mtd_partition *pparts,
+					    int nr_parts)
+{
+	kfree(pparts);
+}
+
+int __register_mtd_parser(struct mtd_part_parser *p, struct module *owner)
+{
+	p->owner = owner;
+
+	if (!p->cleanup)
+		p->cleanup = &mtd_part_parser_cleanup_default;
+
 	spin_lock(&part_parser_lock);
 	list_add(&p->list, &part_parsers);
 	spin_unlock(&part_parser_lock);
+
+	return 0;
 }
-EXPORT_SYMBOL_GPL(register_mtd_parser);
+EXPORT_SYMBOL_GPL(__register_mtd_parser);
 
 void deregister_mtd_parser(struct mtd_part_parser *p)
 {
@@ -939,60 +821,231 @@ static const char * const default_mtd_part_types[] = {
 	NULL
 };
 
+/* Check DT only when looking for subpartitions. */
+static const char * const default_subpartition_types[] = {
+	"ofpart",
+	NULL
+};
+
+static int mtd_part_do_parse(struct mtd_part_parser *parser,
+			     struct mtd_info *master,
+			     struct mtd_partitions *pparts,
+			     struct mtd_part_parser_data *data)
+{
+	int ret;
+
+	ret = (*parser->parse_fn)(master, &pparts->parts, data);
+	pr_debug("%s: parser %s: %i\n", master->name, parser->name, ret);
+	if (ret <= 0)
+		return ret;
+
+	pr_notice("%d %s partitions found on MTD device %s\n", ret,
+		  parser->name, master->name);
+
+	pparts->nr_parts = ret;
+	pparts->parser = parser;
+
+	return ret;
+}
+
 /**
- * parse_mtd_partitions - parse MTD partitions
+ * mtd_part_get_compatible_parser - find MTD parser by a compatible string
+ *
+ * @compat: compatible string describing partitions in a device tree
+ *
+ * MTD parsers can specify supported partitions by providing a table of
+ * compatibility strings. This function finds a parser that advertises support
+ * for a passed value of "compatible".
+ */
+static struct mtd_part_parser *mtd_part_get_compatible_parser(const char *compat)
+{
+	struct mtd_part_parser *p, *ret = NULL;
+
+	spin_lock(&part_parser_lock);
+
+	list_for_each_entry(p, &part_parsers, list) {
+		const struct of_device_id *matches;
+
+		matches = p->of_match_table;
+		if (!matches)
+			continue;
+
+		for (; matches->compatible[0]; matches++) {
+			if (!strcmp(matches->compatible, compat) &&
+			    try_module_get(p->owner)) {
+				ret = p;
+				break;
+			}
+		}
+
+		if (ret)
+			break;
+	}
+
+	spin_unlock(&part_parser_lock);
+
+	return ret;
+}
+
+static int mtd_part_of_parse(struct mtd_info *master,
+			     struct mtd_partitions *pparts)
+{
+	struct mtd_part_parser *parser;
+	struct device_node *np;
+	struct property *prop;
+	const char *compat;
+	const char *fixed = "fixed-partitions";
+	int ret, err = 0;
+
+	np = mtd_get_of_node(master);
+	if (mtd_is_partition(master))
+		of_node_get(np);
+	else
+		np = of_get_child_by_name(np, "partitions");
+
+	of_property_for_each_string(np, "compatible", prop, compat) {
+		parser = mtd_part_get_compatible_parser(compat);
+		if (!parser)
+			continue;
+		ret = mtd_part_do_parse(parser, master, pparts, NULL);
+		if (ret > 0) {
+			of_node_put(np);
+			return ret;
+		}
+		mtd_part_parser_put(parser);
+		if (ret < 0 && !err)
+			err = ret;
+	}
+	of_node_put(np);
+
+	/*
+	 * For backward compatibility we have to try the "fixed-partitions"
+	 * parser. It supports old DT format with partitions specified as a
+	 * direct subnodes of a flash device DT node without any compatibility
+	 * specified we could match.
+	 */
+	parser = mtd_part_parser_get(fixed);
+	if (!parser && !request_module("%s", fixed))
+		parser = mtd_part_parser_get(fixed);
+	if (parser) {
+		ret = mtd_part_do_parse(parser, master, pparts, NULL);
+		if (ret > 0)
+			return ret;
+		mtd_part_parser_put(parser);
+		if (ret < 0 && !err)
+			err = ret;
+	}
+
+	return err;
+}
+
+/**
+ * parse_mtd_partitions - parse and register MTD partitions
+ *
  * @master: the master partition (describes whole MTD device)
  * @types: names of partition parsers to try or %NULL
- * @pparts: array of partitions found is returned here
  * @data: MTD partition parser-specific data
  *
- * This function tries to find partition on MTD device @master. It uses MTD
- * partition parsers, specified in @types. However, if @types is %NULL, then
- * the default list of parsers is used. The default list contains only the
+ * This function tries to find & register partitions on MTD device @master. It
+ * uses MTD partition parsers, specified in @types. However, if @types is %NULL,
+ * then the default list of parsers is used. The default list contains only the
  * "cmdlinepart" and "ofpart" parsers ATM.
  * Note: If there are more then one parser in @types, the kernel only takes the
  * partitions parsed out by the first parser.
  *
  * This function may return:
  * o a negative error code in case of failure
- * o zero if no partitions were found
- * o a positive number of found partitions, in which case on exit @pparts will
- *   point to an array containing this number of &struct mtd_info objects.
+ * o number of found partitions otherwise
  */
 int parse_mtd_partitions(struct mtd_info *master, const char *const *types,
-			 struct mtd_partition **pparts,
 			 struct mtd_part_parser_data *data)
 {
+	struct mtd_partitions pparts = { };
 	struct mtd_part_parser *parser;
-	int ret = 0;
+	int ret, err = 0;
 
 	if (!types)
-		types = default_mtd_part_types;
+		types = mtd_is_partition(master) ? default_subpartition_types :
+			default_mtd_part_types;
 
-	for ( ; ret <= 0 && *types; types++) {
-		parser = get_partition_parser(*types);
-		if (!parser && !request_module("%s", *types))
-			parser = get_partition_parser(*types);
-		if (!parser)
-			continue;
-		ret = (*parser->parse_fn)(master, pparts, data);
-		put_partition_parser(parser);
+	for ( ; *types; types++) {
+		/*
+		 * ofpart is a special type that means OF partitioning info
+		 * should be used. It requires a bit different logic so it is
+		 * handled in a separated function.
+		 */
+		if (!strcmp(*types, "ofpart")) {
+			ret = mtd_part_of_parse(master, &pparts);
+		} else {
+			pr_debug("%s: parsing partitions %s\n", master->name,
+				 *types);
+			parser = mtd_part_parser_get(*types);
+			if (!parser && !request_module("%s", *types))
+				parser = mtd_part_parser_get(*types);
+			pr_debug("%s: got parser %s\n", master->name,
+				parser ? parser->name : NULL);
+			if (!parser)
+				continue;
+			ret = mtd_part_do_parse(parser, master, &pparts, data);
+			if (ret <= 0)
+				mtd_part_parser_put(parser);
+		}
+		/* Found partitions! */
 		if (ret > 0) {
-			printk(KERN_NOTICE "%d %s partitions found on MTD device %s\n",
-			       ret, parser->name, master->name);
+			err = add_mtd_partitions(master, pparts.parts,
+						 pparts.nr_parts);
+			mtd_part_parser_cleanup(&pparts);
+			return err ? err : pparts.nr_parts;
+		}
+		/*
+		 * Stash the first error we see; only report it if no parser
+		 * succeeds
+		 */
+		if (ret < 0 && !err)
+			err = ret;
+	}
+	return err;
+}
+
+void mtd_part_parser_cleanup(struct mtd_partitions *parts)
+{
+	const struct mtd_part_parser *parser;
+
+	if (!parts)
+		return;
+
+	parser = parts->parser;
+	if (parser) {
+		if (parser->cleanup)
+			parser->cleanup(parts->parts, parts->nr_parts);
+
+		mtd_part_parser_put(parser);
+	}
+}
+
+int mtd_is_partition(const struct mtd_info *mtd)
+{
+	struct mtd_part *part;
+	int ispart = 0;
+
+	mutex_lock(&mtd_partitions_mutex);
+	list_for_each_entry(part, &mtd_partitions, list)
+		if (&part->mtd == mtd) {
+			ispart = 1;
 			break;
 		}
-	}
-	return ret;
+	mutex_unlock(&mtd_partitions_mutex);
+
+	return ispart;
 }
-#endif
+EXPORT_SYMBOL_GPL(mtd_is_partition);
 
 /* Returns the size of the entire flash chip */
 uint64_t mtd_get_device_size(const struct mtd_info *mtd)
 {
-	if (mtd_is_partition(mtd))
-		return mtd->parent->size;
+	if (!mtd_is_partition(mtd))
+		return mtd->size;
 
-	return mtd->size;
+	return mtd_get_device_size(mtd_to_part(mtd)->parent);
 }
 EXPORT_SYMBOL_GPL(mtd_get_device_size);

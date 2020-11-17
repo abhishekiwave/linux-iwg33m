@@ -1,5 +1,8 @@
-# SPDX-License-Identifier: GPL-2.0+
-
-obj-y += core.o
-obj-y += supplicant.o
-obj-$(CONFIG_SUPPORT_EMMC_RPMB) += rpmb.o
+# SPDX-License-Identifier: GPL-2.0
+obj-$(CONFIG_OPTEE) += optee.o
+optee-objs += core.o
+optee-objs += call.o
+optee-objs += rpc.o
+optee-objs += supp.o
+optee-objs += shm_pool.o
+optee-objs += device.o

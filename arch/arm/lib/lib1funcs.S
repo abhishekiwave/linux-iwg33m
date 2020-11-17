@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * linux/arch/arm/lib/lib1funcs.S: Optimized ARM division routines
  *
@@ -6,22 +5,37 @@
  *   - contributed to gcc-3.4 on Sep 30, 2003
  *   - adapted for the Linux kernel on Oct 2, 2003
  */
-/*
- * Copyright 1995, 1996, 1998, 1999, 2000, 2003 Free Software Foundation, Inc.
- */
+
+/* Copyright 1995, 1996, 1998, 1999, 2000, 2003 Free Software Foundation, Inc.
+
+This file is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the
+Free Software Foundation; either version 2, or (at your option) any
+later version.
+
+In addition to the permissions in the GNU General Public License, the
+Free Software Foundation gives you unlimited permission to link the
+compiled version of this file into combinations with other programs,
+and to distribute those combinations without any restriction coming
+from the use of this file.  (The General Public License restrictions
+do apply in other respects; for example, they cover modification of
+the file, and distribution when not linked into a combine
+executable.)
+
+This file is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; see the file COPYING.  If not, write to
+the Free Software Foundation, 59 Temple Place - Suite 330,
+Boston, MA 02111-1307, USA.  */
+
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
-
-/*
- * U-Boot compatibility bit, define empty UNWIND() macro as, since we
- * do not support stack unwinding and define CONFIG_AEABI to make all
- * of the functions available without diverging from Linux code.
- */
-#ifdef __UBOOT__
-#define UNWIND(x...)
-#define CONFIG_AEABI
-#endif
+#include <asm/unwind.h>
 
 .macro ARM_DIV_BODY dividend, divisor, result, curbit
 
@@ -191,7 +205,10 @@
 .endm
 
 
-.pushsection .text.__udivsi3, "ax"
+#ifdef CONFIG_ARM_PATCH_IDIV
+	.align	3
+#endif
+
 ENTRY(__udivsi3)
 ENTRY(__aeabi_uidiv)
 UNWIND(.fnstart)
@@ -221,9 +238,7 @@ UNWIND(.fnstart)
 UNWIND(.fnend)
 ENDPROC(__udivsi3)
 ENDPROC(__aeabi_uidiv)
-.popsection
 
-.pushsection .text.__umodsi3, "ax"
 ENTRY(__umodsi3)
 UNWIND(.fnstart)
 
@@ -241,9 +256,11 @@ UNWIND(.fnstart)
 
 UNWIND(.fnend)
 ENDPROC(__umodsi3)
-.popsection
 
-.pushsection .text.__divsi3, "ax"
+#ifdef CONFIG_ARM_PATCH_IDIV
+	.align 3
+#endif
+
 ENTRY(__divsi3)
 ENTRY(__aeabi_idiv)
 UNWIND(.fnstart)
@@ -286,9 +303,7 @@ UNWIND(.fnstart)
 UNWIND(.fnend)
 ENDPROC(__divsi3)
 ENDPROC(__aeabi_idiv)
-.popsection
 
-.pushsection .text.__modsi3, "ax"
 ENTRY(__modsi3)
 UNWIND(.fnstart)
 
@@ -312,11 +327,9 @@ UNWIND(.fnstart)
 
 UNWIND(.fnend)
 ENDPROC(__modsi3)
-.popsection
 
 #ifdef CONFIG_AEABI
 
-.pushsection .text.__aeabi_uidivmod, "ax"
 ENTRY(__aeabi_uidivmod)
 UNWIND(.fnstart)
 UNWIND(.save {r0, r1, ip, lr}	)
@@ -330,13 +343,10 @@ UNWIND(.save {r0, r1, ip, lr}	)
 
 UNWIND(.fnend)
 ENDPROC(__aeabi_uidivmod)
-.popsection
 
-.pushsection .text.__aeabi_uidivmod, "ax"
 ENTRY(__aeabi_idivmod)
 UNWIND(.fnstart)
 UNWIND(.save {r0, r1, ip, lr}	)
-
 	stmfd	sp!, {r0, r1, ip, lr}
 	bl	__aeabi_idiv
 	ldmfd	sp!, {r1, r2, ip, lr}
@@ -346,82 +356,16 @@ UNWIND(.save {r0, r1, ip, lr}	)
 
 UNWIND(.fnend)
 ENDPROC(__aeabi_idivmod)
-.popsection
 
 #endif
 
-.pushsection .text.Ldiv0, "ax"
 Ldiv0:
 UNWIND(.fnstart)
 UNWIND(.pad #4)
 UNWIND(.save {lr})
-
 	str	lr, [sp, #-8]!
 	bl	__div0
 	mov	r0, #0			@ About as wrong as it could be.
 	ldr	pc, [sp], #8
-
 UNWIND(.fnend)
 ENDPROC(Ldiv0)
-.popsection
-
-/* Thumb-1 specialities */
-#if CONFIG_IS_ENABLED(SYS_THUMB_BUILD) && !defined(CONFIG_HAS_THUMB2)
-.pushsection .text.__gnu_thumb1_case_sqi, "ax"
-ENTRY(__gnu_thumb1_case_sqi)
-	push	{r1}
-	mov	r1, lr
-	lsrs	r1, r1, #1
-	lsls	r1, r1, #1
-	ldrsb	r1, [r1, r0]
-	lsls	r1, r1, #1
-	add	lr, lr, r1
-	pop	{r1}
-	bx	lr
-ENDPROC(__gnu_thumb1_case_sqi)
-.popsection
-
-.pushsection .text.__gnu_thumb1_case_uqi, "ax"
-ENTRY(__gnu_thumb1_case_uqi)
-	push	{r1}
-	mov	r1, lr
-	lsrs	r1, r1, #1
-	lsls	r1, r1, #1
-	ldrb	r1, [r1, r0]
-	lsls	r1, r1, #1
-	add	lr, lr, r1
-	pop	{r1}
-	bx	lr
-ENDPROC(__gnu_thumb1_case_uqi)
-.popsection
-
-.pushsection .text.__gnu_thumb1_case_shi, "ax"
-ENTRY(__gnu_thumb1_case_shi)
-	push	{r0, r1}
-	mov	r1, lr
-	lsrs	r1, r1, #1
-	lsls	r0, r0, #1
-	lsls	r1, r1, #1
-	ldrsh	r1, [r1, r0]
-	lsls	r1, r1, #1
-	add	lr, lr, r1
-	pop	{r0, r1}
-	bx	lr
-ENDPROC(__gnu_thumb1_case_shi)
-.popsection
-
-.pushsection .text.__gnu_thumb1_case_uhi, "ax"
-ENTRY(__gnu_thumb1_case_uhi)
-	push	{r0, r1}
-	mov	r1, lr
-	lsrs	r1, r1, #1
-	lsls	r0, r0, #1
-	lsls	r1, r1, #1
-	ldrh	r1, [r1, r0]
-	lsls	r1, r1, #1
-	add	lr, lr, r1
-	pop	{r0, r1}
-	bx	lr
-ENDPROC(__gnu_thumb1_case_uhi)
-.popsection
-#endif

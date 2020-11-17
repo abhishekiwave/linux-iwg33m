@@ -5,19 +5,15 @@
  *
  * Author: Boris Brezillon <boris.brezillon@bootlin.com>
  */
-
-#ifndef __UBOOT__
-#include <dm/devres.h>
 #include <linux/dmaengine.h>
 #include <linux/pm_runtime.h>
-#include "internals.h"
-#else
-#include <dm/device_compat.h>
-#include <spi.h>
-#include <spi-mem.h>
-#endif
+#include <linux/spi/spi.h>
+#include <linux/spi/spi-mem.h>
 
-#ifndef __UBOOT__
+#include "internals.h"
+
+#define SPI_MEM_MAX_BUSWIDTH		8
+
 /**
  * spi_controller_dma_map_mem_op_data() - DMA-map the buffer attached to a
  *					  memory operation
@@ -102,11 +98,10 @@ void spi_controller_dma_unmap_mem_op_data(struct spi_controller *ctlr,
 		      DMA_FROM_DEVICE : DMA_TO_DEVICE);
 }
 EXPORT_SYMBOL_GPL(spi_controller_dma_unmap_mem_op_data);
-#endif /* __UBOOT__ */
 
-static int spi_check_buswidth_req(struct spi_slave *slave, u8 buswidth, bool tx)
+static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 {
-	u32 mode = slave->mode;
+	u32 mode = mem->spi->mode;
 
 	switch (buswidth) {
 	case 1:
@@ -125,6 +120,7 @@ static int spi_check_buswidth_req(struct spi_slave *slave, u8 buswidth, bool tx)
 			return 0;
 
 		break;
+
 	case 8:
 		if ((tx && (mode & SPI_TX_OCTAL)) ||
 		    (!tx && (mode & SPI_RX_OCTAL)))
@@ -139,22 +135,22 @@ static int spi_check_buswidth_req(struct spi_slave *slave, u8 buswidth, bool tx)
 	return -ENOTSUPP;
 }
 
-bool spi_mem_default_supports_op(struct spi_slave *slave,
+bool spi_mem_default_supports_op(struct spi_mem *mem,
 				 const struct spi_mem_op *op)
 {
-	if (spi_check_buswidth_req(slave, op->cmd.buswidth, true))
+	if (spi_check_buswidth_req(mem, op->cmd.buswidth, true))
 		return false;
 
 	if (op->addr.nbytes &&
-	    spi_check_buswidth_req(slave, op->addr.buswidth, true))
+	    spi_check_buswidth_req(mem, op->addr.buswidth, true))
 		return false;
 
 	if (op->dummy.nbytes &&
-	    spi_check_buswidth_req(slave, op->dummy.buswidth, true))
+	    spi_check_buswidth_req(mem, op->dummy.buswidth, true))
 		return false;
 
-	if (op->data.nbytes &&
-	    spi_check_buswidth_req(slave, op->data.buswidth,
+	if (op->data.dir != SPI_MEM_NO_DATA &&
+	    spi_check_buswidth_req(mem, op->data.buswidth,
 				   op->data.dir == SPI_MEM_DATA_OUT))
 		return false;
 
@@ -162,10 +158,48 @@ bool spi_mem_default_supports_op(struct spi_slave *slave,
 }
 EXPORT_SYMBOL_GPL(spi_mem_default_supports_op);
 
+static bool spi_mem_buswidth_is_valid(u8 buswidth)
+{
+	if (hweight8(buswidth) > 1 || buswidth > SPI_MEM_MAX_BUSWIDTH)
+		return false;
+
+	return true;
+}
+
+static int spi_mem_check_op(const struct spi_mem_op *op)
+{
+	if (!op->cmd.buswidth)
+		return -EINVAL;
+
+	if ((op->addr.nbytes && !op->addr.buswidth) ||
+	    (op->dummy.nbytes && !op->dummy.buswidth) ||
+	    (op->data.nbytes && !op->data.buswidth))
+		return -EINVAL;
+
+	if (!spi_mem_buswidth_is_valid(op->cmd.buswidth) ||
+	    !spi_mem_buswidth_is_valid(op->addr.buswidth) ||
+	    !spi_mem_buswidth_is_valid(op->dummy.buswidth) ||
+	    !spi_mem_buswidth_is_valid(op->data.buswidth))
+		return -EINVAL;
+
+	return 0;
+}
+
+static bool spi_mem_internal_supports_op(struct spi_mem *mem,
+					 const struct spi_mem_op *op)
+{
+	struct spi_controller *ctlr = mem->spi->controller;
+
+	if (ctlr->mem_ops && ctlr->mem_ops->supports_op)
+		return ctlr->mem_ops->supports_op(mem, op);
+
+	return spi_mem_default_supports_op(mem, op);
+}
+
 /**
  * spi_mem_supports_op() - Check if a memory device and the controller it is
  *			   connected to support a specific memory operation
- * @slave: the SPI device
+ * @mem: the SPI memory
  * @op: the memory operation to check
  *
  * Some controllers are only supporting Single or Dual IOs, others might only
@@ -177,22 +211,56 @@ EXPORT_SYMBOL_GPL(spi_mem_default_supports_op);
  *
  * Return: true if @op is supported, false otherwise.
  */
-bool spi_mem_supports_op(struct spi_slave *slave,
-			 const struct spi_mem_op *op)
+bool spi_mem_supports_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	struct udevice *bus = slave->dev->parent;
-	struct dm_spi_ops *ops = spi_get_ops(bus);
+	if (spi_mem_check_op(op))
+		return false;
 
-	if (ops->mem_ops && ops->mem_ops->supports_op)
-		return ops->mem_ops->supports_op(slave, op);
-
-	return spi_mem_default_supports_op(slave, op);
+	return spi_mem_internal_supports_op(mem, op);
 }
 EXPORT_SYMBOL_GPL(spi_mem_supports_op);
 
+static int spi_mem_access_start(struct spi_mem *mem)
+{
+	struct spi_controller *ctlr = mem->spi->controller;
+
+	/*
+	 * Flush the message queue before executing our SPI memory
+	 * operation to prevent preemption of regular SPI transfers.
+	 */
+	spi_flush_queue(ctlr);
+
+	if (ctlr->auto_runtime_pm) {
+		int ret;
+
+		ret = pm_runtime_get_sync(ctlr->dev.parent);
+		if (ret < 0) {
+			dev_err(&ctlr->dev, "Failed to power device: %d\n",
+				ret);
+			return ret;
+		}
+	}
+
+	mutex_lock(&ctlr->bus_lock_mutex);
+	mutex_lock(&ctlr->io_mutex);
+
+	return 0;
+}
+
+static void spi_mem_access_end(struct spi_mem *mem)
+{
+	struct spi_controller *ctlr = mem->spi->controller;
+
+	mutex_unlock(&ctlr->io_mutex);
+	mutex_unlock(&ctlr->bus_lock_mutex);
+
+	if (ctlr->auto_runtime_pm)
+		pm_runtime_put(ctlr->dev.parent);
+}
+
 /**
  * spi_mem_exec_op() - Execute a memory operation
- * @slave: the SPI device
+ * @mem: the SPI memory
  * @op: the memory operation to execute
  *
  * Executes a memory operation.
@@ -202,68 +270,40 @@ EXPORT_SYMBOL_GPL(spi_mem_supports_op);
  *
  * Return: 0 in case of success, a negative error code otherwise.
  */
-int spi_mem_exec_op(struct spi_slave *slave, const struct spi_mem_op *op)
+int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
-	struct udevice *bus = slave->dev->parent;
-	struct dm_spi_ops *ops = spi_get_ops(bus);
-	unsigned int pos = 0;
-	const u8 *tx_buf = NULL;
-	u8 *rx_buf = NULL;
-	int op_len;
-	u32 flag;
+	unsigned int tmpbufsize, xferpos = 0, totalxferlen = 0;
+	struct spi_controller *ctlr = mem->spi->controller;
+	struct spi_transfer xfers[4] = { };
+	struct spi_message msg;
+	u8 *tmpbuf;
 	int ret;
-	int i;
 
-	if (!spi_mem_supports_op(slave, op))
-		return -ENOTSUPP;
-
-	ret = spi_claim_bus(slave);
-	if (ret < 0)
+	ret = spi_mem_check_op(op);
+	if (ret)
 		return ret;
 
-	if (ops->mem_ops && ops->mem_ops->exec_op) {
-#ifndef __UBOOT__
-		/*
-		 * Flush the message queue before executing our SPI memory
-		 * operation to prevent preemption of regular SPI transfers.
-		 */
-		spi_flush_queue(ctlr);
+	if (!spi_mem_internal_supports_op(mem, op))
+		return -ENOTSUPP;
 
-		if (ctlr->auto_runtime_pm) {
-			ret = pm_runtime_get_sync(ctlr->dev.parent);
-			if (ret < 0) {
-				dev_err(&ctlr->dev,
-					"Failed to power device: %d\n",
-					ret);
-				return ret;
-			}
-		}
+	if (ctlr->mem_ops) {
+		ret = spi_mem_access_start(mem);
+		if (ret)
+			return ret;
 
-		mutex_lock(&ctlr->bus_lock_mutex);
-		mutex_lock(&ctlr->io_mutex);
-#endif
-		ret = ops->mem_ops->exec_op(slave, op);
+		ret = ctlr->mem_ops->exec_op(mem, op);
 
-#ifndef __UBOOT__
-		mutex_unlock(&ctlr->io_mutex);
-		mutex_unlock(&ctlr->bus_lock_mutex);
-
-		if (ctlr->auto_runtime_pm)
-			pm_runtime_put(ctlr->dev.parent);
-#endif
+		spi_mem_access_end(mem);
 
 		/*
 		 * Some controllers only optimize specific paths (typically the
 		 * read path) and expect the core to use the regular SPI
 		 * interface in other cases.
 		 */
-		if (!ret || ret != -ENOTSUPP) {
-			spi_release_bus(slave);
+		if (!ret || ret != -ENOTSUPP)
 			return ret;
-		}
 	}
 
-#ifndef __UBOOT__
 	tmpbufsize = sizeof(op->cmd.opcode) + op->addr.nbytes +
 		     op->dummy.nbytes;
 
@@ -326,7 +366,7 @@ int spi_mem_exec_op(struct spi_slave *slave, const struct spi_mem_op *op)
 		totalxferlen += op->data.nbytes;
 	}
 
-	ret = spi_sync(slave, &msg);
+	ret = spi_sync(mem->spi, &msg);
 
 	kfree(tmpbuf);
 
@@ -335,82 +375,33 @@ int spi_mem_exec_op(struct spi_slave *slave, const struct spi_mem_op *op)
 
 	if (msg.actual_length != totalxferlen)
 		return -EIO;
-#else
-
-	if (op->data.nbytes) {
-		if (op->data.dir == SPI_MEM_DATA_IN)
-			rx_buf = op->data.buf.in;
-		else
-			tx_buf = op->data.buf.out;
-	}
-
-	op_len = sizeof(op->cmd.opcode) + op->addr.nbytes + op->dummy.nbytes;
-
-	/*
-	 * Avoid using malloc() here so that we can use this code in SPL where
-	 * simple malloc may be used. That implementation does not allow free()
-	 * so repeated calls to this code can exhaust the space.
-	 *
-	 * The value of op_len is small, since it does not include the actual
-	 * data being sent, only the op-code and address. In fact, it should be
-	 * possible to just use a small fixed value here instead of op_len.
-	 */
-	u8 op_buf[op_len];
-
-	op_buf[pos++] = op->cmd.opcode;
-
-	if (op->addr.nbytes) {
-		for (i = 0; i < op->addr.nbytes; i++)
-			op_buf[pos + i] = op->addr.val >>
-				(8 * (op->addr.nbytes - i - 1));
-
-		pos += op->addr.nbytes;
-	}
-
-	if (op->dummy.nbytes)
-		memset(op_buf + pos, 0xff, op->dummy.nbytes);
-
-	/* 1st transfer: opcode + address + dummy cycles */
-	flag = SPI_XFER_BEGIN;
-	/* Make sure to set END bit if no tx or rx data messages follow */
-	if (!tx_buf && !rx_buf)
-		flag |= SPI_XFER_END;
-
-	ret = spi_xfer(slave, op_len * 8, op_buf, NULL, flag);
-	if (ret)
-		return ret;
-
-	/* 2nd transfer: rx or tx data path */
-	if (tx_buf || rx_buf) {
-		ret = spi_xfer(slave, op->data.nbytes * 8, tx_buf,
-			       rx_buf, SPI_XFER_END);
-		if (ret)
-			return ret;
-	}
-
-	spi_release_bus(slave);
-
-	for (i = 0; i < pos; i++)
-		debug("%02x ", op_buf[i]);
-	debug("| [%dB %s] ",
-	      tx_buf || rx_buf ? op->data.nbytes : 0,
-	      tx_buf || rx_buf ? (tx_buf ? "out" : "in") : "-");
-	for (i = 0; i < op->data.nbytes; i++)
-		debug("%02x ", tx_buf ? tx_buf[i] : rx_buf[i]);
-	debug("[ret %d]\n", ret);
-
-	if (ret < 0)
-		return ret;
-#endif /* __UBOOT__ */
 
 	return 0;
 }
 EXPORT_SYMBOL_GPL(spi_mem_exec_op);
 
 /**
+ * spi_mem_get_name() - Return the SPI mem device name to be used by the
+ *			upper layer if necessary
+ * @mem: the SPI memory
+ *
+ * This function allows SPI mem users to retrieve the SPI mem device name.
+ * It is useful if the upper layer needs to expose a custom name for
+ * compatibility reasons.
+ *
+ * Return: a string containing the name of the memory device to be used
+ *	   by the SPI mem user
+ */
+const char *spi_mem_get_name(struct spi_mem *mem)
+{
+	return mem->name;
+}
+EXPORT_SYMBOL_GPL(spi_mem_get_name);
+
+/**
  * spi_mem_adjust_op_size() - Adjust the data size of a SPI mem operation to
- *				 match controller limitations
- * @slave: the SPI device
+ *			      match controller limitations
+ * @mem: the SPI memory
  * @op: the operation to adjust
  *
  * Some controllers have FIFO limitations and must split a data transfer
@@ -422,31 +413,24 @@ EXPORT_SYMBOL_GPL(spi_mem_exec_op);
  *	   0 otherwise. Note that @op->data.nbytes will be updated if @op
  *	   can't be handled in a single step.
  */
-int spi_mem_adjust_op_size(struct spi_slave *slave, struct spi_mem_op *op)
+int spi_mem_adjust_op_size(struct spi_mem *mem, struct spi_mem_op *op)
 {
-	struct udevice *bus = slave->dev->parent;
-	struct dm_spi_ops *ops = spi_get_ops(bus);
+	struct spi_controller *ctlr = mem->spi->controller;
+	size_t len;
 
-	if (ops->mem_ops && ops->mem_ops->adjust_op_size)
-		return ops->mem_ops->adjust_op_size(slave, op);
+	len = sizeof(op->cmd.opcode) + op->addr.nbytes + op->dummy.nbytes;
 
-	if (!ops->mem_ops || !ops->mem_ops->exec_op) {
-		unsigned int len;
+	if (ctlr->mem_ops && ctlr->mem_ops->adjust_op_size)
+		return ctlr->mem_ops->adjust_op_size(mem, op);
 
-		len = sizeof(op->cmd.opcode) + op->addr.nbytes +
-			op->dummy.nbytes;
-		if (slave->max_write_size && len > slave->max_write_size)
+	if (!ctlr->mem_ops || !ctlr->mem_ops->exec_op) {
+		if (len > spi_max_transfer_size(mem->spi))
 			return -EINVAL;
 
-		if (op->data.dir == SPI_MEM_DATA_IN) {
-			if (slave->max_read_size)
-				op->data.nbytes = min(op->data.nbytes,
-					      slave->max_read_size);
-		} else if (slave->max_write_size) {
-			op->data.nbytes = min(op->data.nbytes,
-					      slave->max_write_size - len);
-		}
-
+		op->data.nbytes = min3((size_t)op->data.nbytes,
+				       spi_max_transfer_size(mem->spi),
+				       spi_max_message_size(mem->spi) -
+				       len);
 		if (!op->data.nbytes)
 			return -EINVAL;
 	}
@@ -455,7 +439,280 @@ int spi_mem_adjust_op_size(struct spi_slave *slave, struct spi_mem_op *op)
 }
 EXPORT_SYMBOL_GPL(spi_mem_adjust_op_size);
 
-#ifndef __UBOOT__
+static ssize_t spi_mem_no_dirmap_read(struct spi_mem_dirmap_desc *desc,
+				      u64 offs, size_t len, void *buf)
+{
+	struct spi_mem_op op = desc->info.op_tmpl;
+	int ret;
+
+	op.addr.val = desc->info.offset + offs;
+	op.data.buf.in = buf;
+	op.data.nbytes = len;
+	ret = spi_mem_adjust_op_size(desc->mem, &op);
+	if (ret)
+		return ret;
+
+	ret = spi_mem_exec_op(desc->mem, &op);
+	if (ret)
+		return ret;
+
+	return op.data.nbytes;
+}
+
+static ssize_t spi_mem_no_dirmap_write(struct spi_mem_dirmap_desc *desc,
+				       u64 offs, size_t len, const void *buf)
+{
+	struct spi_mem_op op = desc->info.op_tmpl;
+	int ret;
+
+	op.addr.val = desc->info.offset + offs;
+	op.data.buf.out = buf;
+	op.data.nbytes = len;
+	ret = spi_mem_adjust_op_size(desc->mem, &op);
+	if (ret)
+		return ret;
+
+	ret = spi_mem_exec_op(desc->mem, &op);
+	if (ret)
+		return ret;
+
+	return op.data.nbytes;
+}
+
+/**
+ * spi_mem_dirmap_create() - Create a direct mapping descriptor
+ * @mem: SPI mem device this direct mapping should be created for
+ * @info: direct mapping information
+ *
+ * This function is creating a direct mapping descriptor which can then be used
+ * to access the memory using spi_mem_dirmap_read() or spi_mem_dirmap_write().
+ * If the SPI controller driver does not support direct mapping, this function
+ * fallback to an implementation using spi_mem_exec_op(), so that the caller
+ * doesn't have to bother implementing a fallback on his own.
+ *
+ * Return: a valid pointer in case of success, and ERR_PTR() otherwise.
+ */
+struct spi_mem_dirmap_desc *
+spi_mem_dirmap_create(struct spi_mem *mem,
+		      const struct spi_mem_dirmap_info *info)
+{
+	struct spi_controller *ctlr = mem->spi->controller;
+	struct spi_mem_dirmap_desc *desc;
+	int ret = -ENOTSUPP;
+
+	/* Make sure the number of address cycles is between 1 and 8 bytes. */
+	if (!info->op_tmpl.addr.nbytes || info->op_tmpl.addr.nbytes > 8)
+		return ERR_PTR(-EINVAL);
+
+	/* data.dir should either be SPI_MEM_DATA_IN or SPI_MEM_DATA_OUT. */
+	if (info->op_tmpl.data.dir == SPI_MEM_NO_DATA)
+		return ERR_PTR(-EINVAL);
+
+	desc = kzalloc(sizeof(*desc), GFP_KERNEL);
+	if (!desc)
+		return ERR_PTR(-ENOMEM);
+
+	desc->mem = mem;
+	desc->info = *info;
+	if (ctlr->mem_ops && ctlr->mem_ops->dirmap_create)
+		ret = ctlr->mem_ops->dirmap_create(desc);
+
+	if (ret) {
+		desc->nodirmap = true;
+		if (!spi_mem_supports_op(desc->mem, &desc->info.op_tmpl))
+			ret = -ENOTSUPP;
+		else
+			ret = 0;
+	}
+
+	if (ret) {
+		kfree(desc);
+		return ERR_PTR(ret);
+	}
+
+	return desc;
+}
+EXPORT_SYMBOL_GPL(spi_mem_dirmap_create);
+
+/**
+ * spi_mem_dirmap_destroy() - Destroy a direct mapping descriptor
+ * @desc: the direct mapping descriptor to destroy
+ *
+ * This function destroys a direct mapping descriptor previously created by
+ * spi_mem_dirmap_create().
+ */
+void spi_mem_dirmap_destroy(struct spi_mem_dirmap_desc *desc)
+{
+	struct spi_controller *ctlr = desc->mem->spi->controller;
+
+	if (!desc->nodirmap && ctlr->mem_ops && ctlr->mem_ops->dirmap_destroy)
+		ctlr->mem_ops->dirmap_destroy(desc);
+
+	kfree(desc);
+}
+EXPORT_SYMBOL_GPL(spi_mem_dirmap_destroy);
+
+static void devm_spi_mem_dirmap_release(struct device *dev, void *res)
+{
+	struct spi_mem_dirmap_desc *desc = *(struct spi_mem_dirmap_desc **)res;
+
+	spi_mem_dirmap_destroy(desc);
+}
+
+/**
+ * devm_spi_mem_dirmap_create() - Create a direct mapping descriptor and attach
+ *				  it to a device
+ * @dev: device the dirmap desc will be attached to
+ * @mem: SPI mem device this direct mapping should be created for
+ * @info: direct mapping information
+ *
+ * devm_ variant of the spi_mem_dirmap_create() function. See
+ * spi_mem_dirmap_create() for more details.
+ *
+ * Return: a valid pointer in case of success, and ERR_PTR() otherwise.
+ */
+struct spi_mem_dirmap_desc *
+devm_spi_mem_dirmap_create(struct device *dev, struct spi_mem *mem,
+			   const struct spi_mem_dirmap_info *info)
+{
+	struct spi_mem_dirmap_desc **ptr, *desc;
+
+	ptr = devres_alloc(devm_spi_mem_dirmap_release, sizeof(*ptr),
+			   GFP_KERNEL);
+	if (!ptr)
+		return ERR_PTR(-ENOMEM);
+
+	desc = spi_mem_dirmap_create(mem, info);
+	if (IS_ERR(desc)) {
+		devres_free(ptr);
+	} else {
+		*ptr = desc;
+		devres_add(dev, ptr);
+	}
+
+	return desc;
+}
+EXPORT_SYMBOL_GPL(devm_spi_mem_dirmap_create);
+
+static int devm_spi_mem_dirmap_match(struct device *dev, void *res, void *data)
+{
+        struct spi_mem_dirmap_desc **ptr = res;
+
+        if (WARN_ON(!ptr || !*ptr))
+                return 0;
+
+	return *ptr == data;
+}
+
+/**
+ * devm_spi_mem_dirmap_destroy() - Destroy a direct mapping descriptor attached
+ *				   to a device
+ * @dev: device the dirmap desc is attached to
+ * @desc: the direct mapping descriptor to destroy
+ *
+ * devm_ variant of the spi_mem_dirmap_destroy() function. See
+ * spi_mem_dirmap_destroy() for more details.
+ */
+void devm_spi_mem_dirmap_destroy(struct device *dev,
+				 struct spi_mem_dirmap_desc *desc)
+{
+	devres_release(dev, devm_spi_mem_dirmap_release,
+		       devm_spi_mem_dirmap_match, desc);
+}
+EXPORT_SYMBOL_GPL(devm_spi_mem_dirmap_destroy);
+
+/**
+ * spi_mem_dirmap_read() - Read data through a direct mapping
+ * @desc: direct mapping descriptor
+ * @offs: offset to start reading from. Note that this is not an absolute
+ *	  offset, but the offset within the direct mapping which already has
+ *	  its own offset
+ * @len: length in bytes
+ * @buf: destination buffer. This buffer must be DMA-able
+ *
+ * This function reads data from a memory device using a direct mapping
+ * previously instantiated with spi_mem_dirmap_create().
+ *
+ * Return: the amount of data read from the memory device or a negative error
+ * code. Note that the returned size might be smaller than @len, and the caller
+ * is responsible for calling spi_mem_dirmap_read() again when that happens.
+ */
+ssize_t spi_mem_dirmap_read(struct spi_mem_dirmap_desc *desc,
+			    u64 offs, size_t len, void *buf)
+{
+	struct spi_controller *ctlr = desc->mem->spi->controller;
+	ssize_t ret;
+
+	if (desc->info.op_tmpl.data.dir != SPI_MEM_DATA_IN)
+		return -EINVAL;
+
+	if (!len)
+		return 0;
+
+	if (desc->nodirmap) {
+		ret = spi_mem_no_dirmap_read(desc, offs, len, buf);
+	} else if (ctlr->mem_ops && ctlr->mem_ops->dirmap_read) {
+		ret = spi_mem_access_start(desc->mem);
+		if (ret)
+			return ret;
+
+		ret = ctlr->mem_ops->dirmap_read(desc, offs, len, buf);
+
+		spi_mem_access_end(desc->mem);
+	} else {
+		ret = -ENOTSUPP;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(spi_mem_dirmap_read);
+
+/**
+ * spi_mem_dirmap_write() - Write data through a direct mapping
+ * @desc: direct mapping descriptor
+ * @offs: offset to start writing from. Note that this is not an absolute
+ *	  offset, but the offset within the direct mapping which already has
+ *	  its own offset
+ * @len: length in bytes
+ * @buf: source buffer. This buffer must be DMA-able
+ *
+ * This function writes data to a memory device using a direct mapping
+ * previously instantiated with spi_mem_dirmap_create().
+ *
+ * Return: the amount of data written to the memory device or a negative error
+ * code. Note that the returned size might be smaller than @len, and the caller
+ * is responsible for calling spi_mem_dirmap_write() again when that happens.
+ */
+ssize_t spi_mem_dirmap_write(struct spi_mem_dirmap_desc *desc,
+			     u64 offs, size_t len, const void *buf)
+{
+	struct spi_controller *ctlr = desc->mem->spi->controller;
+	ssize_t ret;
+
+	if (desc->info.op_tmpl.data.dir != SPI_MEM_DATA_OUT)
+		return -EINVAL;
+
+	if (!len)
+		return 0;
+
+	if (desc->nodirmap) {
+		ret = spi_mem_no_dirmap_write(desc, offs, len, buf);
+	} else if (ctlr->mem_ops && ctlr->mem_ops->dirmap_write) {
+		ret = spi_mem_access_start(desc->mem);
+		if (ret)
+			return ret;
+
+		ret = ctlr->mem_ops->dirmap_write(desc, offs, len, buf);
+
+		spi_mem_access_end(desc->mem);
+	} else {
+		ret = -ENOTSUPP;
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(spi_mem_dirmap_write);
+
 static inline struct spi_mem_driver *to_spi_mem_drv(struct device_driver *drv)
 {
 	return container_of(drv, struct spi_mem_driver, spidrv.driver);
@@ -464,6 +721,7 @@ static inline struct spi_mem_driver *to_spi_mem_drv(struct device_driver *drv)
 static int spi_mem_probe(struct spi_device *spi)
 {
 	struct spi_mem_driver *memdrv = to_spi_mem_drv(spi->dev.driver);
+	struct spi_controller *ctlr = spi->controller;
 	struct spi_mem *mem;
 
 	mem = devm_kzalloc(&spi->dev, sizeof(*mem), GFP_KERNEL);
@@ -471,6 +729,15 @@ static int spi_mem_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	mem->spi = spi;
+
+	if (ctlr->mem_ops && ctlr->mem_ops->get_name)
+		mem->name = ctlr->mem_ops->get_name(mem);
+	else
+		mem->name = dev_name(&spi->dev);
+
+	if (IS_ERR_OR_NULL(mem->name))
+		return PTR_ERR(mem->name);
+
 	spi_set_drvdata(spi, mem);
 
 	return memdrv->probe(mem);
@@ -528,4 +795,3 @@ void spi_mem_driver_unregister(struct spi_mem_driver *memdrv)
 	spi_unregister_driver(&memdrv->spidrv);
 }
 EXPORT_SYMBOL_GPL(spi_mem_driver_unregister);
-#endif /* __UBOOT__ */

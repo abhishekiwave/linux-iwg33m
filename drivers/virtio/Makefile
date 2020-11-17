@@ -1,12 +1,9 @@
-# SPDX-License-Identifier: GPL-2.0+
-#
-# Copyright (C) 2018, Tuomas Tynkkynen <tuomas.tynkkynen@iki.fi>
-# Copyright (C) 2018, Bin Meng <bmeng.cn@gmail.com>
-
-obj-y += virtio-uclass.o virtio_ring.o
+# SPDX-License-Identifier: GPL-2.0
+obj-$(CONFIG_VIRTIO) += virtio.o virtio_ring.o
 obj-$(CONFIG_VIRTIO_MMIO) += virtio_mmio.o
-obj-$(CONFIG_VIRTIO_PCI) += virtio_pci_legacy.o virtio_pci_modern.o
-obj-$(CONFIG_VIRTIO_SANDBOX) += virtio_sandbox.o
-obj-$(CONFIG_VIRTIO_NET) += virtio_net.o
-obj-$(CONFIG_VIRTIO_BLK) += virtio_blk.o
-obj-$(CONFIG_VIRTIO_RNG) += virtio_rng.o
+obj-$(CONFIG_VIRTIO_PCI) += virtio_pci.o
+virtio_pci-y := virtio_pci_modern.o virtio_pci_common.o
+virtio_pci-$(CONFIG_VIRTIO_PCI_LEGACY) += virtio_pci_legacy.o
+obj-$(CONFIG_VIRTIO_IVSHMEM) += virtio_ivshmem.o
+obj-$(CONFIG_VIRTIO_BALLOON) += virtio_balloon.o
+obj-$(CONFIG_VIRTIO_INPUT) += virtio_input.o

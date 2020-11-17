@@ -1,7 +1,12 @@
-# SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause
+# SPDX-License-Identifier: GPL-2.0
 #
-# Copyright (C) 2018, STMicroelectronics - All Rights Reserved
+# Generic Hardware Spinlock framework
+#
 
-obj-$(CONFIG_DM_HWSPINLOCK) += hwspinlock-uclass.o
-obj-$(CONFIG_HWSPINLOCK_SANDBOX) += sandbox_hwspinlock.o
-obj-$(CONFIG_HWSPINLOCK_STM32) += stm32_hwspinlock.o
+obj-$(CONFIG_HWSPINLOCK)		+= hwspinlock_core.o
+obj-$(CONFIG_HWSPINLOCK_OMAP)		+= omap_hwspinlock.o
+obj-$(CONFIG_HWSPINLOCK_QCOM)		+= qcom_hwspinlock.o
+obj-$(CONFIG_HWSPINLOCK_SIRF)		+= sirf_hwspinlock.o
+obj-$(CONFIG_HWSPINLOCK_SPRD)		+= sprd_hwspinlock.o
+obj-$(CONFIG_HWSPINLOCK_STM32)		+= stm32_hwspinlock.o
+obj-$(CONFIG_HSEM_U8500)		+= u8500_hsem.o

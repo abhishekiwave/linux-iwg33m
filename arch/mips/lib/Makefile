@@ -1,16 +1,19 @@
-# SPDX-License-Identifier: GPL-2.0+
+# SPDX-License-Identifier: GPL-2.0
 #
-# (C) Copyright 2003-2006
-# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
+# Makefile for MIPS-specific library files..
+#
 
-obj-y	+= cache.o
-obj-y	+= cache_init.o
-obj-y	+= genex.o
-obj-y	+= reloc.o
-obj-y	+= stack.o
-obj-y	+= traps.o
+lib-y	+= bitops.o csum_partial.o delay.o memcpy.o memset.o \
+	   mips-atomic.o strncpy_user.o \
+	   strnlen_user.o uncached.o
 
-obj-$(CONFIG_CMD_BOOTM) += bootm.o
-obj-$(CONFIG_CMD_GO) += boot.o
+obj-y			+= iomap_copy.o
+obj-$(CONFIG_PCI)	+= iomap-pci.o
+lib-$(CONFIG_GENERIC_CSUM)	:= $(filter-out csum_partial.o, $(lib-y))
 
-lib-$(CONFIG_USE_PRIVATE_LIBGCC) += ashldi3.o ashrdi3.o lshrdi3.o
+obj-$(CONFIG_CPU_GENERIC_DUMP_TLB) += dump_tlb.o
+obj-$(CONFIG_CPU_R3000)		+= r3k_dump_tlb.o
+obj-$(CONFIG_CPU_TX39XX)	+= r3k_dump_tlb.o
+
+# libgcc-style stuff needed in the kernel
+obj-y += bswapsi.o bswapdi.o multi3.o

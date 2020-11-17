@@ -1,24 +1,34 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
 /*
- * Copyright (C) 2009 Tensilica Inc.
+ * include/asm-xtensa/cache.h
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
+ * (C) 2001 - 2005 Tensilica Inc.
  */
+
 #ifndef _XTENSA_CACHE_H
 #define _XTENSA_CACHE_H
 
-#include <asm/arch/core.h>
+#include <asm/core.h>
 
-#define ARCH_DMA_MINALIGN	XCHAL_DCACHE_LINESIZE
+#define L1_CACHE_SHIFT	XCHAL_DCACHE_LINEWIDTH
+#define L1_CACHE_BYTES	XCHAL_DCACHE_LINESIZE
+#define SMP_CACHE_BYTES	L1_CACHE_BYTES
 
-#ifndef __ASSEMBLY__
+#define DCACHE_WAY_SIZE	(XCHAL_DCACHE_SIZE/XCHAL_DCACHE_WAYS)
+#define ICACHE_WAY_SIZE	(XCHAL_ICACHE_SIZE/XCHAL_ICACHE_WAYS)
+#define DCACHE_WAY_SHIFT (XCHAL_DCACHE_SETWIDTH + XCHAL_DCACHE_LINEWIDTH)
+#define ICACHE_WAY_SHIFT (XCHAL_ICACHE_SETWIDTH + XCHAL_ICACHE_LINEWIDTH)
 
-void __flush_dcache_all(void);
-void __flush_invalidate_dcache_range(unsigned long addr, unsigned long size);
-void __invalidate_dcache_all(void);
-void __invalidate_dcache_range(unsigned long addr, unsigned long size);
-
-void __invalidate_icache_all(void);
-void __invalidate_icache_range(unsigned long addr, unsigned long size);
-
+/* Maximum cache size per way. */
+#if DCACHE_WAY_SIZE >= ICACHE_WAY_SIZE
+# define CACHE_WAY_SIZE DCACHE_WAY_SIZE
+#else
+# define CACHE_WAY_SIZE ICACHE_WAY_SIZE
 #endif
+
+#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
 
 #endif	/* _XTENSA_CACHE_H */

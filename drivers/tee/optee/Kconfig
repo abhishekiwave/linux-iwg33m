@@ -1,27 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
 # OP-TEE Trusted Execution Environment Configuration
 config OPTEE
-	bool "OP-TEE"
-	depends on ARM_SMCCC
+	tristate "OP-TEE"
+	depends on HAVE_ARM_SMCCC
+	depends on MMU
 	help
 	  This implements the OP-TEE Trusted Execution Environment (TEE)
-	  driver. OP-TEE is a Trusted OS designed primarily to rely on the
-	  ARM TrustZone(R) technology as the underlying hardware isolation
-	  mechanism. This driver can request services from OP-TEE, but also
-	  handle Remote Procedure Calls (RPC) from OP-TEE needed to
-	  execute a service. For more information see: https://www.op-tee.org
+	  driver.
 
-if OPTEE || SANDBOX
-
-menu "OP-TEE options"
-
-config OPTEE_TA_AVB
-	bool "Support AVB TA"
-	default y
+config OPTEE_SHM_NUM_PRIV_PAGES
+	int "Private Shared Memory Pages"
+	default 1
+	depends on OPTEE
 	help
-	  Enables support for the AVB Trusted Application (TA) in OP-TEE.
-	  The TA can support the "avb" subcommands "read_rb", "write"rb"
-	  and "is_unlocked".
-
-endmenu
-
-endif
+	  This sets the number of private shared memory pages to be
+	  used by OP-TEE TEE driver.

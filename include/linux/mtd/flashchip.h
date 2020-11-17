@@ -1,21 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0+ */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Copyright © 2000      Red Hat UK Limited
  * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org>
- *
  */
 
 #ifndef __MTD_FLASHCHIP_H__
 #define __MTD_FLASHCHIP_H__
 
-#ifndef __UBOOT__
 /* For spinlocks. sched.h includes spinlock.h from whichever directory it
  * happens to be in - so we don't have to care whether we're on 2.2, which
  * has asm/spinlock.h, or 2.4, which has linux/spinlock.h
  */
 #include <linux/sched.h>
 #include <linux/mutex.h>
-#endif
 
 typedef enum {
 	FL_READY,
@@ -74,12 +71,11 @@ struct flchip {
 	unsigned int write_suspended:1;
 	unsigned int erase_suspended:1;
 	unsigned long in_progress_block_addr;
+	unsigned long in_progress_block_mask;
 
 	struct mutex mutex;
-#ifndef __UBOOT__
 	wait_queue_head_t wq; /* Wait on here when we're waiting for the chip
 			     to be ready */
-#endif
 	int word_write_time;
 	int buffer_write_time;
 	int erase_time;

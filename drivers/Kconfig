@@ -1,143 +1,232 @@
+# SPDX-License-Identifier: GPL-2.0
 menu "Device Drivers"
 
-source "drivers/core/Kconfig"
+# Keep I/O buses first
 
-# types of drivers sorted in alphabetical order
+source "drivers/amba/Kconfig"
+source "drivers/eisa/Kconfig"
+source "drivers/pci/Kconfig"
+source "drivers/pcmcia/Kconfig"
+source "drivers/rapidio/Kconfig"
 
-source "drivers/adc/Kconfig"
 
-source "drivers/ata/Kconfig"
+source "drivers/base/Kconfig"
 
-source "drivers/axi/Kconfig"
+source "drivers/bus/Kconfig"
 
-source "drivers/block/Kconfig"
+source "drivers/connector/Kconfig"
 
-source "drivers/bootcount/Kconfig"
-
-source "drivers/cache/Kconfig"
-
-source "drivers/clk/Kconfig"
-
-source "drivers/cpu/Kconfig"
-
-source "drivers/crypto/Kconfig"
-
-source "drivers/ddr/Kconfig"
-
-source "drivers/demo/Kconfig"
-
-source "drivers/board/Kconfig"
-
-source "drivers/ddr/fsl/Kconfig"
-
-source "drivers/dfu/Kconfig"
-
-source "drivers/dma/Kconfig"
-
-source "drivers/fastboot/Kconfig"
-
-source "drivers/firmware/Kconfig"
-
-source "drivers/fpga/Kconfig"
-
-source "drivers/gpio/Kconfig"
-
-source "drivers/hwspinlock/Kconfig"
-
-source "drivers/i2c/Kconfig"
-
-source "drivers/input/Kconfig"
-
-source "drivers/led/Kconfig"
-
-source "drivers/mailbox/Kconfig"
-
-source "drivers/memory/Kconfig"
-
-source "drivers/misc/Kconfig"
-
-source "drivers/mmc/Kconfig"
+source "drivers/gnss/Kconfig"
 
 source "drivers/mtd/Kconfig"
 
-source "drivers/net/Kconfig"
+source "drivers/of/Kconfig"
+
+source "drivers/parport/Kconfig"
+
+source "drivers/pnp/Kconfig"
+
+source "drivers/block/Kconfig"
 
 source "drivers/nvme/Kconfig"
 
-source "drivers/pci/Kconfig"
+source "drivers/misc/Kconfig"
 
-source "drivers/pci_endpoint/Kconfig"
-
-source "drivers/pch/Kconfig"
-
-source "drivers/phy/Kconfig"
-
-source "drivers/phy/allwinner/Kconfig"
-
-source "drivers/phy/marvell/Kconfig"
-
-source "drivers/pinctrl/Kconfig"
-
-source "drivers/power/Kconfig"
-
-source "drivers/pwm/Kconfig"
-
-source "drivers/qe/Kconfig"
-
-source "drivers/ram/Kconfig"
-
-source "drivers/remoteproc/Kconfig"
-
-source "drivers/reset/Kconfig"
-
-source "drivers/rng/Kconfig"
-
-source "drivers/rtc/Kconfig"
+source "drivers/ide/Kconfig"
 
 source "drivers/scsi/Kconfig"
 
-source "drivers/serial/Kconfig"
+source "drivers/ata/Kconfig"
 
-source "drivers/smem/Kconfig"
+source "drivers/md/Kconfig"
 
-source "drivers/sound/Kconfig"
+source "drivers/target/Kconfig"
 
-source "drivers/soc/Kconfig"
+source "drivers/message/fusion/Kconfig"
+
+source "drivers/firewire/Kconfig"
+
+source "drivers/macintosh/Kconfig"
+
+source "drivers/net/Kconfig"
+
+source "drivers/isdn/Kconfig"
+
+source "drivers/lightnvm/Kconfig"
+
+# input before char - char/joystick depends on it. As does USB.
+
+source "drivers/input/Kconfig"
+
+source "drivers/char/Kconfig"
+
+source "drivers/i2c/Kconfig"
+
+source "drivers/i3c/Kconfig"
 
 source "drivers/spi/Kconfig"
 
 source "drivers/spmi/Kconfig"
 
-source "drivers/sysreset/Kconfig"
+source "drivers/hsi/Kconfig"
 
-source "drivers/tee/Kconfig"
+source "drivers/pps/Kconfig"
 
-source "drivers/thermal/Kconfig"
+source "drivers/ptp/Kconfig"
 
-source "drivers/timer/Kconfig"
+source "drivers/pinctrl/Kconfig"
 
-source "drivers/tpm/Kconfig"
-
-source "drivers/usb/Kconfig"
-
-source "drivers/ufs/Kconfig"
-
-source "drivers/video/Kconfig"
-
-source "drivers/virtio/Kconfig"
+source "drivers/gpio/Kconfig"
 
 source "drivers/w1/Kconfig"
 
-source "drivers/w1-eeprom/Kconfig"
+source "drivers/power/Kconfig"
+
+source "drivers/hwmon/Kconfig"
+
+source "drivers/thermal/Kconfig"
 
 source "drivers/watchdog/Kconfig"
 
-config PHYS_TO_BUS
-	bool "Custom physical to bus address mapping"
-	help
-	  Some SoCs use a different address map for CPU physical addresses and
-	  peripheral DMA master accesses. If yours does, select this option in
-	  your platform's Kconfig, and implement the appropriate mapping
-	  functions in your platform's support code.
+source "drivers/ssb/Kconfig"
 
+source "drivers/bcma/Kconfig"
+
+source "drivers/mfd/Kconfig"
+
+source "drivers/regulator/Kconfig"
+
+source "drivers/media/Kconfig"
+
+source "drivers/video/Kconfig"
+
+source "sound/Kconfig"
+
+source "drivers/hid/Kconfig"
+
+source "drivers/usb/Kconfig"
+
+source "drivers/mmc/Kconfig"
+
+source "drivers/memstick/Kconfig"
+
+source "drivers/leds/Kconfig"
+
+source "drivers/accessibility/Kconfig"
+
+source "drivers/infiniband/Kconfig"
+
+source "drivers/edac/Kconfig"
+
+source "drivers/rtc/Kconfig"
+
+source "drivers/dma/Kconfig"
+
+source "drivers/dma-buf/Kconfig"
+
+source "drivers/dca/Kconfig"
+
+source "drivers/auxdisplay/Kconfig"
+
+source "drivers/uio/Kconfig"
+
+source "drivers/vfio/Kconfig"
+
+source "drivers/vlynq/Kconfig"
+
+source "drivers/virt/Kconfig"
+
+source "drivers/virtio/Kconfig"
+
+source "drivers/hv/Kconfig"
+
+source "drivers/xen/Kconfig"
+
+source "drivers/greybus/Kconfig"
+
+source "drivers/staging/Kconfig"
+
+source "drivers/platform/Kconfig"
+
+source "drivers/clk/Kconfig"
+
+source "drivers/hwspinlock/Kconfig"
+
+source "drivers/clocksource/Kconfig"
+
+source "drivers/mailbox/Kconfig"
+
+source "drivers/iommu/Kconfig"
+
+source "drivers/remoteproc/Kconfig"
+
+source "drivers/rpmsg/Kconfig"
+
+source "drivers/soundwire/Kconfig"
+
+source "drivers/soc/Kconfig"
+
+source "drivers/devfreq/Kconfig"
+
+source "drivers/extcon/Kconfig"
+
+source "drivers/memory/Kconfig"
+
+source "drivers/iio/Kconfig"
+
+source "drivers/ntb/Kconfig"
+
+source "drivers/vme/Kconfig"
+
+source "drivers/pwm/Kconfig"
+
+source "drivers/irqchip/Kconfig"
+
+source "drivers/ipack/Kconfig"
+
+source "drivers/reset/Kconfig"
+
+source "drivers/phy/Kconfig"
+
+source "drivers/powercap/Kconfig"
+
+source "drivers/mcb/Kconfig"
+
+source "drivers/perf/Kconfig"
+
+source "drivers/ras/Kconfig"
+
+source "drivers/thunderbolt/Kconfig"
+
+source "drivers/android/Kconfig"
+
+source "drivers/nvdimm/Kconfig"
+
+source "drivers/dax/Kconfig"
+
+source "drivers/nvmem/Kconfig"
+
+source "drivers/hwtracing/Kconfig"
+
+source "drivers/fpga/Kconfig"
+
+source "drivers/fsi/Kconfig"
+
+source "drivers/tee/Kconfig"
+
+source "drivers/mux/Kconfig"
+
+source "drivers/opp/Kconfig"
+
+source "drivers/visorbus/Kconfig"
+
+source "drivers/siox/Kconfig"
+
+source "drivers/slimbus/Kconfig"
+
+source "drivers/interconnect/Kconfig"
+
+source "drivers/counter/Kconfig"
+
+source "drivers/mxc/Kconfig"
 endmenu

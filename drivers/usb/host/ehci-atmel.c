@@ -1,131 +1,249 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0
 /*
- * (C) Copyright 2012
- * Atmel Semiconductor <www.atmel.com>
- * Written-by: Bo Shen <voice.shen@atmel.com>
+ * Driver for EHCI UHP on Atmel chips
+ *
+ *  Copyright (C) 2009 Atmel Corporation,
+ *                     Nicolas Ferre <nicolas.ferre@atmel.com>
+ *
+ *  Based on various ehci-*.c drivers
  */
 
-#include <common.h>
-#include <clk.h>
-#include <dm.h>
-#include <malloc.h>
-#include <usb.h>
-#include <asm/io.h>
-#include <asm/arch/clk.h>
+#include <linux/clk.h>
+#include <linux/dma-mapping.h>
+#include <linux/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/usb.h>
+#include <linux/usb/hcd.h>
 
 #include "ehci.h"
 
-#if !CONFIG_IS_ENABLED(DM_USB)
+#define DRIVER_DESC "EHCI Atmel driver"
 
-int ehci_hcd_init(int index, enum usb_init_type init,
-		struct ehci_hccr **hccr, struct ehci_hcor **hcor)
-{
-	/* Enable UTMI PLL */
-	if (at91_upll_clk_enable())
-		return -1;
+static const char hcd_name[] = "ehci-atmel";
 
-	/* Enable USB Host clock */
-	at91_periph_clk_enable(ATMEL_ID_UHPHS);
+/* interface and function clocks */
+#define hcd_to_atmel_ehci_priv(h) \
+	((struct atmel_ehci_priv *)hcd_to_ehci(h)->priv)
 
-	*hccr = (struct ehci_hccr *)ATMEL_BASE_EHCI;
-	*hcor = (struct ehci_hcor *)((uint32_t)*hccr +
-			HC_LENGTH(ehci_readl(&(*hccr)->cr_capbase)));
-
-	return 0;
-}
-
-int ehci_hcd_stop(int index)
-{
-	/* Disable USB Host Clock */
-	at91_periph_clk_disable(ATMEL_ID_UHPHS);
-
-	/* Disable UTMI PLL */
-	if (at91_upll_clk_disable())
-		return -1;
-
-	return 0;
-}
-
-#else
-
-struct ehci_atmel_priv {
-	struct ehci_ctrl ehci;
+struct atmel_ehci_priv {
+	struct clk *iclk;
+	struct clk *uclk;
+	bool clocked;
 };
 
-static int ehci_atmel_enable_clk(struct udevice *dev)
+static struct hc_driver __read_mostly ehci_atmel_hc_driver;
+
+static const struct ehci_driver_overrides ehci_atmel_drv_overrides __initconst = {
+	.extra_priv_size = sizeof(struct atmel_ehci_priv),
+};
+
+/*-------------------------------------------------------------------------*/
+
+static void atmel_start_clock(struct atmel_ehci_priv *atmel_ehci)
 {
-	struct clk clk;
-	int ret;
+	if (atmel_ehci->clocked)
+		return;
 
-	ret = clk_get_by_index(dev, 0, &clk);
-	if (ret)
-		return ret;
-
-	ret = clk_enable(&clk);
-	if (ret)
-		return ret;
-
-	ret = clk_get_by_index(dev, 1, &clk);
-	if (ret)
-		return -EINVAL;
-
-	ret = clk_enable(&clk);
-	if (ret)
-		return ret;
-
-	clk_free(&clk);
-
-	return 0;
+	clk_prepare_enable(atmel_ehci->uclk);
+	clk_prepare_enable(atmel_ehci->iclk);
+	atmel_ehci->clocked = true;
 }
 
-static int ehci_atmel_probe(struct udevice *dev)
+static void atmel_stop_clock(struct atmel_ehci_priv *atmel_ehci)
 {
-	struct ehci_hccr *hccr;
-	struct ehci_hcor *hcor;
-	fdt_addr_t hcd_base;
-	int ret;
+	if (!atmel_ehci->clocked)
+		return;
 
-	ret = ehci_atmel_enable_clk(dev);
-	if (ret) {
-		debug("Failed to enable USB Host clock\n");
-		return ret;
+	clk_disable_unprepare(atmel_ehci->iclk);
+	clk_disable_unprepare(atmel_ehci->uclk);
+	atmel_ehci->clocked = false;
+}
+
+static void atmel_start_ehci(struct platform_device *pdev)
+{
+	struct usb_hcd *hcd = platform_get_drvdata(pdev);
+	struct atmel_ehci_priv *atmel_ehci = hcd_to_atmel_ehci_priv(hcd);
+
+	dev_dbg(&pdev->dev, "start\n");
+	atmel_start_clock(atmel_ehci);
+}
+
+static void atmel_stop_ehci(struct platform_device *pdev)
+{
+	struct usb_hcd *hcd = platform_get_drvdata(pdev);
+	struct atmel_ehci_priv *atmel_ehci = hcd_to_atmel_ehci_priv(hcd);
+
+	dev_dbg(&pdev->dev, "stop\n");
+	atmel_stop_clock(atmel_ehci);
+}
+
+/*-------------------------------------------------------------------------*/
+
+static int ehci_atmel_drv_probe(struct platform_device *pdev)
+{
+	struct usb_hcd *hcd;
+	const struct hc_driver *driver = &ehci_atmel_hc_driver;
+	struct resource *res;
+	struct ehci_hcd *ehci;
+	struct atmel_ehci_priv *atmel_ehci;
+	int irq;
+	int retval;
+
+	if (usb_disabled())
+		return -ENODEV;
+
+	pr_debug("Initializing Atmel-SoC USB Host Controller\n");
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0) {
+		retval = -ENODEV;
+		goto fail_create_hcd;
 	}
 
-	/*
-	 * Get the base address for EHCI controller from the device node
+	/* Right now device-tree probed devices don't get dma_mask set.
+	 * Since shared usb code relies on it, set it here for now.
+	 * Once we have dma capability bindings this can go away.
 	 */
-	hcd_base = devfdt_get_addr(dev);
-	if (hcd_base == FDT_ADDR_T_NONE) {
-		debug("Can't get the EHCI register base address\n");
-		return -ENXIO;
+	retval = dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+	if (retval)
+		goto fail_create_hcd;
+
+	hcd = usb_create_hcd(driver, &pdev->dev, dev_name(&pdev->dev));
+	if (!hcd) {
+		retval = -ENOMEM;
+		goto fail_create_hcd;
+	}
+	atmel_ehci = hcd_to_atmel_ehci_priv(hcd);
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(hcd->regs)) {
+		retval = PTR_ERR(hcd->regs);
+		goto fail_request_resource;
 	}
 
-	hccr = (struct ehci_hccr *)hcd_base;
-	hcor = (struct ehci_hcor *)
-		((u32)hccr + HC_LENGTH(ehci_readl(&hccr->cr_capbase)));
+	hcd->rsrc_start = res->start;
+	hcd->rsrc_len = resource_size(res);
 
-	debug("echi-atmel: init hccr %x and hcor %x hc_length %d\n",
-	      (u32)hccr, (u32)hcor,
-	      (u32)HC_LENGTH(ehci_readl(&hccr->cr_capbase)));
+	atmel_ehci->iclk = devm_clk_get(&pdev->dev, "ehci_clk");
+	if (IS_ERR(atmel_ehci->iclk)) {
+		dev_err(&pdev->dev, "Error getting interface clock\n");
+		retval = -ENOENT;
+		goto fail_request_resource;
+	}
 
-	return ehci_register(dev, hccr, hcor, NULL, 0, USB_INIT_HOST);
+	atmel_ehci->uclk = devm_clk_get(&pdev->dev, "usb_clk");
+	if (IS_ERR(atmel_ehci->uclk)) {
+		dev_err(&pdev->dev, "failed to get uclk\n");
+		retval = PTR_ERR(atmel_ehci->uclk);
+		goto fail_request_resource;
+	}
+
+	ehci = hcd_to_ehci(hcd);
+	/* registers start at offset 0x0 */
+	ehci->caps = hcd->regs;
+
+	atmel_start_ehci(pdev);
+
+	retval = usb_add_hcd(hcd, irq, IRQF_SHARED);
+	if (retval)
+		goto fail_add_hcd;
+	device_wakeup_enable(hcd->self.controller);
+
+	return retval;
+
+fail_add_hcd:
+	atmel_stop_ehci(pdev);
+fail_request_resource:
+	usb_put_hcd(hcd);
+fail_create_hcd:
+	dev_err(&pdev->dev, "init %s fail, %d\n",
+		dev_name(&pdev->dev), retval);
+
+	return retval;
 }
 
-static const struct udevice_id ehci_usb_ids[] = {
-	{ .compatible = "atmel,at91sam9g45-ehci", },
-	{ }
+static int ehci_atmel_drv_remove(struct platform_device *pdev)
+{
+	struct usb_hcd *hcd = platform_get_drvdata(pdev);
+
+	usb_remove_hcd(hcd);
+	usb_put_hcd(hcd);
+
+	atmel_stop_ehci(pdev);
+
+	return 0;
+}
+
+static int __maybe_unused ehci_atmel_drv_suspend(struct device *dev)
+{
+	struct usb_hcd *hcd = dev_get_drvdata(dev);
+	struct atmel_ehci_priv *atmel_ehci = hcd_to_atmel_ehci_priv(hcd);
+	int ret;
+
+	ret = ehci_suspend(hcd, false);
+	if (ret)
+		return ret;
+
+	atmel_stop_clock(atmel_ehci);
+	return 0;
+}
+
+static int __maybe_unused ehci_atmel_drv_resume(struct device *dev)
+{
+	struct usb_hcd *hcd = dev_get_drvdata(dev);
+	struct atmel_ehci_priv *atmel_ehci = hcd_to_atmel_ehci_priv(hcd);
+
+	atmel_start_clock(atmel_ehci);
+	ehci_resume(hcd, false);
+	return 0;
+}
+
+#ifdef CONFIG_OF
+static const struct of_device_id atmel_ehci_dt_ids[] = {
+	{ .compatible = "atmel,at91sam9g45-ehci" },
+	{ /* sentinel */ }
 };
 
-U_BOOT_DRIVER(ehci_atmel) = {
-	.name		= "ehci_atmel",
-	.id		= UCLASS_USB,
-	.of_match	= ehci_usb_ids,
-	.probe		= ehci_atmel_probe,
-	.remove		= ehci_deregister,
-	.ops		= &ehci_usb_ops,
-	.platdata_auto_alloc_size = sizeof(struct usb_platdata),
-	.priv_auto_alloc_size = sizeof(struct ehci_atmel_priv),
-	.flags		= DM_FLAG_ALLOC_PRIV_DMA,
-};
-
+MODULE_DEVICE_TABLE(of, atmel_ehci_dt_ids);
 #endif
+
+static SIMPLE_DEV_PM_OPS(ehci_atmel_pm_ops, ehci_atmel_drv_suspend,
+					ehci_atmel_drv_resume);
+
+static struct platform_driver ehci_atmel_driver = {
+	.probe		= ehci_atmel_drv_probe,
+	.remove		= ehci_atmel_drv_remove,
+	.shutdown	= usb_hcd_platform_shutdown,
+	.driver		= {
+		.name	= "atmel-ehci",
+		.pm	= &ehci_atmel_pm_ops,
+		.of_match_table	= of_match_ptr(atmel_ehci_dt_ids),
+	},
+};
+
+static int __init ehci_atmel_init(void)
+{
+	if (usb_disabled())
+		return -ENODEV;
+
+	pr_info("%s: " DRIVER_DESC "\n", hcd_name);
+	ehci_init_driver(&ehci_atmel_hc_driver, &ehci_atmel_drv_overrides);
+	return platform_driver_register(&ehci_atmel_driver);
+}
+module_init(ehci_atmel_init);
+
+static void __exit ehci_atmel_cleanup(void)
+{
+	platform_driver_unregister(&ehci_atmel_driver);
+}
+module_exit(ehci_atmel_cleanup);
+
+MODULE_DESCRIPTION(DRIVER_DESC);
+MODULE_ALIAS("platform:atmel-ehci");
+MODULE_AUTHOR("Nicolas Ferre");
+MODULE_LICENSE("GPL");

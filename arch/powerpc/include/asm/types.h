@@ -1,36 +1,34 @@
-#ifndef _PPC_TYPES_H
-#define _PPC_TYPES_H
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * This file is never included by application software unless
+ * explicitly requested (e.g., via linux/types.h) in which case the
+ * application is Linux specific so (user-) name space pollution is
+ * not a major issue.  However, for interoperability, libraries still
+ * need to be careful to avoid a name clashes.
+ */
+#ifndef _ASM_POWERPC_TYPES_H
+#define _ASM_POWERPC_TYPES_H
 
-#include <asm-generic/int-ll64.h>
+#include <uapi/asm/types.h>
+
+#ifdef __powerpc64__
+#if defined(_CALL_ELF) && _CALL_ELF == 2
+#define PPC64_ELF_ABI_v2
+#else
+#define PPC64_ELF_ABI_v1
+#endif
+#endif /* __powerpc64__ */
 
 #ifndef __ASSEMBLY__
 
-typedef unsigned short umode_t;
+typedef __vector128 vector128;
 
 typedef struct {
-	__u32 u[4];
-} __attribute__((aligned(16))) vector128;
+	unsigned long entry;
+	unsigned long toc;
+	unsigned long env;
+} func_descr_t;
 
-#ifdef __KERNEL__
-
-#define BITS_PER_LONG 32
-
-#ifdef CONFIG_PHYS_64BIT
-typedef unsigned long long dma_addr_t;
-#else
-/* DMA addresses are 32-bits wide */
-typedef u32 dma_addr_t;
-#endif
-
-#ifdef CONFIG_PHYS_64BIT
-typedef unsigned long long phys_addr_t;
-typedef unsigned long long phys_size_t;
-#else
-typedef unsigned long phys_addr_t;
-typedef unsigned long phys_size_t;
-#endif
-
-#endif /* __KERNEL__ */
 #endif /* __ASSEMBLY__ */
 
-#endif
+#endif /* _ASM_POWERPC_TYPES_H */

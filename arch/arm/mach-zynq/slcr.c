@@ -1,199 +1,232 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (c) 2013 - 2017 Xilinx Inc.
- */
-
-#include <common.h>
-#include <asm/io.h>
-#include <malloc.h>
-#include <asm/arch/hardware.h>
-#include <asm/arch/sys_proto.h>
-
-#define SLCR_LOCK_MAGIC		0x767B
-#define SLCR_UNLOCK_MAGIC	0xDF0D
-
-#define SLCR_NAND_L2_SEL		0x10
-#define SLCR_NAND_L2_SEL_MASK		0x1F
-
-#define SLCR_USB_L1_SEL			0x04
-
-#define SLCR_IDCODE_MASK	0x1F000
-#define SLCR_IDCODE_SHIFT	12
-
-/*
- * zynq_slcr_mio_get_status - Get the status of MIO peripheral.
+ * Xilinx SLCR driver
  *
- * @peri_name: Name of the peripheral for checking MIO status
- * @get_pins: Pointer to array of get pin for this peripheral
- * @num_pins: Number of pins for this peripheral
- * @mask: Mask value
- * @check_val: Required check value to get the status of  periph
+ * Copyright (c) 2011-2013 Xilinx Inc.
  */
-struct zynq_slcr_mio_get_status {
-	const char *peri_name;
-	const int *get_pins;
-	int num_pins;
-	u32 mask;
-	u32 check_val;
-};
 
-static const int nand8_pins[] = {
-	0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13
-};
+#include <linux/io.h>
+#include <linux/reboot.h>
+#include <linux/mfd/syscon.h>
+#include <linux/of_address.h>
+#include <linux/regmap.h>
+#include <linux/clk/zynq.h>
+#include "common.h"
 
-static const int nand16_pins[] = {
-	16, 17, 18, 19, 20, 21, 22, 23
-};
+/* register offsets */
+#define SLCR_UNLOCK_OFFSET		0x8   /* SCLR unlock register */
+#define SLCR_PS_RST_CTRL_OFFSET		0x200 /* PS Software Reset Control */
+#define SLCR_A9_CPU_RST_CTRL_OFFSET	0x244 /* CPU Software Reset Control */
+#define SLCR_REBOOT_STATUS_OFFSET	0x258 /* PS Reboot Status */
+#define SLCR_PSS_IDCODE			0x530 /* PS IDCODE */
+#define SLCR_L2C_RAM			0xA1C /* L2C_RAM in AR#54190 */
 
-static const int usb0_pins[] = {
-	28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39
-};
+#define SLCR_UNLOCK_MAGIC		0xDF0D
+#define SLCR_A9_CPU_CLKSTOP		0x10
+#define SLCR_A9_CPU_RST			0x1
+#define SLCR_PSS_IDCODE_DEVICE_SHIFT	12
+#define SLCR_PSS_IDCODE_DEVICE_MASK	0x1F
 
-static const int usb1_pins[] = {
-	40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
-};
+static void __iomem *zynq_slcr_base;
+static struct regmap *zynq_slcr_regmap;
 
-static const struct zynq_slcr_mio_get_status mio_periphs[] = {
-	{
-		"nand8",
-		nand8_pins,
-		ARRAY_SIZE(nand8_pins),
-		SLCR_NAND_L2_SEL_MASK,
-		SLCR_NAND_L2_SEL,
-	},
-	{
-		"nand16",
-		nand16_pins,
-		ARRAY_SIZE(nand16_pins),
-		SLCR_NAND_L2_SEL_MASK,
-		SLCR_NAND_L2_SEL,
-	},
-	{
-		"usb0",
-		usb0_pins,
-		ARRAY_SIZE(usb0_pins),
-		SLCR_USB_L1_SEL,
-		SLCR_USB_L1_SEL,
-	},
-	{
-		"usb1",
-		usb1_pins,
-		ARRAY_SIZE(usb1_pins),
-		SLCR_USB_L1_SEL,
-		SLCR_USB_L1_SEL,
-	},
-};
-
-static int slcr_lock = 1; /* 1 means locked, 0 means unlocked */
-
-void zynq_slcr_lock(void)
+/**
+ * zynq_slcr_write - Write to a register in SLCR block
+ *
+ * @val:	Value to write to the register
+ * @offset:	Register offset in SLCR block
+ *
+ * Return:	a negative value on error, 0 on success
+ */
+static int zynq_slcr_write(u32 val, u32 offset)
 {
-	if (!slcr_lock) {
-		writel(SLCR_LOCK_MAGIC, &slcr_base->slcr_lock);
-		slcr_lock = 1;
-	}
+	return regmap_write(zynq_slcr_regmap, offset, val);
 }
 
-void zynq_slcr_unlock(void)
+/**
+ * zynq_slcr_read - Read a register in SLCR block
+ *
+ * @val:	Pointer to value to be read from SLCR
+ * @offset:	Register offset in SLCR block
+ *
+ * Return:	a negative value on error, 0 on success
+ */
+static int zynq_slcr_read(u32 *val, u32 offset)
 {
-	if (slcr_lock) {
-		writel(SLCR_UNLOCK_MAGIC, &slcr_base->slcr_unlock);
-		slcr_lock = 0;
-	}
+	return regmap_read(zynq_slcr_regmap, offset, val);
 }
 
-/* Reset the entire system */
-void zynq_slcr_cpu_reset(void)
+/**
+ * zynq_slcr_unlock - Unlock SLCR registers
+ *
+ * Return:	a negative value on error, 0 on success
+ */
+static inline int zynq_slcr_unlock(void)
 {
-	/*
-	 * Unlock the SLCR then reset the system.
-	 * Note that this seems to require raw i/o
-	 * functions or there's a lockup?
-	 */
-	zynq_slcr_unlock();
+	zynq_slcr_write(SLCR_UNLOCK_MAGIC, SLCR_UNLOCK_OFFSET);
+
+	return 0;
+}
+
+/**
+ * zynq_slcr_get_device_id - Read device code id
+ *
+ * Return:	Device code id
+ */
+u32 zynq_slcr_get_device_id(void)
+{
+	u32 val;
+
+	zynq_slcr_read(&val, SLCR_PSS_IDCODE);
+	val >>= SLCR_PSS_IDCODE_DEVICE_SHIFT;
+	val &= SLCR_PSS_IDCODE_DEVICE_MASK;
+
+	return val;
+}
+
+/**
+ * zynq_slcr_system_restart - Restart the entire system.
+ *
+ * @nb:		Pointer to restart notifier block (unused)
+ * @action:	Reboot mode (unused)
+ * @data:	Restart handler private data (unused)
+ *
+ * Return:	0 always
+ */
+static
+int zynq_slcr_system_restart(struct notifier_block *nb,
+			     unsigned long action, void *data)
+{
+	u32 reboot;
 
 	/*
 	 * Clear 0x0F000000 bits of reboot status register to workaround
 	 * the FSBL not loading the bitstream after soft-reboot
 	 * This is a temporary solution until we know more.
 	 */
-	clrbits_le32(&slcr_base->reboot_status, 0xF000000);
-
-	writel(1, &slcr_base->pss_rst_ctrl);
+	zynq_slcr_read(&reboot, SLCR_REBOOT_STATUS_OFFSET);
+	zynq_slcr_write(reboot & 0xF0FFFFFF, SLCR_REBOOT_STATUS_OFFSET);
+	zynq_slcr_write(1, SLCR_PS_RST_CTRL_OFFSET);
+	return 0;
 }
 
-void zynq_slcr_devcfg_disable(void)
-{
-	u32 reg_val;
+static struct notifier_block zynq_slcr_restart_nb = {
+	.notifier_call	= zynq_slcr_system_restart,
+	.priority	= 192,
+};
 
-	zynq_slcr_unlock();
-
-	/* Disable AXI interface by asserting FPGA resets */
-	writel(0xF, &slcr_base->fpga_rst_ctrl);
-
-	/* Disable Level shifters before setting PS-PL */
-	reg_val = readl(&slcr_base->lvl_shftr_en);
-	reg_val &= ~0xF;
-	writel(reg_val, &slcr_base->lvl_shftr_en);
-
-	/* Set Level Shifters DT618760 */
-	writel(0xA, &slcr_base->lvl_shftr_en);
-
-	zynq_slcr_lock();
-}
-
-void zynq_slcr_devcfg_enable(void)
-{
-	zynq_slcr_unlock();
-
-	/* Set Level Shifters DT618760 */
-	writel(0xF, &slcr_base->lvl_shftr_en);
-
-	/* Enable AXI interface by de-asserting FPGA resets */
-	writel(0x0, &slcr_base->fpga_rst_ctrl);
-
-	zynq_slcr_lock();
-}
-
-u32 zynq_slcr_get_boot_mode(void)
-{
-	/* Get the bootmode register value */
-	return readl(&slcr_base->boot_mode);
-}
-
-u32 zynq_slcr_get_idcode(void)
-{
-	return (readl(&slcr_base->pss_idcode) & SLCR_IDCODE_MASK) >>
-							SLCR_IDCODE_SHIFT;
-}
-
-/*
- * zynq_slcr_get_mio_pin_status - Get the MIO pin status of peripheral.
- *
- * @periph: Name of the peripheral
- *
- * Returns count to indicate the number of pins configured for the
- * given @periph.
+/**
+ * zynq_slcr_cpu_start - Start cpu
+ * @cpu:	cpu number
  */
-int zynq_slcr_get_mio_pin_status(const char *periph)
+void zynq_slcr_cpu_start(int cpu)
 {
-	const struct zynq_slcr_mio_get_status *mio_ptr;
-	int val, j;
-	int mio = 0;
-	u32 i;
+	u32 reg;
 
-	for (i = 0; i < ARRAY_SIZE(mio_periphs); i++) {
-		if (strcmp(periph, mio_periphs[i].peri_name) == 0) {
-			mio_ptr = &mio_periphs[i];
-			for (j = 0; j < mio_ptr->num_pins; j++) {
-				val = readl(&slcr_base->mio_pin
-						[mio_ptr->get_pins[j]]);
-				if ((val & mio_ptr->mask) == mio_ptr->check_val)
-					mio++;
-			}
-			break;
-		}
+	zynq_slcr_read(&reg, SLCR_A9_CPU_RST_CTRL_OFFSET);
+	reg &= ~(SLCR_A9_CPU_RST << cpu);
+	zynq_slcr_write(reg, SLCR_A9_CPU_RST_CTRL_OFFSET);
+	reg &= ~(SLCR_A9_CPU_CLKSTOP << cpu);
+	zynq_slcr_write(reg, SLCR_A9_CPU_RST_CTRL_OFFSET);
+
+	zynq_slcr_cpu_state_write(cpu, false);
+}
+
+/**
+ * zynq_slcr_cpu_stop - Stop cpu
+ * @cpu:	cpu number
+ */
+void zynq_slcr_cpu_stop(int cpu)
+{
+	u32 reg;
+
+	zynq_slcr_read(&reg, SLCR_A9_CPU_RST_CTRL_OFFSET);
+	reg |= (SLCR_A9_CPU_CLKSTOP | SLCR_A9_CPU_RST) << cpu;
+	zynq_slcr_write(reg, SLCR_A9_CPU_RST_CTRL_OFFSET);
+}
+
+/**
+ * zynq_slcr_cpu_state - Read/write cpu state
+ * @cpu:	cpu number
+ *
+ * SLCR_REBOOT_STATUS save upper 2 bits (31/30 cpu states for cpu0 and cpu1)
+ * 0 means cpu is running, 1 cpu is going to die.
+ *
+ * Return: true if cpu is running, false if cpu is going to die
+ */
+bool zynq_slcr_cpu_state_read(int cpu)
+{
+	u32 state;
+
+	state = readl(zynq_slcr_base + SLCR_REBOOT_STATUS_OFFSET);
+	state &= 1 << (31 - cpu);
+
+	return !state;
+}
+
+/**
+ * zynq_slcr_cpu_state - Read/write cpu state
+ * @cpu:	cpu number
+ * @die:	cpu state - true if cpu is going to die
+ *
+ * SLCR_REBOOT_STATUS save upper 2 bits (31/30 cpu states for cpu0 and cpu1)
+ * 0 means cpu is running, 1 cpu is going to die.
+ */
+void zynq_slcr_cpu_state_write(int cpu, bool die)
+{
+	u32 state, mask;
+
+	state = readl(zynq_slcr_base + SLCR_REBOOT_STATUS_OFFSET);
+	mask = 1 << (31 - cpu);
+	if (die)
+		state |= mask;
+	else
+		state &= ~mask;
+	writel(state, zynq_slcr_base + SLCR_REBOOT_STATUS_OFFSET);
+}
+
+/**
+ * zynq_early_slcr_init - Early slcr init function
+ *
+ * Return:	0 on success, negative errno otherwise.
+ *
+ * Called very early during boot from platform code to unlock SLCR.
+ */
+int __init zynq_early_slcr_init(void)
+{
+	struct device_node *np;
+
+	np = of_find_compatible_node(NULL, NULL, "xlnx,zynq-slcr");
+	if (!np) {
+		pr_err("%s: no slcr node found\n", __func__);
+		BUG();
 	}
 
-	return mio;
+	zynq_slcr_base = of_iomap(np, 0);
+	if (!zynq_slcr_base) {
+		pr_err("%s: Unable to map I/O memory\n", __func__);
+		BUG();
+	}
+
+	np->data = (__force void *)zynq_slcr_base;
+
+	zynq_slcr_regmap = syscon_regmap_lookup_by_compatible("xlnx,zynq-slcr");
+	if (IS_ERR(zynq_slcr_regmap)) {
+		pr_err("%s: failed to find zynq-slcr\n", __func__);
+		return -ENODEV;
+	}
+
+	/* unlock the SLCR so that registers can be changed */
+	zynq_slcr_unlock();
+
+	/* See AR#54190 design advisory */
+	regmap_update_bits(zynq_slcr_regmap, SLCR_L2C_RAM, 0x70707, 0x20202);
+
+	register_restart_handler(&zynq_slcr_restart_nb);
+
+	pr_info("%pOFn mapped to %p\n", np, zynq_slcr_base);
+
+	of_node_put(np);
+
+	return 0;
 }

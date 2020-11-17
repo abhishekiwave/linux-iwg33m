@@ -1,18 +1,9 @@
-menu "UBI support"
-
-config UBI_SILENCE_MSG
-	bool "UBI silence verbose messages"
-	default ENV_IS_IN_UBI
+# SPDX-License-Identifier: GPL-2.0-only
+menuconfig MTD_UBI
+	tristate "Enable UBI - Unsorted block images"
+	select CRC32
 	help
-	  Make the verbose messages from UBI stop printing. This leaves
-	  warnings and errors enabled.
-
-config MTD_UBI
-	bool "Enable UBI - Unsorted block images"
-	select RBTREE
-	select MTD_PARTITIONS
-	help
-	  UBI is a software layer above MTD layer which admits of LVM-like
+	  UBI is a software layer above MTD layer which admits use of LVM-like
 	  logical volumes on top of MTD devices, hides some complexities of
 	  flash chips like wear and bad blocks and provides some other useful
 	  capabilities. Please, consult the MTD web site for more details
@@ -87,20 +78,30 @@ config MTD_UBI_FASTMAP
 
 	   If in doubt, say "N".
 
-config MTD_UBI_FASTMAP_AUTOCONVERT
-	int "enable UBI Fastmap autoconvert"
-	depends on MTD_UBI_FASTMAP
-	default 0
+config MTD_UBI_GLUEBI
+	tristate "MTD devices emulation driver (gluebi)"
 	help
-	  Set this parameter to enable fastmap automatically on images
-	  without a fastmap.
+	   This option enables gluebi - an additional driver which emulates MTD
+	   devices on top of UBI volumes: for each UBI volumes an MTD device is
+	   created, and all I/O to this MTD device is redirected to the UBI
+	   volume. This is handy to make MTD-oriented software (like JFFS2)
+	   work on top of UBI. Do not enable this unless you use legacy
+	   software.
 
-config MTD_UBI_FM_DEBUG
-	int "Enable UBI fastmap debug"
-	depends on MTD_UBI_FASTMAP
-	default 0
+config MTD_UBI_BLOCK
+	bool "Read-only block devices on top of UBI volumes"
+	default n
+	depends on BLOCK
 	help
-	  Enable UBI fastmap debug
+	   This option enables read-only UBI block devices support. UBI block
+	   devices will be layered on top of UBI volumes, which means that the
+	   UBI driver will transparently handle things like bad eraseblocks and
+	   bit-flips. You can put any block-oriented file system on top of UBI
+	   volumes in read-only mode (e.g., ext4), but it is probably most
+	   practical for read-only file systems, like squashfs.
+
+	   When selected, this feature will be built in the UBI driver.
+
+	   If in doubt, say "N".
 
 endif # MTD_UBI
-endmenu # "Enable UBI - Unsorted block images"
