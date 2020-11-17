@@ -1,0 +1,17 @@
+if TARGET_IMX8MQ_IWG33M
+
+config SYS_BOARD
+	default "imx8mq_iwg33m"
+
+config SYS_VENDOR
+	default "freescale"
+
+config SYS_CONFIG_NAME
+	default "imx8mq_iwg33m"
+
+config FUSB302
+	bool "fusb302 typec partial support"
+	default n
+source "board/freescale/common/Kconfig"
+
+endif
