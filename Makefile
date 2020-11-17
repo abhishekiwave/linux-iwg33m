@@ -1,72 +1,124 @@
+SHELL = /bin/bash
 
-MKIMG = $(PWD)/mkimage_imx8
-CC = gcc
-CFLAGS ?= -g -O2 -Wall -std=c99 -static
-INCLUDE += $(CURR_DIR)/src
+# It can happen that a makefile calls us, which contains an 'export' directive
+# or the '.EXPORT_ALL_VARIABLES:' special target. In this case, all the make
+# variables are added to the environment for each line of the recipes, so that
+# any sub-makefile can use them.
+# We have observed this can cause issues such as 'Argument list too long'
+# errors as the shell runs out of memory.
+# Since this Makefile won't call any sub-makefiles, and since the commands do
+# not expect to implicitely obtain any make variable from the environment, we
+# can safely cancel this export mechanism. Unfortunately, it can't be done
+# globally, only by name. Let's unexport MAKEFILE_LIST which is by far the
+# biggest one due to our way of tracking dependencies and compile flags
+# (we include many *.cmd and *.d files).
+unexport MAKEFILE_LIST
 
-SRCS = src/imx8qm.c  src/imx8qx.c src/imx8qxb0.c src/mkimage_imx8.c
+# Automatically delete corrupt targets (file updated but recipe exits with a
+# nonzero status). Useful since a few recipes use shell redirection.
+.DELETE_ON_ERROR:
 
-ifneq ($(findstring iMX8M,$(SOC)),)
-SOC_DIR = iMX8M
+include mk/checkconf.mk
+
+.PHONY: all
+all:
+
+.PHONY: mem_usage
+mem_usage:
+
+# log and load eventual tee config file
+# path is absolute or relative to current source root directory.
+ifdef CFG_OPTEE_CONFIG
+$(info Loading OPTEE configuration file $(CFG_OPTEE_CONFIG))
+include $(CFG_OPTEE_CONFIG)
 endif
-ifeq ($(SOC),iMX8DX)
-SOC_DIR = iMX8QX
+
+# If $(PLATFORM) is defined and contains a hyphen, parse it as
+# $(PLATFORM)-$(PLATFORM_FLAVOR) for convenience
+ifneq (,$(findstring -,$(PLATFORM)))
+ops := $(join PLATFORM PLATFORM_FLAVOR,$(addprefix =,$(subst -, ,$(PLATFORM))))
+$(foreach op,$(ops),$(eval override $(op)))
 endif
-SOC_DIR ?= $(SOC)
 
-vpath $(INCLUDE)
+# Make these default for now
+$(call force,ARCH,arm)
+PLATFORM        ?= vexpress
+# Default value for PLATFORM_FLAVOR is set in plat-$(PLATFORM)/conf.mk
+ifeq ($O,)
+O               := out
+out-dir         := $(O)/$(ARCH)-plat-$(PLATFORM)
+else
+out-dir         := $(O)
+endif
 
-.PHONY:  clean all bin
+arch_$(ARCH)	:= y
 
-.DEFAULT:
-	@$(MAKE) -s --no-print-directory bin
-	@$(MAKE) --no-print-directory -C $(SOC_DIR) -f soc.mak $@
+ifneq ($V,1)
+q := @
+cmd-echo := true
+cmd-echo-silent := echo
+else
+q :=
+cmd-echo := echo
+cmd-echo-silent := true
+endif
 
-#print out usage as the default target
-all: $(MKIMG) help
+ifneq ($(filter 4.%,$(MAKE_VERSION)),)  # make-4
+ifneq ($(filter %s ,$(firstword x$(MAKEFLAGS))),)
+cmd-echo-silent := true
+endif
+else                                    # make-3.8x
+ifneq ($(findstring s, $(MAKEFLAGS)),)
+cmd-echo-silent := true
+endif
+endif
 
+SCRIPTS_DIR := scripts
+
+include core/core.mk
+
+# Platform/arch config is supposed to assign the targets
+ta-targets ?= invalid
+default-user-ta-target ?= $(firstword $(ta-targets))
+
+ifeq ($(CFG_WITH_USER_TA),y)
+include ldelf/ldelf.mk
+define build-ta-target
+ta-target := $(1)
+include ta/ta.mk
+endef
+$(foreach t, $(ta-targets), $(eval $(call build-ta-target, $(t))))
+
+# Build user TAs included in this git
+define build-user-ta
+ta-mk-file := $(1)
+include ta/mk/build-user-ta.mk
+endef
+$(foreach t, $(wildcard ta/*/user_ta.mk), $(eval $(call build-user-ta,$(t))))
+endif
+
+include mk/cleandirs.mk
+
+.PHONY: clean
 clean:
-	@rm -f $(MKIMG)
-	@rm -f src/build_info.h
-	@$(MAKE) --no-print-directory -C iMX8QM -f soc.mak clean
-	@$(MAKE) --no-print-directory -C iMX8QX -f soc.mak  clean
-	@$(MAKE) --no-print-directory -C iMX8M -f soc.mak  clean
-	@$(MAKE) --no-print-directory -C iMX8dv -f soc.mak  clean
+	@$(cmd-echo-silent) '  CLEAN   $(out-dir)'
+	$(call do-rm-f, $(cleanfiles))
+	${q}dirs="$(call cleandirs-for-rmdir)"; if [ "$$dirs" ]; then $(RMDIR) $$dirs; fi
+	@if [ "$(out-dir)" != "$(O)" ]; then $(cmd-echo-silent) '  CLEAN   $(O)'; fi
+	${q}if [ -d "$(O)" ]; then $(RMDIR) $(O); fi
 
-$(MKIMG): src/build_info.h $(SRCS)
-	@echo "Compiling mkimage_imx8"
-	$(CC) $(CFLAGS) $(SRCS) -o $(MKIMG) -I src
+.PHONY: cscope
+cscope:
+	@echo '  CSCOPE  .'
+	${q}rm -f cscope.*
+	${q}find $(PWD) -name "*.[chSs]" | grep -v export-ta_ > cscope.files
+	${q}cscope -b -q -k
 
-bin: $(MKIMG)
+.PHONY: checkpatch checkpatch-staging checkpatch-working
+checkpatch: checkpatch-staging checkpatch-working
 
-src/build_info.h:
-	@echo -n '#define MKIMAGE_COMMIT 0x' > src/build_info.h
-	@git rev-parse --short=8 HEAD >> src/build_info.h
-	@echo '' >> src/build_info.h
+checkpatch-working:
+	${q}./scripts/checkpatch.sh
 
-help:
-	@echo $(CURR_DIR)
-	@echo "usage ${MAKE} SOC=<SOC_TARGET> [TARGET]"
-	@echo "i.e.  ${MAKE} SOC=iMX8QX flash"
-	@echo "Common Targets:"
-	@echo
-	@echo "Parts with SCU"
-	@echo "	  flash_scfw          - Only boot SCU"
-	@echo "	  flash               - SCU + AP"
-	@echo "	  flash_flexspi       - SCU + AP (FlexSPI device) "
-	@echo "	  flash_nand          - SCU + AP (NAND device) "
-	@echo "	  flash_cm4           - SCU + M4_0 TCM image"
-	@echo "	  flash_linux_m4      - SCU + AP (OPTEE) + M4_0 (and M4_1) TCM image"
-	@echo "	  flash_linux_m4_xip  - SCU + AP (OPTEE) + M4_0 (and M4_1) FLASH XIP image"
-	@echo "	  flash_linux_m4_ddr  - SCU + AP (OPTEE) + M4_0 (and M4_1) DDR image"
-	@echo ""
-	@echo "Parts w/o SCU"
-	@echo "	  flash_ddr3l_val          - DisaplayPort FW + u-boot spl"
-	@echo "	  flash_ddr3l_val_no_hdmi  - u-boot spl"
-	@echo "	  flash_hdmi_spl_uboot     - HDMI FW + u-boot spl"
-	@echo "	  flash_dp_spl_uboot       - DisaplayPort FW + u-boot spl"
-	@echo "	  flash_spl_uboot          - u-boot spl"
-	@echo
-	@echo "Typical flash cmd: dd if=iMX8QM/flash.bin of=/dev/<your device> bs=1k seek=33"
-	@echo
-
+checkpatch-staging:
+	${q}./scripts/checkpatch.sh --cached
