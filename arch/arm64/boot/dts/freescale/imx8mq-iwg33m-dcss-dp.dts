@@ -11,6 +11,7 @@
 /{
 	sound-hdmi {
 		status = "enabled";
+		protocol = <1>;
 	};
 };
 
