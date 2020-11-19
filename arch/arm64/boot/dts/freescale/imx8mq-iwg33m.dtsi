@@ -916,6 +916,7 @@
 		 <&clk IMX8MQ_CLK_PCIE2_PHY>,
 		 <&pcie1_refclk>;
 	clock-names = "pcie", "pcie_aux", "pcie_phy", "pcie_bus";
+	bus-range = <0x00 0xff>;
 	hard-wired = <1>;
 	status = "okay";
 };
